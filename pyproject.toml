@@ -1,0 +1,23 @@
+[project]
+name = "ma-lucamertens"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    # "numpy>=2.4.1",
+    # "opencv-contrib-python>=4.11.0.86",
+    # "pytransform3d>=3.14.4",
+    # "pyyaml>=6.0.3",
+    # "cupy-cuda12x; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # "tartanair>=1.2.0",
+    # "torchvision>=0.24.1",
+]
+
+
+[project.scripts]
+ma-lucamertens = "ma_lucamertens:main"
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
