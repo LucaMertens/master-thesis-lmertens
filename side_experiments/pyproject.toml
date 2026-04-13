@@ -1,0 +1,15 @@
+[project]
+name = "side-experiments"
+version = "0.1.0"
+requires-python = "==3.11.*"
+dependencies = [
+    "zarr==3.0.7",
+    "jupyter",
+    "pathlib",
+    "huggingface_hub",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "tqdm",
+    "imageio-ffmpeg",
+]

@@ -1,0 +1,13 @@
+# [project]
+# name = "ma-lucamertens"
+# version = "0.1.0"
+# description = "Add your description here"
+# readme = "README.md"
+
+
+[tool.uv.workspace]
+members = ["side_experiments"]
+
+
+[dependency-groups]
+dev = ["ruff"]
