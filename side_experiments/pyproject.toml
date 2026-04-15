@@ -3,6 +3,7 @@ name = "side-experiments"
 version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
+    "shared-utils",
     "zarr==3.*",
     "jupyter",
     "pathlib",
@@ -15,3 +16,6 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "pandas>=3.0.2",
 ]
+
+[tool.uv.sources]
+shared-utils = { workspace = true }

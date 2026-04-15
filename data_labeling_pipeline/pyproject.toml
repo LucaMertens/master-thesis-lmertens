@@ -11,4 +11,8 @@ dependencies = [
     "numpy",
     "scipy",
     "tqdm",
+    "shared-utils",
 ]
+
+[tool.uv.sources]
+shared-utils = { workspace = true }

@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "data-labeling-pipeline",
+    "shared-utils",
     "side-experiments",
 ]
 
@@ -334,6 +335,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pathlib" },
     { name = "scipy" },
+    { name = "shared-utils" },
     { name = "tqdm" },
     { name = "zarr" },
 ]
@@ -346,6 +348,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "pathlib" },
     { name = "scipy" },
+    { name = "shared-utils", editable = "shared_utils" },
     { name = "tqdm" },
     { name = "zarr", specifier = "==3.*" },
 ]
@@ -1737,6 +1740,17 @@ wheels = [
 ]
 
 [[package]]
+name = "shared-utils"
+version = "0.1.0"
+source = { editable = "shared_utils" }
+dependencies = [
+    { name = "pathlib" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pathlib" }]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1759,6 +1773,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pathlib" },
     { name = "scipy" },
+    { name = "shared-utils" },
     { name = "tqdm" },
     { name = "zarr" },
 ]
@@ -1774,6 +1789,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.2" },
     { name = "pathlib" },
     { name = "scipy" },
+    { name = "shared-utils", editable = "shared_utils" },
     { name = "tqdm" },
     { name = "zarr", specifier = "==3.*" },
 ]
