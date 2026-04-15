@@ -1,0 +1,14 @@
+[project]
+name = "data_labeling_pipeline"
+version = "0.1.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "zarr==3.*",
+    "jupyter",
+    "pathlib",
+    "huggingface_hub",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "tqdm",
+]

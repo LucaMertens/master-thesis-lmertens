@@ -6,7 +6,7 @@
 
 
 [tool.uv.workspace]
-members = ["side_experiments"]
+members = ["data_labeling_pipeline", "side_experiments"]
 
 
 [dependency-groups]
