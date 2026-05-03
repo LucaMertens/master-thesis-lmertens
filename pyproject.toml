@@ -3,6 +3,9 @@
 # version = "0.1.0"
 # description = "Add your description here"
 # readme = "README.md"
+# dependencies = [
+#     "ipykernel>=7.2.0",
+# ] 
 
 
 [tool.uv.workspace]
@@ -13,4 +16,4 @@ shared-utils = { workspace = true }
 
 
 [dependency-groups]
-dev = ["ruff"]
+dev = ["ruff", "pytest>=8.0", "pytest-cov"]

@@ -26,24 +26,28 @@ class DataLabelingPipeline:
         self.rhe = RecedingHorizonEstimator(
             dt=self.dt,
             N=self.N,
-            Px=P_x,
-            Pm=P_m,
-            Pw=P_w,
+            P_x=P_x,
+            P_m=P_m,
+            P_w=P_w,
         )
 
     def process_mission(self, output_dir):
-        """Process the entire mission and save labels."""
+        """Process the entire mission and save labels.
+
+        All data is loaded in ENU convention by GrandTourLoader, which aligns
+        with the unicycle kinematic model used by the RHE (see rhe.py).
+        """
         out_path = pathlib.Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
         print(f"Loading data from {self.mission_path} ...")
-        shared_ts, U, Z = self.loader.load_synchronized_data(dt=self.dt)
+        shared_ts, U, Z = self.loader.load_data_shared_timestamps(dt=self.dt)
 
         total_steps = len(shared_ts)
         print(f"Total synchronized steps: {total_steps}")
 
         optimized_states = np.zeros_like(Z)
-        optimized_labels = np.zeros((total_steps, 2))
+        optimized_labels = np.zeros((total_steps, 3))
 
         self.rhe.reset()
 
@@ -55,7 +59,7 @@ class DataLabelingPipeline:
             X_opt, m_opt = self.rhe.estimate(U_window, Z_window)
 
             optimized_states[i] = X_opt[0]
-            optimized_labels[i] = m_opt[0:2]
+            optimized_labels[i] = m_opt[0:3]
 
             if i % 100 == 0:
                 print(f"Processed step {i}/{total_steps - self.N}")
@@ -64,7 +68,7 @@ class DataLabelingPipeline:
             idx = total_steps - self.N + j
             if idx < total_steps:
                 optimized_states[idx] = X_opt[j]
-                optimized_labels[idx] = m_opt[0:2]
+                optimized_labels[idx] = m_opt[0:3]
 
         print("Saving continuous labels ...")
         np.save(out_path / "timestamp.npy", shared_ts)

@@ -15,4 +15,5 @@ dependencies = [
     "imageio-ffmpeg",
     "opencv-python>=4.13.0.92",
     "pandas>=3.0.2",
+    "plotly",
 ]

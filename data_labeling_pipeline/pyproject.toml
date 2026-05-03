@@ -25,3 +25,8 @@ packages = ["src/data_labeling_pipeline"]
 
 [tool.uv.sources]
 shared-utils = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
