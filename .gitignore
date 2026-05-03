@@ -209,4 +209,4 @@ __marimo__/
 agents/
 .github
 *.mp4
-.npy
+*.npy
