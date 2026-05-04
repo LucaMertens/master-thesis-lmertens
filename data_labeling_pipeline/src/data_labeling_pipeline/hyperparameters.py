@@ -18,7 +18,8 @@ Measurement trust
 If high value: Penalize deviating from ground truth
 """
 # P_w = np.diag([2, 2, 1.5])
-P_w = np.diag([10, 10, 10])
+# P_w = np.diag([10, 10, 10])
+P_w = np.diag([1, 1, 1])
 
 
 # Horizon length (the same as used in the paper: https://github.com/matval/wayfaster/issues/2)
