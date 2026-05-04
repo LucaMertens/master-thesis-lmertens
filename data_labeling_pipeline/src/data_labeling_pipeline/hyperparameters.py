@@ -4,14 +4,14 @@ import numpy as np
 Initial state trust
 If high value: penalize deviating from state calculated in previous iteration (--> more continuous trajectory).
 """
-P_x = np.diag([1, 1, 1])
+P_x = np.diag([0.25, 0.25, 0.25])
 
 """
 Smoothness / Previous parameter trust
 If low value: Only slightly penalize deviating from parameters calculated in previous iteration (smoothness).
 """
 # P_m = np.diag([0.5, 0.5, 0.5])
-P_m = np.diag([1, 1, 1])
+P_m = np.diag([0.25, 0.25, 0.25])
 
 """
 Measurement trust
