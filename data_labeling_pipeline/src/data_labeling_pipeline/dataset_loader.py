@@ -9,7 +9,14 @@ from .zarr_transforms import get_static_transform
 TIME_RANGE_WARNING_THRESHOLD = 1.0  # seconds
 
 
+def _is_strictly_monotonic_increasing(arr):
+    return np.all(np.diff(arr) > 0)
+
+
 def get_shared_timestamps(tstamps1, tstamps2, dt):
+    assert _is_strictly_monotonic_increasing(tstamps1)
+    assert _is_strictly_monotonic_increasing(tstamps2)
+
     # Timestamps are in unix seconds.
     start1, end1, start2, end2 = tstamps1[0], tstamps1[-1], tstamps2[0], tstamps2[-1]
     # Check if the difference between time-ranges is too large
@@ -63,6 +70,7 @@ def fill_command_gaps_with_zero_commands(
         return timestamps, linear, angular
 
     diffs = np.diff(timestamps)
+
     if np.any(diffs < 0):
         raise ValueError("Timestamps must be sorted in ascending order.")
 
@@ -151,9 +159,9 @@ class GrandTourLoader:
 
     def load_odometry(self):
         # Load odometry data. Frame: ENU-origin (world-ish, origin is where the robot started)
-        odom_ts = np.asarray(self.load_subtopic("cpt7_ie_rt_odometry", "timestamp"))
-        odom_pos = self.load_subtopic("cpt7_ie_rt_odometry", "pose_pos")
-        odom_orien = self.load_subtopic("cpt7_ie_rt_odometry", "pose_orien")
+        odom_ts = np.asarray(self.load_subtopic("cpt7_ie_tc_odometry", "timestamp"))
+        odom_pos = self.load_subtopic("cpt7_ie_tc_odometry", "pose_pos")
+        odom_orien = self.load_subtopic("cpt7_ie_tc_odometry", "pose_orien")
         return odom_ts, odom_pos, odom_orien
 
     def get_cpt7_imu_to_base_transform(self):
@@ -195,6 +203,7 @@ class GrandTourLoader:
         odom_yaw = odom_rot_base.as_euler("zyx", degrees=False)[:, 0]
 
         shared_ts = get_shared_timestamps(cmd_ts, odom_ts, dt=dt)
+        assert _is_strictly_monotonic_increasing(shared_ts)
 
         # Interpolate commands and states to shared timestamps
         v_k_shared = np.interp(shared_ts, cmd_ts, v_k)
