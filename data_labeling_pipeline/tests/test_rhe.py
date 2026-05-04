@@ -51,13 +51,13 @@ def test_cost_wraps_heading_error_across_minus_pi_pi_boundary():
     estimator = RecedingHorizonEstimator(
         dt=0.1, N=3, P_x=np.eye(3), P_m=np.eye(3), P_w=np.zeros((3, 3))
     )
-    x0 = np.array([0.0, 0.0, 0.0])
-    m_guess = np.array([1.0, 1.0, np.pi - 0.02])
-    opt_vars = np.array([1.0, 1.0, -np.pi + 0.02])
+    x_guess = np.array([0.0, 0.0, np.pi - 0.02])
+    m_guess = np.array([1.0, 1.0, 0.0])
+    opt_vars = np.array([0.0, 0.0, -np.pi + 0.02, 1.0, 1.0, 0.0])
     U = np.zeros((3, 2))
     Z = np.zeros((3, 3))
 
-    cost = estimator.cost(opt_vars, U, Z, x0, m_guess)
+    cost = estimator.cost(opt_vars, U, Z, x_guess, m_guess)
 
     assert cost == pytest.approx((0.04) ** 2, rel=1e-6)
 
@@ -74,7 +74,7 @@ def test_cost_treats_sensor_orientation_offset_as_separate_parameter():
     Z = X.copy()
     Z[:, 2] += 0.5
 
-    opt_vars = m.copy()
+    opt_vars = np.concatenate((x0, m))
     cost = estimator.cost(opt_vars, U, Z, x0, m)
 
     assert cost == pytest.approx(0.0, abs=1e-12)
@@ -97,16 +97,15 @@ def test_estimate_uses_warm_start_and_updates_previous_orientation(monkeypatch):
         calls["args"] = args
         calls["method"] = method
         calls["bounds"] = bounds
-        return DummyResult([0.8, 0.7, -0.2])
+        return DummyResult([1.0, 2.0, 0.25, 0.8, 0.7, -0.2])
 
     monkeypatch.setattr(rhe_module, "minimize", fake_minimize)
 
     X_opt, m_opt = estimator.estimate(U, Z)
 
-    assert np.allclose(calls["x0"], np.array([1.0, 1.0, 0.0]))
+    assert np.allclose(calls["x0"], np.array([1.0, 2.0, 0.25, 1.0, 1.0, 0.0]))
     assert calls["method"] == "SLSQP"
-    assert np.allclose(calls["args"][2], Z[0])
-    assert calls["bounds"][2] == (-np.pi, np.pi)
+    assert calls["bounds"][5] == (-np.pi, np.pi)
     assert np.allclose(m_opt, np.array([0.8, 0.7, -0.2]))
     assert estimator.prev_m is not None
     assert estimator.prev_x is not None
@@ -125,16 +124,16 @@ def test_estimate_reuses_previous_orientation_solution_on_next_call(monkeypatch)
     def fake_minimize(fun, x0, args, method, bounds):
         warm_starts.append(np.array(x0, dtype=float))
         if len(warm_starts) == 1:
-            return DummyResult([0.9, 0.8, 0.1])
-        return DummyResult([0.7, 0.6, 0.2])
+            return DummyResult([0.0, 0.0, 0.0, 0.9, 0.8, 0.1])
+        return DummyResult([0.0, 0.0, 0.0, 0.7, 0.6, 0.2])
 
     monkeypatch.setattr(rhe_module, "minimize", fake_minimize)
 
     estimator.estimate(U, Z)
     estimator.estimate(U, Z)
 
-    assert np.allclose(warm_starts[0], np.array([1.0, 1.0, 0.0]))
-    assert np.allclose(warm_starts[1], np.array([0.9, 0.8, 0.1]))
+    assert np.allclose(warm_starts[0], np.array([0.0, 0.0, 0.0, 1.0, 1.0, 0.0]))
+    assert np.allclose(warm_starts[1], np.array([0.09, 0.0, 0.08, 0.9, 0.8, 0.1]))
 
 
 def test_estimate_raises_when_optimizer_fails(monkeypatch):
@@ -143,7 +142,7 @@ def test_estimate_raises_when_optimizer_fails(monkeypatch):
     Z = np.zeros((4, 3))
 
     def fake_minimize(*args, **kwargs):
-        return DummyResult([0.0] * 3, success=False, message="no convergence")
+        return DummyResult([0.0] * 6, success=False, message="no convergence")
 
     monkeypatch.setattr(rhe_module, "minimize", fake_minimize)
 
@@ -239,7 +238,19 @@ def test_cost_function_with_perfect_measurement():
     Z = X.copy()
 
     # Cost should be zero with perfect match
-    opt_vars = m.copy()
+    opt_vars = np.concatenate((x0, m))
     cost = estimator.cost(opt_vars, U, Z, x0, m)
 
     assert cost == pytest.approx(0.0, abs=1e-12)
+
+
+def test_covariance_matrix_defaults():
+    """Test that covariance matrices are properly initialized."""
+    estimator = RecedingHorizonEstimator(dt=0.1, N=10)
+
+    assert estimator.P_x.shape == (3, 3)
+    assert estimator.P_m.shape == (3, 3)
+    assert estimator.P_w.shape == (3, 3)
+    assert np.allclose(estimator.P_x, np.diag([1.0, 1.0, 1.0]))
+    assert np.allclose(estimator.P_m, np.diag([1.0, 1.0, 1.0]))
+    assert np.allclose(estimator.P_w, np.diag([1.0, 1.0, 1.0]))
