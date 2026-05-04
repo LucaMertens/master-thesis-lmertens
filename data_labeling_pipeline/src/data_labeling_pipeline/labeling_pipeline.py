@@ -52,23 +52,30 @@ class DataLabelingPipeline:
         self.rhe.reset()
 
         print("Running Receding Horizon Estimator ...")
-        for i in range(total_steps - self.N + 1):
+        # step_size = max(1, self.N // 2)
+        step_size = max(1, self.N - 1)
+        for i in range(0, total_steps - self.N + 1, step_size):
             U_window = U[i : i + self.N]
             Z_window = Z[i : i + self.N]
 
-            X_opt, m_opt = self.rhe.estimate(U_window, Z_window)
+            X_optimized, m_optimized = self.rhe.estimate(
+                U_window, Z_window, step_size=step_size
+            )
 
-            optimized_states[i] = X_opt[0]
-            optimized_labels[i] = m_opt[0:3]
+            # Fill the block with the optimized values
+            optimized_states[i : i + step_size] = X_optimized[:step_size]
+            optimized_labels[i : i + step_size] = m_optimized[0:3]
 
             if i % 100 == 0:
                 print(f"Processed step {i}/{total_steps - self.N}")
 
-        for j in range(1, self.N):
-            idx = total_steps - self.N + j
-            if idx < total_steps:
-                optimized_states[idx] = X_opt[j]
-                optimized_labels[idx] = m_opt[0:3]
+        # Fill remaining steps if any
+        last_processed_idx = ((total_steps - self.N) // step_size) * step_size
+        remaining_start = last_processed_idx + step_size
+        if remaining_start < total_steps:
+            remaining_steps = total_steps - remaining_start
+            optimized_states[remaining_start:] = X_optimized[-remaining_steps:]
+            optimized_labels[remaining_start:] = m_optimized[0:3]
 
         print("Saving continuous labels ...")
         np.save(out_path / "timestamp.npy", shared_ts)

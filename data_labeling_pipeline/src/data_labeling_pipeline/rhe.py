@@ -49,7 +49,7 @@ class RecedingHorizonEstimator:
         self.prev_m = None
 
     def _has_angular_excitation(self, U: np.ndarray) -> bool:
-        return float(np.mean(np.abs(U[:, 1]))) >= self.nu_excitation_threshold
+        return float(np.max(np.abs(U[:, 1]))) >= self.nu_excitation_threshold
 
     def dynamics(self, state, u, m):
         """Discrete Kino-Dynamic System Model (Equation 1)."""
@@ -121,7 +121,7 @@ class RecedingHorizonEstimator:
 
         return cost_x0 + cost_m + cost_measurements
 
-    def estimate(self, U, Z):
+    def estimate(self, U, Z, step_size=1):
         """
         Run the finite horizon optimization for a single step.
         U: Commanded inputs of shape (N, 2) [v_k, omega_k]
@@ -161,20 +161,20 @@ class RecedingHorizonEstimator:
         if not res.success:
             raise ValueError(f"Optimization failed: {res.message}")
 
-        opt_vars = res.x
-        x0_opt = opt_vars[0:3]
-        m_opt = opt_vars[3:6]
+        optimized_vars = res.x
+        x0_optimized = optimized_vars[0:3]
+        m_optimized = optimized_vars[3:6]
 
         if freeze_nu:
-            m_opt = m_opt.copy()
-            m_opt[1] = self.prev_m[1]
+            m_optimized = m_optimized.copy()
+            m_optimized[1] = self.prev_m[1]
 
-        X_opt = self.simulate(x0_opt, U, m_opt)
+        X_optimized = self.simulate(x0_optimized, U, m_optimized)
 
-        self.prev_x = X_opt[1]
-        self.prev_m = m_opt
+        self.prev_x = X_optimized[step_size]
+        self.prev_m = m_optimized
 
-        return X_opt, m_opt
+        return X_optimized, m_optimized
 
     def reset(self):
         """Reset the estimator state to be able to start a new mission."""
