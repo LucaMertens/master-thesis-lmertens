@@ -55,6 +55,7 @@ class RecedingHorizonEstimator:
         """Discrete Kino-Dynamic System Model (Equation 1)."""
         px, py, theta = state
         v, omega = u
+        # delta_theta is an offset to the measured orientation, so we don't need it here.
         mu, nu, delta_theta = m
 
         px_next = px + mu * np.cos(theta) * v * self.dt
@@ -76,42 +77,42 @@ class RecedingHorizonEstimator:
 
     def cost(
         self,
-        opt_vars: np.ndarray,
+        optimization_vars: np.ndarray,
         U: np.ndarray,
         Z: np.ndarray,
-        x_guess: np.ndarray,
-        m_guess: np.ndarray,
+        x_prev: np.ndarray,
+        m_prev: np.ndarray,
     ) -> float:
         """RHE Optimization Formulation (Equation 2).
 
         Args:
-            opt_vars (6,): Optimization variables: x_0, m.
+            optimization_vars (6,): Optimization variables: x_0, m.
             U (N, 2): Sequence of commanded inputs: v, omega. Passed via the args tuple.
             Z (N, 3): Sequence of raw sensor measurements: px, py, theta_true. Passed via the args tuple.
-            x_guess (3,): Prior estimate of the initial state: px, py, theta. Passed via the args tuple.
-            m_guess (3,): Prior estimate of the parameters: mu, nu, delta_theta. Passed via the args tuple.
+            x_prev (3,): Prior estimate of the initial state: px, py, theta. Passed via the args tuple.
+            m_prev (3,): Prior estimate of the parameters: mu, nu, delta_theta. Passed via the args tuple.
 
         Returns:
             float: The total optimization cost.
         """
         # The predicted initial pose (px, py, theta) of the robot at the start of the current receding horizon window.
-        x0 = opt_vars[0:3]
-        m = opt_vars[3:6]
+        x0 = optimization_vars[0:3]
+        m = optimization_vars[3:6]
+
         d_theta = m[2]
 
-        diff_x0 = x0 - x_guess  # (3,)
+        diff_x0 = x0 - x_prev  # (3,)
         diff_x0[2] = _normalize_angle(diff_x0[2])
         cost_x0 = diff_x0.T @ self.P_x @ diff_x0
 
-        diff_m = m - m_guess  # (3,)
+        diff_m = m - m_prev  # (3,)
         diff_m[2] = _normalize_angle(diff_m[2])
         cost_m = diff_m.T @ self.P_m @ diff_m
 
         X = self.simulate(x0, U, m)  # (N, 3)
 
         Z = Z.copy()
-        # Measurements contain a sensor bias: measured_theta = true_theta + delta_theta
-        # Correct the measurements by subtracting the estimated bias before comparing
+        # Measurements contain a sensor bias: true_theta = measured_theta - delta_theta
         Z[:, 2] = _normalize_angle(Z[:, 2] - d_theta)
 
         diff_Z = X - Z  # (N, 3)
@@ -145,6 +146,7 @@ class RecedingHorizonEstimator:
             (None, None),
             (None, None),
             (0.0, 1.0),
+            # Do not change the angular traversabiltity parameter if the robot is not commanded to turn.
             (self.prev_m[1], self.prev_m[1]) if freeze_nu else (0.0, 1.0),
             (-np.pi, np.pi),
             # (0, 0),  # Ignore delta theta for now
