@@ -1,3 +1,7 @@
+# This file is used to maintain a fixed mapping between mission names and indices.
+# If new missions are added, they should be appendend to the end of known_missions.
+# TODO: This is a bit janky, remove it.
+
 known_missions = [
     "2024-10-01-11-29-55",
     "2024-10-01-11-47-44",

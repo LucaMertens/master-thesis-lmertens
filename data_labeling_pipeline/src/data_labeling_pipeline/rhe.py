@@ -85,11 +85,11 @@ class RecedingHorizonEstimator:
         """RHE Optimization Formulation (Equation 2).
 
         Args:
-            opt_vars (6 x 1): Optimization variables: x_0, m.
-            U (N x 2): Sequence of commanded inputs: v, omega. Passed via the args tuple.
-            Z (N x 3): Sequence of raw sensor measurements: px, py, theta_true. Passed via the args tuple.
-            x_guess (N x 3): Prior estimate of the initial state: px, py, theta. Passed via the args tuple.
-            m_guess (N x 3): Prior estimate of the parameters: mu, nu, delta_theta. Passed via the args tuple.
+            opt_vars (6,): Optimization variables: x_0, m.
+            U (N, 2): Sequence of commanded inputs: v, omega. Passed via the args tuple.
+            Z (N, 3): Sequence of raw sensor measurements: px, py, theta_true. Passed via the args tuple.
+            x_guess (3,): Prior estimate of the initial state: px, py, theta. Passed via the args tuple.
+            m_guess (3,): Prior estimate of the parameters: mu, nu, delta_theta. Passed via the args tuple.
 
         Returns:
             float: The total optimization cost.
