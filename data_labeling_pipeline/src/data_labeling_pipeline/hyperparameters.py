@@ -18,7 +18,6 @@ Measurement trust
 If high value: Penalize deviating from ground truth
 """
 # P_w = np.diag([2, 2, 1.5])
-# P_w = np.diag([10, 10, 10])
 P_w = np.diag([1, 1, 1])
 
 
@@ -26,4 +25,4 @@ P_w = np.diag([1, 1, 1])
 N = 8
 # Time step (https://github.com/matval/wayfaster/issues/2)
 # dt = 0.5  # seconds
-dt = 0.1  # Sampling time of commands.
+dt = 0.5  # Sampling time of commands.
