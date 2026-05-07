@@ -22,6 +22,6 @@ P_w = np.diag([1, 1, 1])
 
 
 # Horizon length (the same as used in the paper: https://github.com/matval/wayfaster/issues/2)
-N = 8
+N = 40
 # Time step (https://github.com/matval/wayfaster/issues/2)
-dt = 0.5  # seconds
+dt = 0.1  # seconds
