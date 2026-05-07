@@ -23,5 +23,7 @@ P_w = np.diag([1, 1, 1])
 
 # Horizon length (the same as used in the paper: https://github.com/matval/wayfaster/issues/2)
 N = 40
+# Step size used when advancing the receding horizon window.
+STEP_SIZE = max(1, N - 1)
 # Time step (https://github.com/matval/wayfaster/issues/2)
 dt = 0.1  # seconds

@@ -173,7 +173,8 @@ class RecedingHorizonEstimator:
 
         X_optimized = self.simulate(x0_optimized, U, m_optimized)
 
-        self.prev_x = X_optimized[step_size]
+        x_index = step_size if step_size < self.N else step_size - 1
+        self.prev_x = X_optimized[x_index]
         self.prev_m = m_optimized
 
         return X_optimized, m_optimized

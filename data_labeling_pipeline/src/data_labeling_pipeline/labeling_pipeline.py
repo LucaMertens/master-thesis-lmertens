@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 
 from .dataset_loader import GrandTourLoader
-from .hyperparameters import N, P_m, P_w, P_x, dt
+from .hyperparameters import STEP_SIZE, N, P_m, P_w, P_x, dt
 from .rhe import RecedingHorizonEstimator
 
 
@@ -20,6 +20,7 @@ class DataLabelingPipeline:
             f"P_m=\n{P_m}\n"
             f"P_w=\n{P_w}\n"
             f"N={N}\n"
+            f"STEP_SIZE={STEP_SIZE}\n"
             f"dt={dt}"
         )
 
@@ -52,26 +53,24 @@ class DataLabelingPipeline:
         self.rhe.reset()
 
         print("Running Receding Horizon Estimator ...")
-        # step_size = max(1, self.N // 2)
-        step_size = max(1, self.N - 1)
-        for i in range(0, total_steps - self.N + 1, step_size):
+        for i in range(0, total_steps - self.N + 1, STEP_SIZE):
             U_window = U[i : i + self.N]
             Z_window = Z[i : i + self.N]
 
             X_optimized, m_optimized = self.rhe.estimate(
-                U_window, Z_window, step_size=step_size
+                U_window, Z_window, step_size=STEP_SIZE
             )
 
             # Fill the block with the optimized values
-            optimized_states[i : i + step_size] = X_optimized[:step_size]
-            optimized_labels[i : i + step_size] = m_optimized[0:3]
+            optimized_states[i : i + STEP_SIZE] = X_optimized[:STEP_SIZE]
+            optimized_labels[i : i + STEP_SIZE] = m_optimized[0:3]
 
             if i % 100 == 0:
                 print(f"Processed step {i}/{total_steps - self.N}")
 
         # Fill remaining steps if any
-        last_processed_idx = ((total_steps - self.N) // step_size) * step_size
-        remaining_start = last_processed_idx + step_size
+        last_processed_idx = ((total_steps - self.N) // STEP_SIZE) * STEP_SIZE
+        remaining_start = last_processed_idx + STEP_SIZE
         if remaining_start < total_steps:
             remaining_steps = total_steps - remaining_start
             optimized_states[remaining_start:] = X_optimized[-remaining_steps:]
