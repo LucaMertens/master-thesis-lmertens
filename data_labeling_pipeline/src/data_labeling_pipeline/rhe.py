@@ -54,16 +54,16 @@ class RecedingHorizonEstimator:
     def dynamics(self, state, u, m):
         """Discrete Kino-Dynamic System Model (Equation 1)."""
         px, py, theta = state
-        v, omega = u
+        v_cmd, omega_cmd = u
         # delta_theta is an offset to the measured orientation, so we don't need it here.
         mu, nu, delta_theta = m
 
-        px_next = px + mu * np.cos(theta) * v * self.dt
-        py_next = py + mu * np.sin(theta) * v * self.dt
+        px_next = px + mu * np.cos(theta) * v_cmd * self.dt
+        py_next = py + mu * np.sin(theta) * v_cmd * self.dt
         # if np.isclose(omega, 0):
         #     theta_next = theta * nu
         # else:
-        theta_next = theta + nu * omega * self.dt
+        theta_next = theta + nu * omega_cmd * self.dt
 
         return np.array([px_next, py_next, theta_next])
 

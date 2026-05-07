@@ -168,7 +168,9 @@ class GrandTourLoader:
         return get_static_transform(self.load_topic("."), "cpt7_imu", "base")
 
     def map_cpt7_imu_pose_to_base(self, positions, orientations):
-        """Map dynamic poses from ENU->cpt7_imu to ENU->base using static TF."""
+        """Map dynamic poses from ENU->cpt7_imu to ENU->base using static TF.
+        https://github.com/leggedrobotics/grand_tour_dataset/issues/28
+        """
         t_cpt7_imu_to_base = self.get_cpt7_imu_to_base_transform()
         r_cpt7_imu_to_base = Rotation.from_matrix(t_cpt7_imu_to_base[:3, :3])
         t_cpt7_imu_to_base_vec = t_cpt7_imu_to_base[:3, 3]

@@ -10,6 +10,28 @@ The most important files in this module are:
 - [`tests/rhe_qualitative_tests.ipynb`](tests/rhe_qualitative_tests.ipynb): Some debugging visualizations for mocked data. Can be helpful for RHE debugging.
 
 
+## Problems
+
+The forward command is almost always non-zero. The yaw rate command is very often zero. This is an issue for the RHE, because, if the command is zero, the optimizer can choose any value for the angular traversability parameter $\nu$:
+```python
+theta_next = theta + nu * omega_cmd * self.dt
+```
+
+## Rejected approaches
+
+- Assume that, if the angular velocity command is zero, $\nu$ should be equal to 1 (by e.g. adding a cost term that slightly penalizes deviations of $nu$ from 1). This is probably not the best option, because it generates labels for areas where we don't have informative inputs. If the robot walks straight onto slippery ice, forcing $\nu = 1$ teaches the predictor that ice has perfect angular traversability as long as you drive straight, which is physically incorrect.
+- If the angular velocity command in the current window is not higher than a certain threshold, freeze $\nu$ to its value from the previous window. If the robot walks straight for 10 seconds and transitions from asphalt to mud, $\nu$ will be frozen at the asphalt value.
+
+
+## Considered approaches
+
+- Export a confidence score alongside the labels. This could be the mean angular velocity in the window. This should be combined with a different approach, to keep the optimizer from diverging.
+Then, in the neural network training, weight the loss function by this confidence: $Loss = Loss_\mu + w_\nu \cdot Loss_\nu$
+- When the angular traversability is non-zero, rely on the RHE-estimated $\nu$. Else, soft-tie $\nu$ to $\mu$ by penalizing deviations of $\nu$ from $\mu$ in the cost function. This assumes that the angular traversability roughly corresponds to the linear traversability for quadrupeds. To avoid discontinuities in labels (which are hard to learn for NNs), this should probably only be done in cases where there are multiple consecutive zero-yaw commands.
+- Penalize deviations of $\nu$ from its previous label inversely to the angular exitation. This is a continuous version of the hard-freeze approach.
+
+
+
 ## Unclear things
 
 - The paper talks about a $\tilde{x}_k$ (Page 2 --> under Equation 2; or see below) as the "initial estimated state vector". *Initial* probably means the state from the end of the previous optimization window.
