@@ -17,13 +17,13 @@ The forward command is almost always non-zero. The yaw rate command is very ofte
 theta_next = theta + nu * omega_cmd * self.dt
 ```
 
-## Rejected approaches
+### Rejected approaches
 
 - Assume that, if the angular velocity command is zero, $\nu$ should be equal to 1 (by e.g. adding a cost term that slightly penalizes deviations of $nu$ from 1). This is probably not the best option, because it generates labels for areas where we don't have informative inputs. If the robot walks straight onto slippery ice, forcing $\nu = 1$ teaches the predictor that ice has perfect angular traversability as long as you drive straight, which is physically incorrect.
 - If the angular velocity command in the current window is not higher than a certain threshold, freeze $\nu$ to its value from the previous window. If the robot walks straight for 10 seconds and transitions from asphalt to mud, $\nu$ will be frozen at the asphalt value.
 
 
-## Considered approaches
+### Considered approaches
 
 - Export a confidence score alongside the labels. This could be the mean angular velocity in the window. This should be combined with a different approach, to keep the optimizer from diverging.
 Then, in the neural network training, weight the loss function by this confidence: $Loss = Loss_\mu + w_\nu \cdot Loss_\nu$

@@ -1,7 +1,16 @@
 import numpy as np
 from scipy.optimize import minimize
 
-from .hyperparameters import P_m, P_w, P_x
+from .hyperparameters import (
+    P_m,
+    P_w,
+    P_x,
+    lambda_max,
+    v_decay,
+    v_thresh,
+    w_decay,
+    w_thresh,
+)
 
 
 def integrate_route_from_twist(U, dt=0.1, x0=(0.0, 0.0, 0.0)):
@@ -32,24 +41,32 @@ class RecedingHorizonEstimator:
     """
 
     def __init__(
-        self, dt=0.1, N=8, P_x=P_x, P_m=P_m, P_w=P_w, nu_excitation_threshold=0.1
+        self,
+        dt=0.1,
+        N=8,
+        P_x=P_x,
+        P_m=P_m,
+        P_w=P_w,
+        v_thresh=v_thresh,
+        w_thresh=w_thresh,
+        v_decay=v_decay,
+        w_decay=w_decay,
+        lambda_max=lambda_max,
     ):
         self.dt = dt
         self.N = N
-        # self.P_x = np.array(P_x) if P_x is not None else np.diag([1.0, 1.0, 1.0])
-        # self.P_m = np.array(P_m) if P_m is not None else np.diag([1.0, 1.0, 1.0])
-        # self.P_w = np.array(P_w) if P_w is not None else np.diag([1.0, 1.0, 1.0])
         self.P_x = np.array(P_x)
         self.P_m = np.array(P_m)
         self.P_w = np.array(P_w)
 
-        self.nu_excitation_threshold = nu_excitation_threshold
+        self.v_thresh = v_thresh
+        self.w_thresh = w_thresh
+        self.v_decay = v_decay
+        self.w_decay = w_decay
+        self.lambda_max = lambda_max
 
         self.prev_x = None
         self.prev_m = None
-
-    def _has_angular_excitation(self, U: np.ndarray) -> bool:
-        return float(np.max(np.abs(U[:, 1]))) >= self.nu_excitation_threshold
 
     def dynamics(self, state, u, m):
         """Discrete Kino-Dynamic System Model (Equation 1)."""
@@ -120,7 +137,30 @@ class RecedingHorizonEstimator:
 
         cost_measurements = float(np.sum((diff_Z @ self.P_w) * diff_Z))
 
-        return cost_x0 + cost_m + cost_measurements
+        # Calculate average commands
+        v_mean = np.mean(np.abs(U[:, 0]))
+        omega_mean = np.mean(np.abs(U[:, 1]))
+
+        # Calculate confidences for each parameter (1.0 = highly observable)
+        w_mu = min(1.0, v_mean / self.v_thresh)
+        w_nu = min(1.0, omega_mean / self.w_thresh)
+
+        # Calculate tie strengths based on exponential decay
+        lambda_mu = self.lambda_max * np.exp(-v_mean / self.v_decay)
+        lambda_nu = self.lambda_max * np.exp(-omega_mean / self.w_decay)
+
+        # Target for mu: if nu is fully unobservable, w_nu is 0, so the target
+        # defaults to mu_prev. If nu is observable, target becomes nu.
+        target_mu = w_nu * m[1] + (1.0 - w_nu) * m_prev[0]
+        target_nu = w_mu * m[0] + (1.0 - w_mu) * m_prev[1]
+
+        # Cost terms for soft-tying
+        cost_tie_mu = lambda_mu * (m[0] - target_mu) ** 2
+        cost_tie_nu = lambda_nu * (m[1] - target_nu) ** 2
+
+        cost_tie = cost_tie_mu + cost_tie_nu
+
+        return cost_x0 + cost_m + cost_measurements + cost_tie
 
     def estimate(self, U, Z, step_size=1):
         """
@@ -138,16 +178,18 @@ class RecedingHorizonEstimator:
         if self.prev_m is None:
             self.prev_m = np.array([1.0, 1.0, 0.0])
 
-        freeze_nu = not self._has_angular_excitation(U)
-        # freeze_nu = False
+        v_mean = float(np.mean(np.abs(U[:, 0])))
+        omega_mean = float(np.mean(np.abs(U[:, 1])))
+
+        w_mu = min(1.0, v_mean / self.v_thresh)
+        w_nu = min(1.0, omega_mean / self.w_thresh)
 
         bounds = [
             (None, None),
             (None, None),
             (None, None),
             (0.0, 1.0),
-            # Do not change the angular traversabiltity parameter if the robot is not commanded to turn.
-            (self.prev_m[1], self.prev_m[1]) if freeze_nu else (0.0, 1.0),
+            (0.0, 1.0),
             (-np.pi, np.pi),
             # (0, 0),  # Ignore delta theta for now
         ]
@@ -167,17 +209,13 @@ class RecedingHorizonEstimator:
         x0_optimized = optimized_vars[0:3]
         m_optimized = optimized_vars[3:6]
 
-        if freeze_nu:
-            m_optimized = m_optimized.copy()
-            m_optimized[1] = self.prev_m[1]
-
         X_optimized = self.simulate(x0_optimized, U, m_optimized)
 
         x_index = step_size if step_size < self.N else step_size - 1
         self.prev_x = X_optimized[x_index]
         self.prev_m = m_optimized
 
-        return X_optimized, m_optimized
+        return X_optimized, m_optimized, w_mu, w_nu
 
     def reset(self):
         """Reset the estimator state to be able to start a new mission."""
