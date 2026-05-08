@@ -137,28 +137,20 @@ class RecedingHorizonEstimator:
 
         cost_measurements = float(np.sum((diff_Z @ self.P_w) * diff_Z))
 
-        # Calculate average commands
         v_mean = np.mean(np.abs(U[:, 0]))
         omega_mean = np.mean(np.abs(U[:, 1]))
 
-        # Calculate confidences for each parameter (1.0 = highly observable)
+        # Confidence in each parameter
         w_mu = min(1.0, v_mean / self.v_thresh)
         w_nu = min(1.0, omega_mean / self.w_thresh)
 
-        # Calculate tie strengths based on exponential decay
+        # Coupling strength: peaks when one param is observable and the other isn't
         lambda_mu = self.lambda_max * np.exp(-v_mean / self.v_decay)
         lambda_nu = self.lambda_max * np.exp(-omega_mean / self.w_decay)
 
-        # Target for mu: if nu is fully unobservable, w_nu is 0, so the target
-        # defaults to mu_prev. If nu is observable, target becomes nu.
-        target_mu = w_nu * m[1] + (1.0 - w_nu) * m_prev[0]
-        target_nu = w_mu * m[0] + (1.0 - w_mu) * m_prev[1]
-
-        # Cost terms for soft-tying
-        cost_tie_mu = lambda_mu * (m[0] - target_mu) ** 2
-        cost_tie_nu = lambda_nu * (m[1] - target_nu) ** 2
-
-        cost_tie = cost_tie_mu + cost_tie_nu
+        # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap)
+        coupling_strength = lambda_mu * w_nu**2 + lambda_nu * w_mu**2
+        cost_tie = coupling_strength * (m[0] - m[1]) ** 2
 
         return cost_x0 + cost_m + cost_measurements + cost_tie
 
