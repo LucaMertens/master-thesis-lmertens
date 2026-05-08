@@ -26,22 +26,15 @@ N = 10
 STEP_SIZE = max(1, N - 1)
 
 """Time step (https://github.com/matval/wayfaster/issues/2)"""
-dt = 0.1  # seconds
-
+dt = 0.1
 
 #### Tying logic
 
-"""Linear velocity confidence threshold"""
+"""Linear velocity confidence threshold (if the linear velocity command is at v_thresh, our confidence in mu is ~99%)."""
 v_thresh = 0.1
 
-"""Angular velocity confidence threshold"""
+"""Angular velocity confidence threshold (if the angular velocity command is at w_thresh, nu is ~99%)."""
 w_thresh = 0.1
 
-"""Exponential decay for linear velocity tie strength"""
-v_decay = 0.01
-
-"""Exponential decay for angular velocity tie strength"""
-w_decay = 0.01
-
-"""Maximum tie strength"""
-lambda_max = 9
+"""Maximum tie strength (how important the tying is, compared to P_m and P_x)."""
+lambda_max = 2

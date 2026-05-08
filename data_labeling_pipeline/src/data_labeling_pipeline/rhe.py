@@ -6,9 +6,7 @@ from .hyperparameters import (
     P_w,
     P_x,
     lambda_max,
-    v_decay,
     v_thresh,
-    w_decay,
     w_thresh,
 )
 
@@ -49,8 +47,6 @@ class RecedingHorizonEstimator:
         P_w=P_w,
         v_thresh=v_thresh,
         w_thresh=w_thresh,
-        v_decay=v_decay,
-        w_decay=w_decay,
         lambda_max=lambda_max,
     ):
         self.dt = dt
@@ -61,8 +57,6 @@ class RecedingHorizonEstimator:
 
         self.v_thresh = v_thresh
         self.w_thresh = w_thresh
-        self.v_decay = v_decay
-        self.w_decay = w_decay
         self.lambda_max = lambda_max
 
         self.prev_x = None
@@ -140,16 +134,14 @@ class RecedingHorizonEstimator:
         v_mean = np.mean(np.abs(U[:, 0]))
         omega_mean = np.mean(np.abs(U[:, 1]))
 
-        # Confidence in each parameter
-        w_mu = min(1.0, v_mean / self.v_thresh)
-        w_nu = min(1.0, omega_mean / self.w_thresh)
+        # Confidence in each parameter follows an exponential ramp.
+        # We use a multiplier of 5.0 so that confidence reaches ~99.3% at the threshold.
+        w_mu = 1.0 - np.exp(-5.0 * v_mean / self.v_thresh)
+        w_nu = 1.0 - np.exp(-5.0 * omega_mean / self.w_thresh)
 
-        # Coupling strength: peaks when one param is observable and the other isn't
-        lambda_mu = self.lambda_max * np.exp(-v_mean / self.v_decay)
-        lambda_nu = self.lambda_max * np.exp(-omega_mean / self.w_decay)
-
-        # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap)
-        coupling_strength = lambda_mu * w_nu**2 + lambda_nu * w_mu**2
+        # Coupling strength peaks when one parameter is observable and the other isn't.
+        # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap).
+        coupling_strength = self.lambda_max * ((1.0 - w_mu) * w_nu**2 + (1.0 - w_nu) * w_mu**2)
         cost_tie = coupling_strength * (m[0] - m[1]) ** 2
 
         return cost_x0 + cost_m + cost_measurements + cost_tie
@@ -173,8 +165,8 @@ class RecedingHorizonEstimator:
         v_mean = float(np.mean(np.abs(U[:, 0])))
         omega_mean = float(np.mean(np.abs(U[:, 1])))
 
-        w_mu = min(1.0, v_mean / self.v_thresh)
-        w_nu = min(1.0, omega_mean / self.w_thresh)
+        w_mu = 1.0 - np.exp(-5.0 * v_mean / self.v_thresh)
+        w_nu = 1.0 - np.exp(-5.0 * omega_mean / self.w_thresh)
 
         bounds = [
             (None, None),
