@@ -37,4 +37,4 @@ v_thresh = 0.1
 w_thresh = 0.1
 
 """Maximum tie strength (how important the tying is, compared to P_m and P_x)."""
-lambda_max = 2
+max_tie_strengh = 1

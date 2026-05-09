@@ -5,7 +5,7 @@ from .hyperparameters import (
     P_m,
     P_w,
     P_x,
-    lambda_max,
+    max_tie_strengh,
     v_thresh,
     w_thresh,
 )
@@ -47,7 +47,7 @@ class RecedingHorizonEstimator:
         P_w=P_w,
         v_thresh=v_thresh,
         w_thresh=w_thresh,
-        lambda_max=lambda_max,
+        max_tie_strengh=max_tie_strengh,
     ):
         self.dt = dt
         self.N = N
@@ -57,7 +57,7 @@ class RecedingHorizonEstimator:
 
         self.v_thresh = v_thresh
         self.w_thresh = w_thresh
-        self.lambda_max = lambda_max
+        self.max_tie_strengh = max_tie_strengh
 
         self.prev_x = None
         self.prev_m = None
@@ -141,7 +141,9 @@ class RecedingHorizonEstimator:
 
         # Coupling strength peaks when one parameter is observable and the other isn't.
         # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap).
-        coupling_strength = self.lambda_max * ((1.0 - w_mu) * w_nu**2 + (1.0 - w_nu) * w_mu**2)
+        coupling_strength = self.max_tie_strengh * (
+            (1.0 - w_mu) * w_nu**2 + (1.0 - w_nu) * w_mu**2
+        )
         cost_tie = coupling_strength * (m[0] - m[1]) ** 2
 
         return cost_x0 + cost_m + cost_measurements + cost_tie
