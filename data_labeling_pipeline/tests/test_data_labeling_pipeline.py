@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from data_labeling_pipeline.dataset_loader import (
     fill_command_gaps_with_zero_commands,
     quaternions_to_yaws,
@@ -6,27 +7,21 @@ from data_labeling_pipeline.dataset_loader import (
 from scipy.spatial.transform import Rotation
 
 
-def test_quaternions_to_yaws():
-    # Test with known quaternions and expected yaw angles
-    quaternions_wxyz = [
-        # No rotation -> yaw = 0
-        [1, 0, 0, 0],
-        # 90 deg around Z -> yaw = 90
-        Rotation.from_euler("z", 90, degrees=True).as_quat(scalar_first=True),
-        # -90 deg around Z -> yaw = -90
-        Rotation.from_euler("z", -90, degrees=True).as_quat(scalar_first=True),
-        # 45 deg around Z -> yaw = 45
-        Rotation.from_euler("z", 45, degrees=True).as_quat(scalar_first=True),
-    ]
-
-    expected_yaws = [0, np.pi / 2, -np.pi / 2, np.pi / 4]
-
-    computed_yaws = quaternions_to_yaws(quaternions_wxyz, scalar_first=True)
-
-    assert np.allclose(computed_yaws, expected_yaws, atol=1e-4), (
-        f"Failed: expected {expected_yaws}, got {computed_yaws}"
+@pytest.mark.parametrize(
+    ("yaw_deg", "expected_yaw"),
+    [
+        (0.0, 0.0),
+        (90.0, np.pi / 2),
+        (-90.0, -np.pi / 2),
+        (45.0, np.pi / 4),
+    ],
+)
+def test_quaternions_to_yaws(yaw_deg, expected_yaw):
+    quat_wxyz = Rotation.from_euler("z", yaw_deg, degrees=True).as_quat(
+        scalar_first=True
     )
-    print("Test passed: Quaternion to yaw conversion is correct.")
+    computed = quaternions_to_yaws([quat_wxyz], scalar_first=True)
+    assert computed == pytest.approx([expected_yaw], abs=1e-4)
 
 
 def test_fill_command_gaps_with_zero_commands_inserts_missing_samples():

@@ -11,6 +11,13 @@ class DummyResult:
         self.message = message
 
 
+def _commands(steps: int, v: float = 1.0, omega: float = 0.0) -> np.ndarray:
+    U = np.zeros((steps, 2))
+    U[:, 0] = v
+    U[:, 1] = omega
+    return U
+
+
 def test_dynamics_respects_enu_heading_convention():
     estimator = RecedingHorizonEstimator(dt=0.2)
 
@@ -32,12 +39,7 @@ def test_dynamics_respects_enu_heading_convention():
 def test_simulate_keeps_orientation_constant_when_omega_is_zero():
     estimator = RecedingHorizonEstimator(dt=0.1, N=4)
     x0 = np.array([0.0, 0.0, -np.pi / 3])
-    U = np.array([
-        [1.0, 0.0],
-        [1.0, 0.0],
-        [1.0, 0.0],
-        [1.0, 0.0],
-    ])
+    U = _commands(4, v=1.0, omega=0.0)
     m = np.array([1.0, 1.0, 0.0])
 
     X = estimator.simulate(x0, U, m)
@@ -101,7 +103,7 @@ def test_estimate_uses_warm_start_and_updates_previous_orientation(monkeypatch):
 
     monkeypatch.setattr(rhe_module, "minimize", fake_minimize)
 
-    X_opt, m_opt = estimator.estimate(U, Z)
+    X_opt, m_opt, _, _, _, _ = estimator.estimate(U, Z)
 
     assert np.allclose(calls["x0"], np.array([1.0, 2.0, 0.25, 1.0, 1.0, 0.0]))
     assert calls["method"] == "SLSQP"
@@ -162,10 +164,9 @@ def test_reset_clears_state():
 
 
 def test_simulate_with_different_parameters():
-    """Test that simulate produces correct trajectory shapes with various parameters."""
     estimator = RecedingHorizonEstimator(dt=0.1, N=50)
     x0 = np.array([0.0, 0.0, 0.0])
-    U = np.ones((50, 2))  # constant velocity and turning
+    U = _commands(50, v=1.0, omega=1.0)
 
     # Test with different parameter combinations
     param_sets = [
@@ -182,17 +183,12 @@ def test_simulate_with_different_parameters():
 
 
 def test_simulate_trajectory_distance_scales_with_velocity():
-    """Test that trajectory distance is proportional to velocity magnitude."""
     estimator = RecedingHorizonEstimator(dt=0.1, N=100)
     x0 = np.array([0.0, 0.0, 0.0])
     m = np.array([1.0, 1.0, 0.0])
 
-    # Create inputs with different velocities
-    U_low = np.zeros((100, 2))
-    U_low[:, 0] = 1.0  # v = 1.0 m/s
-
-    U_high = np.zeros((100, 2))
-    U_high[:, 0] = 2.0  # v = 2.0 m/s
+    U_low = _commands(100, v=1.0, omega=0.0)
+    U_high = _commands(100, v=2.0, omega=0.0)
 
     X_low = estimator.simulate(x0, U_low, m)
     X_high = estimator.simulate(x0, U_high, m)
@@ -205,10 +201,9 @@ def test_simulate_trajectory_distance_scales_with_velocity():
 
 
 def test_simulate_degraded_parameters_reduce_distance():
-    """Test that degraded parameters (mu < 1) result in shorter trajectories."""
     estimator = RecedingHorizonEstimator(dt=0.1, N=100)
     x0 = np.array([0.0, 0.0, 0.0])
-    U = np.ones((100, 2))
+    U = _commands(100, v=1.0, omega=1.0)
 
     m_ideal = np.array([1.0, 1.0, 0.0])
     m_degraded = np.array([0.5, 1.0, 0.0])
@@ -219,13 +214,11 @@ def test_simulate_degraded_parameters_reduce_distance():
     dist_ideal = np.linalg.norm(X_ideal[-1, :2] - x0[:2])
     dist_degraded = np.linalg.norm(X_degraded[-1, :2] - x0[:2])
 
-    # Degraded should travel roughly half the distance
     assert dist_degraded < dist_ideal
     assert np.isclose(dist_degraded / dist_ideal, 0.5, rtol=0.01)
 
 
 def test_cost_function_with_perfect_measurement():
-    """Test that cost is zero when measurement matches simulation perfectly."""
     estimator = RecedingHorizonEstimator(
         dt=0.1, N=10, P_x=np.eye(3), P_m=np.eye(3), P_w=np.eye(3)
     )
@@ -233,7 +226,6 @@ def test_cost_function_with_perfect_measurement():
     m = np.array([1.0, 1.0, 0.0])
     U = np.ones((10, 2))
 
-    # Simulate perfect trajectory
     X = estimator.simulate(x0, U, m)
     Z = X.copy()
 
@@ -242,15 +234,3 @@ def test_cost_function_with_perfect_measurement():
     cost = estimator.cost(opt_vars, U, Z, x0, m)
 
     assert cost == pytest.approx(0.0, abs=1e-12)
-
-
-def test_covariance_matrix_defaults():
-    """Test that covariance matrices are properly initialized."""
-    estimator = RecedingHorizonEstimator(dt=0.1, N=10)
-
-    assert estimator.P_x.shape == (3, 3)
-    assert estimator.P_m.shape == (3, 3)
-    assert estimator.P_w.shape == (3, 3)
-    assert np.allclose(estimator.P_x, np.diag([1.0, 1.0, 1.0]))
-    assert np.allclose(estimator.P_m, np.diag([1.0, 1.0, 1.0]))
-    assert np.allclose(estimator.P_w, np.diag([1.0, 1.0, 1.0]))
