@@ -5,20 +5,20 @@ Previous state deviation weights
 We estimate the first state of the current window twice: once as the last state of the previous window, and once as the first state of the current window.
 This term penalizes deviation between these two, encouraging smoothness.
 """
-P_x = np.diag([2, 2, 1])
+P_x = np.diag([1.5, 1.5, 1])
 
 """
 Parameter deviation ^ (m_i - m_{i-1})
 Controls how much estimated parameters can change between windows.
 Linear traversability labels (m[0], m[1]) are allowed to change more than delta_theta, which should be more stable.
 """
-P_m = np.diag([0.25, 0.25, 1.5])
+P_m = np.diag([0.2, 0.2, 1.5])
 
 """
 Ground truth deviation weights
 How much to penalize deviation from ground truth.
 """
-P_w = np.diag([0.5, 0.5, 1])
+P_w = np.diag([1.2, 1.2, 1])
 
 
 """Horizon length (the same as used in the paper: https://github.com/matval/wayfaster/issues/2)"""

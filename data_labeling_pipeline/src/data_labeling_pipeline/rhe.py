@@ -197,11 +197,10 @@ class RecedingHorizonEstimator:
 
         X_optimized = self.simulate(x0_optimized, U, m_optimized)
 
-        x_index = step_size if step_size < self.N else step_size - 1
-        self.prev_x = X_optimized[x_index]
+        self.prev_x = X_optimized[step_size]
         self.prev_m = m_optimized
 
-        return X_optimized, m_optimized, w_mu, w_nu
+        return X_optimized, m_optimized, w_mu, w_nu, v_mean, omega_mean
 
     def reset(self):
         """Reset the estimator state to be able to start a new mission."""

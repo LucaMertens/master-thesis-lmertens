@@ -210,3 +210,5 @@ __marimo__/
 .github
 *.mp4
 *.npy
+data_labeling_pipeline/output
+data_labeling_pipeline/tests/benchmark_results
