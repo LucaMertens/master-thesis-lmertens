@@ -3,10 +3,8 @@ name = "data_labeling_pipeline"
 version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
-    "zarr==3.*",
     "jupyter",
     "pathlib",
-    "huggingface_hub",
     "matplotlib",
     "numpy",
     "scipy",
@@ -14,6 +12,8 @@ dependencies = [
     "shared-utils",
     "imageio>=2.37.3",
     "imageio-ffmpeg>=0.6.0",
+    "kleinkram>=0.59.0",
+    "rosbags>=0.11.2",
 ]
 
 [build-system]

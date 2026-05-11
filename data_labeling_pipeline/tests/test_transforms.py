@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import pytest
-import zarr
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
-from data_labeling_pipeline.zarr_transforms import get_static_transform
+from data_labeling_pipeline.ros1_transforms import get_static_transform
 from scipy.spatial.transform import Rotation as R
 
 
@@ -13,7 +12,7 @@ def _wrap_deg(angle: float) -> float:
 
 @pytest.fixture
 def sample_mission_path():
-    return Path("/datahome/lmertens/grand_tour_dataset/2024-10-01-11-29-55/data")
+    return Path("/datahome/lmertens/grand_tour_dataset/ros1/ETH-1")
 
 
 def test_cpt7_yaw_inversion_via_transforms(sample_mission_path):
@@ -21,12 +20,11 @@ def test_cpt7_yaw_inversion_via_transforms(sample_mission_path):
     Sanity check to prove that applying the explicit SE(3) transform
     T_cpt7_to_base correctly accounts for the 'yaw negation' issue.
     """
-    try:
-        tf_group = zarr.open(str(sample_mission_path / "tf"), mode="r")
-    except Exception:
+    tf_bags = list(sample_mission_path.glob("*tf*.bag"))
+    if not tf_bags:
         pytest.skip(f"Reference dataset not available at {sample_mission_path}")
 
-    T_cpt7_to_base = get_static_transform({"tf": tf_group}, "cpt7_imu", "base")
+    T_cpt7_to_base = get_static_transform(sample_mission_path, "cpt7_imu", "base")
     rotation_cpt7_to_base = T_cpt7_to_base[:3, :3]
 
     cpt7_yaw_deg = 30.0
@@ -41,7 +39,7 @@ def test_cpt7_yaw_inversion_via_transforms(sample_mission_path):
 
 
 def test_loader_correctly_parses_real_sample(sample_mission_path):
-    mission_path = sample_mission_path.parent
+    mission_path = sample_mission_path
     if not mission_path.exists():
         pytest.skip("Reference dataset missing.")
 

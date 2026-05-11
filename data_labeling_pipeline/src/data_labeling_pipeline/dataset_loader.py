@@ -1,10 +1,10 @@
 import pathlib
 
 import numpy as np
-import zarr
 from scipy.spatial.transform import Rotation
 
-from .zarr_transforms import get_static_transform
+from .grandtour_missions import get_mission_by_shortname
+from .ros1_transforms import get_static_transform
 
 TIME_RANGE_WARNING_THRESHOLD = 1.0  # seconds
 
@@ -127,29 +127,55 @@ def fill_command_gaps_with_zero_commands(
 class GrandTourLoader:
     def __init__(self, mission_path, scalar_first_quaternions=False):
         self.mission_path = pathlib.Path(mission_path)
-        self.data_path = self.mission_path / "data"
+        self.mission_shortname = self.mission_path.name
+        try:
+            mission_info = get_mission_by_shortname(self.mission_shortname)
+            self.mission_timestamp = mission_info["timestamp"]
+        except ValueError:
+            self.mission_timestamp = self.mission_shortname
+            print(
+                f"Warning: Could not find shortname {self.mission_shortname}, assuming it is a timestamp."
+            )
+
         # We are not entirely sure whether quaternions are stored as (w, x, y, z) or (x, y, z, w), but most likely scalar_last (x, y, z, w).
         self.scalar_first_quaternions = scalar_first_quaternions
 
-    def load_topic(self, topic_name):
-        """Loads a given zarr topic group and returns its arrays."""
-        topic_path = self.data_path / topic_name
-        if not topic_path.exists():
-            raise FileNotFoundError(f"Topic not found: {topic_path}")
-        return zarr.open(str(topic_path), mode="r")
+        from rosbags.typesys import Stores, get_typestore
 
-    def load_subtopic(self, topic_name, subtopic_name):
-        """Loads a leaf subtopic array from a topic group."""
-        topic = self.load_topic(topic_name)
-        if subtopic_name not in topic:
-            raise KeyError(f"Subtopic not found: {topic_name}/{subtopic_name}")
-        return np.asarray(topic[subtopic_name])
+        self.typestore = get_typestore(Stores.ROS1_NOETIC)
 
     def load_commands(self, fill_gaps=True):
-        # Load command data (U = [v_k, omega_k]). Frame: body
-        cmd_ts = np.asarray(self.load_subtopic("anymal_command_twist", "timestamp"))
-        cmd_linear = self.load_subtopic("anymal_command_twist", "linear")
-        cmd_angular = self.load_subtopic("anymal_command_twist", "angular")
+        from rosbags.rosbag1 import Reader
+
+        bag_name = f"{self.mission_timestamp}_anymal_command.bag"
+        bag_path = self.mission_path / bag_name
+        if not bag_path.exists():
+            raise FileNotFoundError(f"Command bag not found: {bag_path}")
+
+        timestamps = []
+        linear = []
+        angular = []
+
+        with Reader(bag_path) as reader:
+            connections = [x for x in reader.connections if x.topic == "/anymal/twist_command"]
+            for connection, timestamp, rawdata in reader.messages(connections=connections):
+                msg = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
+                ts = timestamp * 1e-9
+                timestamps.append(ts)
+                linear.append([
+                    msg.twist.linear.x,
+                    msg.twist.linear.y,
+                    msg.twist.linear.z,
+                ])
+                angular.append([
+                    msg.twist.angular.x,
+                    msg.twist.angular.y,
+                    msg.twist.angular.z,
+                ])
+
+        cmd_ts = np.array(timestamps)
+        cmd_linear = np.array(linear)
+        cmd_angular = np.array(angular)
 
         if fill_gaps:
             cmd_ts, cmd_linear, cmd_angular = fill_command_gaps_with_zero_commands(
@@ -158,14 +184,32 @@ class GrandTourLoader:
         return cmd_ts, cmd_linear, cmd_angular
 
     def load_odometry(self):
-        # Load odometry data. Frame: ENU-origin (world-ish, origin is where the robot started)
-        odom_ts = np.asarray(self.load_subtopic("cpt7_ie_tc_odometry", "timestamp"))
-        odom_pos = self.load_subtopic("cpt7_ie_tc_odometry", "pose_pos")
-        odom_orien = self.load_subtopic("cpt7_ie_tc_odometry", "pose_orien")
-        return odom_ts, odom_pos, odom_orien
+        from rosbags.rosbag1 import Reader
+
+        bag_name = f"{self.mission_timestamp}_cpt7_ie_tc.bag"
+        bag_path = self.mission_path / bag_name
+        if not bag_path.exists():
+            raise FileNotFoundError(f"Odometry bag not found: {bag_path}")
+
+        timestamps = []
+        positions = []
+        orientations = []
+
+        with Reader(bag_path) as reader:
+            connections = [x for x in reader.connections if x.topic == "/boxi/inertial_explorer/tc/odometry"]
+            for connection, timestamp, rawdata in reader.messages(connections=connections):
+                msg = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
+                ts = timestamp * 1e-9
+                timestamps.append(ts)
+                p = msg.pose.pose.position
+                q = msg.pose.pose.orientation
+                positions.append([p.x, p.y, p.z])
+                orientations.append([q.x, q.y, q.z, q.w])
+
+        return np.array(timestamps), np.array(positions), np.array(orientations)
 
     def get_cpt7_imu_to_base_transform(self):
-        return get_static_transform(self.load_topic("."), "cpt7_imu", "base")
+        return get_static_transform(self.mission_path, "cpt7_imu", "base")
 
     def map_cpt7_imu_pose_to_base(self, positions, orientations):
         """Map dynamic poses from ENU->cpt7_imu to ENU->base using static TF.
@@ -218,3 +262,21 @@ class GrandTourLoader:
         Z = np.column_stack((px_shared, py_shared, odom_yaw_shared))
 
         return shared_ts, U, Z
+
+    def load_image_timestamps(self, topic_name="zed2i_right_images"):
+        from rosbags.rosbag1 import Reader
+
+        bag_name = f"{self.mission_timestamp}_{topic_name}.bag"
+        bag_path = self.mission_path / bag_name
+        if not bag_path.exists():
+            raise FileNotFoundError(f"Image bag not found: {bag_path}")
+
+        timestamps = []
+        with Reader(bag_path) as reader:
+            # We want any topic that ends with topic_name, e.g. /zed2i/right/image_rect_color/compressed
+            connections = [x for x in reader.connections if topic_name in x.topic]
+            for connection, timestamp, rawdata in reader.messages(connections=connections):
+                ts = timestamp * 1e-9
+                timestamps.append(ts)
+
+        return np.array(timestamps)

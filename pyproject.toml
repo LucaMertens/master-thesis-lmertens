@@ -16,4 +16,9 @@ shared-utils = { workspace = true }
 
 
 [dependency-groups]
-dev = ["ruff", "pytest>=8.0", "pytest-cov"]
+dev = [
+    "ruff",
+    "pytest>=8.0",
+    "pytest-cov",
+    "trustcheck>=1.8.0",
+]
