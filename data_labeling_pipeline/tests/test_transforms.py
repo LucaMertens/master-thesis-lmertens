@@ -25,7 +25,7 @@ def test_cpt7_yaw_inversion_via_transforms(sample_mission_path):
         pytest.skip(f"Reference dataset not available at {sample_mission_path}")
 
     T_cpt7_to_base = get_static_transform(sample_mission_path, "cpt7_imu", "base")
-    rotation_cpt7_to_base = T_cpt7_to_base[:3, :3]
+    rotation_cpt7_to_base = T_cpt7_to_base.rotation.as_matrix()
 
     cpt7_yaw_deg = 30.0
     rotation_cpt7 = R.from_euler("zyx", [cpt7_yaw_deg, 0, 0], degrees=True).as_matrix()

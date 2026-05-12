@@ -17,10 +17,8 @@ from scipy.spatial.transform import Rotation
     ],
 )
 def test_quaternions_to_yaws(yaw_deg, expected_yaw):
-    quat_wxyz = Rotation.from_euler("z", yaw_deg, degrees=True).as_quat(
-        scalar_first=True
-    )
-    computed = quaternions_to_yaws([quat_wxyz], scalar_first=True)
+    quat_xyzw = Rotation.from_euler("z", yaw_deg, degrees=True).as_quat()
+    computed = quaternions_to_yaws([quat_xyzw])
     assert computed == pytest.approx([expected_yaw], abs=1e-4)
 
 

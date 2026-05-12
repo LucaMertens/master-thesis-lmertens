@@ -1,6 +1,9 @@
 import pathlib
+from typing import Any
 
 import numpy as np
+from rosbags.rosbag1 import Reader
+from rosbags.typesys import Stores, get_typestore
 from scipy.spatial.transform import Rotation
 
 from .grandtour_missions import get_mission_by_shortname
@@ -27,7 +30,7 @@ def get_shared_timestamps(tstamps1, tstamps2, dt):
         or end_difference > TIME_RANGE_WARNING_THRESHOLD
     ):
         print(
-            "Warning: Time ranges of datasets do not sufficiently overlap. "
+            "Warning: Time ranges of datasets do not completely overlap. "
             f"Start time difference: {start_difference:.2f}s ({start1} vs {start2}), End time difference: {end_difference:.2f}s ({end1} vs {end2})"
         )
 
@@ -37,15 +40,13 @@ def get_shared_timestamps(tstamps1, tstamps2, dt):
     return np.arange(start_time, end_time, dt)
 
 
-def quaternions_to_yaws(quaternions, scalar_first=False):
-    """Convert quaternions stored as [w, x, y, z] (scalar_first) or [x, y, z, w] (scalar_last) o yaw angles (degrees)."""
+def quaternions_to_yaws(quaternions):
+    """Convert quaternions stored as [x, y, z, w] to yaw angles (radians)."""
     quaternions = np.asarray(quaternions)
     if quaternions.ndim != 2 or quaternions.shape[1] != 4:
         raise ValueError("Quaternion array must have shape (N, 4).")
 
-    print("Using scalar_first =", scalar_first, "for quaternion to yaw conversion.")
-
-    rotation = Rotation.from_quat(quaternions, scalar_first=scalar_first)
+    rotation = Rotation.from_quat(quaternions, scalar_first=False)
 
     return rotation.as_euler("zyx", degrees=False)[:, 0]
 
@@ -53,6 +54,32 @@ def quaternions_to_yaws(quaternions, scalar_first=False):
 def interpolate_unwrapped_angles(timestamps, angles, shared_timestamps):
     """Interpolate angles after unwrapping to avoid discontinuities at +/- pi."""
     return np.interp(shared_timestamps, timestamps, np.unwrap(angles))
+
+
+def _topic_messages(bag_path, topic_name, *, exact_match=True):
+    bag_path = pathlib.Path(bag_path)
+
+    with Reader(bag_path) as reader:
+        if exact_match:
+            connections = [x for x in reader.connections if x.topic == topic_name]
+        else:
+            connections = [x for x in reader.connections if topic_name in x.topic]
+
+        if not connections:
+            available_topics = [x.topic for x in reader.connections]
+            raise ValueError(
+                f"Topic '{topic_name}' not found in bag {bag_path}. "
+                f"Available topics: {available_topics}"
+            )
+
+        messages = reader.messages(connections)
+
+    if not messages:
+        raise ValueError(
+            f"No messages found for topic '{topic_name}' in bag {bag_path}"
+        )
+
+    return messages
 
 
 def fill_command_gaps_with_zero_commands(
@@ -125,7 +152,7 @@ def fill_command_gaps_with_zero_commands(
 
 
 class GrandTourLoader:
-    def __init__(self, mission_path, scalar_first_quaternions=False):
+    def __init__(self, mission_path):
         self.mission_path = pathlib.Path(mission_path)
         self.mission_shortname = self.mission_path.name
         try:
@@ -137,16 +164,9 @@ class GrandTourLoader:
                 f"Warning: Could not find shortname {self.mission_shortname}, assuming it is a timestamp."
             )
 
-        # We are not entirely sure whether quaternions are stored as (w, x, y, z) or (x, y, z, w), but most likely scalar_last (x, y, z, w).
-        self.scalar_first_quaternions = scalar_first_quaternions
-
-        from rosbags.typesys import Stores, get_typestore
-
         self.typestore = get_typestore(Stores.ROS1_NOETIC)
 
     def load_commands(self, fill_gaps=True):
-        from rosbags.rosbag1 import Reader
-
         bag_name = f"{self.mission_timestamp}_anymal_command.bag"
         bag_path = self.mission_path / bag_name
         if not bag_path.exists():
@@ -156,22 +176,21 @@ class GrandTourLoader:
         linear = []
         angular = []
 
-        with Reader(bag_path) as reader:
-            connections = [x for x in reader.connections if x.topic == "/anymal/twist_command"]
-            for connection, timestamp, rawdata in reader.messages(connections=connections):
-                msg = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
-                ts = timestamp * 1e-9
-                timestamps.append(ts)
-                linear.append([
-                    msg.twist.linear.x,
-                    msg.twist.linear.y,
-                    msg.twist.linear.z,
-                ])
-                angular.append([
-                    msg.twist.angular.x,
-                    msg.twist.angular.y,
-                    msg.twist.angular.z,
-                ])
+        messages = _topic_messages(bag_path, "/anymal/twist_command")
+        for connection, timestamp, rawdata in messages:
+            msg: Any = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
+            ts = timestamp * 1e-9
+            timestamps.append(ts)
+            linear.append([
+                msg.twist.linear.x,
+                msg.twist.linear.y,
+                msg.twist.linear.z,
+            ])
+            angular.append([
+                msg.twist.angular.x,
+                msg.twist.angular.y,
+                msg.twist.angular.z,
+            ])
 
         cmd_ts = np.array(timestamps)
         cmd_linear = np.array(linear)
@@ -184,8 +203,6 @@ class GrandTourLoader:
         return cmd_ts, cmd_linear, cmd_angular
 
     def load_odometry(self):
-        from rosbags.rosbag1 import Reader
-
         bag_name = f"{self.mission_timestamp}_cpt7_ie_tc.bag"
         bag_path = self.mission_path / bag_name
         if not bag_path.exists():
@@ -195,37 +212,29 @@ class GrandTourLoader:
         positions = []
         orientations = []
 
-        with Reader(bag_path) as reader:
-            connections = [x for x in reader.connections if x.topic == "/boxi/inertial_explorer/tc/odometry"]
-            for connection, timestamp, rawdata in reader.messages(connections=connections):
-                msg = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
-                ts = timestamp * 1e-9
-                timestamps.append(ts)
-                p = msg.pose.pose.position
-                q = msg.pose.pose.orientation
-                positions.append([p.x, p.y, p.z])
-                orientations.append([q.x, q.y, q.z, q.w])
+        odom_topic = "/boxi/inertial_explorer/tc/odometry"
+        messages = _topic_messages(bag_path, odom_topic)
+        for connection, timestamp, rawdata in messages:
+            msg: Any = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
+            ts = timestamp * 1e-9
+            timestamps.append(ts)
+            p = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            positions.append([p.x, p.y, p.z])
+            orientations.append([q.x, q.y, q.z, q.w])
 
-        return np.array(timestamps), np.array(positions), np.array(orientations)
+        odom_ts = np.array(timestamps)
+        odom_pos = np.array(positions)
+        odom_orien = np.array(orientations)
 
-    def get_cpt7_imu_to_base_transform(self):
-        return get_static_transform(self.mission_path, "cpt7_imu", "base")
+        return odom_ts, odom_pos, odom_orien
 
     def map_cpt7_imu_pose_to_base(self, positions, orientations):
         """Map dynamic poses from ENU->cpt7_imu to ENU->base using static TF.
         https://github.com/leggedrobotics/grand_tour_dataset/issues/28
         """
-        t_cpt7_imu_to_base = self.get_cpt7_imu_to_base_transform()
-        r_cpt7_imu_to_base = Rotation.from_matrix(t_cpt7_imu_to_base[:3, :3])
-        t_cpt7_imu_to_base_vec = t_cpt7_imu_to_base[:3, 3]
-
-        r_enu_to_cpt7_imu = Rotation.from_quat(
-            orientations, scalar_first=self.scalar_first_quaternions
-        )
-        r_enu_to_base = r_enu_to_cpt7_imu * r_cpt7_imu_to_base
-        p_enu_to_base = positions + r_enu_to_cpt7_imu.apply(t_cpt7_imu_to_base_vec)
-
-        return p_enu_to_base, r_enu_to_base
+        t_cpt7_imu_to_base = get_static_transform(self.mission_path, "cpt7_imu", "base")
+        return t_cpt7_imu_to_base.apply_to_poses(positions, orientations)
 
     def load_data_shared_timestamps(self, dt=0.1, fill_gaps=True):
         """
@@ -264,19 +273,16 @@ class GrandTourLoader:
         return shared_ts, U, Z
 
     def load_image_timestamps(self, topic_name="zed2i_right_images"):
-        from rosbags.rosbag1 import Reader
-
         bag_name = f"{self.mission_timestamp}_{topic_name}.bag"
         bag_path = self.mission_path / bag_name
         if not bag_path.exists():
             raise FileNotFoundError(f"Image bag not found: {bag_path}")
 
         timestamps = []
-        with Reader(bag_path) as reader:
-            # We want any topic that ends with topic_name, e.g. /zed2i/right/image_rect_color/compressed
-            connections = [x for x in reader.connections if topic_name in x.topic]
-            for connection, timestamp, rawdata in reader.messages(connections=connections):
-                ts = timestamp * 1e-9
-                timestamps.append(ts)
+        # We want any topic that ends with topic_name, e.g. /zed2i/right/image_rect_color/compressed
+        messages = _topic_messages(bag_path, topic_name, exact_match=False)
+        for connection, timestamp, rawdata in messages:
+            ts = timestamp * 1e-9
+            timestamps.append(ts)
 
         return np.array(timestamps)
