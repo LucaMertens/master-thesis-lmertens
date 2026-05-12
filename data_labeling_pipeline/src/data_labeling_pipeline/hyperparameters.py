@@ -28,6 +28,7 @@ N = 10
 Needs at least one step overlap (N-1).
 """
 STEP_SIZE = max(1, N - 1)
+# STEP_SIZE = max(1, int(N // 2))
 
 """Time step (https://github.com/matval/wayfaster/issues/2)"""
 dt = 0.1
