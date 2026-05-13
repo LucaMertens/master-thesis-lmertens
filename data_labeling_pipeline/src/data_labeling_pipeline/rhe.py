@@ -109,8 +109,7 @@ class RecedingHorizonEstimator:
         # The predicted initial pose (px, py, theta) of the robot at the start of the current receding horizon window.
         x0 = optimization_vars[0:3]
         m = optimization_vars[3:6]
-
-        d_theta = m[2]
+        mu, nu, d_theta = m
 
         diff_x0 = x0 - x_prev  # (3,)
         diff_x0[2] = _normalize_angle(diff_x0[2])
@@ -136,15 +135,16 @@ class RecedingHorizonEstimator:
 
         # Confidence in each parameter follows an exponential ramp.
         # We use a multiplier of 5.0 so that confidence reaches ~99.3% at the threshold.
-        w_mu = 1.0 - np.exp(-5.0 * v_mean / self.v_thresh)
-        w_nu = 1.0 - np.exp(-5.0 * omega_mean / self.w_thresh)
+        mu_confidence = 1.0 - np.exp(-5.0 * v_mean / self.v_thresh)
+        nu_confidence = 1.0 - np.exp(-5.0 * omega_mean / self.w_thresh)
 
         # Coupling strength peaks when one parameter is observable and the other isn't.
         # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap).
         coupling_strength = self.max_tie_strengh * (
-            (1.0 - w_mu) * w_nu**2 + (1.0 - w_nu) * w_mu**2
+            (1.0 - mu_confidence) * nu_confidence**2
+            + (1.0 - nu_confidence) * mu_confidence**2
         )
-        cost_tie = coupling_strength * (m[0] - m[1]) ** 2
+        cost_tie = coupling_strength * (mu - nu) ** 2
 
         return cost_x0 + cost_m + cost_measurements + cost_tie
 

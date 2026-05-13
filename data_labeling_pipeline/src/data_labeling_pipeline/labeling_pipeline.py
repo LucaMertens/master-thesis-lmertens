@@ -3,6 +3,7 @@ import json
 import pathlib
 
 import numpy as np
+from tqdm import trange
 
 from . import hyperparameters as hp
 from .dataset_loader import GrandTourLoader
@@ -60,7 +61,7 @@ class DataLabelingPipeline:
         self.rhe.reset()
 
         print("Running Receding Horizon Estimator ...")
-        for i in range(0, total_steps - self.N + 1, STEP_SIZE):
+        for i in trange(0, total_steps - self.N + 1, STEP_SIZE, desc="RHE Progress"):
             U_window = U[i : i + self.N]
             Z_window = Z[i : i + self.N]
 

@@ -1,5 +1,5 @@
 import pathlib
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 from rosbags.rosbag1 import Reader
@@ -56,9 +56,12 @@ def interpolate_unwrapped_angles(timestamps, angles, shared_timestamps):
     return np.interp(shared_timestamps, timestamps, np.unwrap(angles))
 
 
-def _topic_messages(bag_path, topic_name, *, exact_match=True):
-    bag_path = pathlib.Path(bag_path)
+class TopicNotFoundError(Exception):
+    pass
 
+
+def _topic_messages(bag_path, topic_name, *, exact_match=True, require_nonempty=True):
+    bag_path = pathlib.Path(bag_path)
     with Reader(bag_path) as reader:
         if exact_match:
             connections = [x for x in reader.connections if x.topic == topic_name]
@@ -67,19 +70,24 @@ def _topic_messages(bag_path, topic_name, *, exact_match=True):
 
         if not connections:
             available_topics = [x.topic for x in reader.connections]
-            raise ValueError(
+            raise TopicNotFoundError(
                 f"Topic '{topic_name}' not found in bag {bag_path}. "
                 f"Available topics: {available_topics}"
             )
 
-        messages = reader.messages(connections)
+        messages: Iterator[tuple[Any, int, bytes]] = reader.messages(connections)
 
-    if not messages:
-        raise ValueError(
-            f"No messages found for topic '{topic_name}' in bag {bag_path}"
-        )
+        first = next(messages, None)
+        if first is None:
+            if require_nonempty:
+                raise ValueError(
+                    f"No messages found for topic '{topic_name}' in bag {bag_path}"
+                )
+            return
 
-    return messages
+        yield first
+        yield from messages
+        # If the returned generator is not fully consumed and kept in memory, the bag file will remain open.
 
 
 def fill_command_gaps_with_zero_commands(
@@ -127,12 +135,15 @@ def fill_command_gaps_with_zero_commands(
         linear_parts.append(linear[start_index:next_index])
         angular_parts.append(angular[start_index:next_index])
 
-        missing_ts = np.arange(
-            timestamps[gap_index] + nominal_dt,
-            timestamps[next_index],
-            nominal_dt,
-            dtype=timestamps.dtype,
-        )
+        gap_duration = timestamps[next_index] - timestamps[gap_index]
+        missing_count = int(np.floor(gap_duration / nominal_dt)) - 1
+        if missing_count > 0:
+            missing_ts = timestamps[gap_index] + nominal_dt * np.arange(
+                1, missing_count + 1, dtype=timestamps.dtype
+            )
+            missing_ts = missing_ts[missing_ts < timestamps[next_index]]
+        else:
+            missing_ts = np.empty((0,), dtype=timestamps.dtype)
         if missing_ts.size:
             timestamp_parts.append(missing_ts)
             linear_parts.append(np.repeat(zero_linear, missing_ts.size, axis=0))
