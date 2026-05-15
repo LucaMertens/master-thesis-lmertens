@@ -1,0 +1,71 @@
+// For format details, see https://aka.ms/devcontainer.json
+// Largely taken from https://github.com/raphaelschwinger/cuda-python-devcontainer/
+{
+    "name": "master-thesis-lmertens",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            // Choose valid combination from https://hub.docker.com/r/nvidia/cuda/tags
+            "VARIANT": "ubuntu22.04",
+            "CUDA_VERSION": "12.4.1",
+            "USERNAME": "lmertens",
+            // Automatically maps host UID/GID into the container to avoid permission conflicts
+            "USER_UID": "${localEnv:UID:1000}",
+            "USER_GID": "${localEnv:GID:1000}"
+        }
+    },
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
+    "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+    // Enable full NVIDIA GPU forwarding
+    "runArgs": [
+        "--gpus",
+        "all",
+        "--shm-size=32gb"
+    ],
+    "mounts": [
+        // SSH agent socket — forwards the agent from local machine via SSH ForwardAgent.
+        // Requires a stable symlink on the server: ln -sf $SSH_AUTH_SOCK ~/.ssh/ssh_auth_sock
+        // (add to ~/.bashrc on the remote server)
+        "source=${localEnv:HOME}/.ssh/ssh_auth_sock,target=/ssh-agent,type=bind",
+        // Data home — read/write
+        "source=/datahome/lmertens,target=/datahome/lmertens,type=bind",
+        // Secrets file — read-only
+        "source=/home/lmertens/.kleinkram.json,target=/home/lmertens/.kleinkram.json,readonly,type=bind",
+        // Shadow the host .venv with a container-local Docker volume — prevents
+        // Python interpreter mismatches between the host and container environments.
+        "source=master-thesis-lmertens-venv,target=/workspaces/master-thesis-lmertens/.venv,type=volume"
+    ],
+    // Forward the SSH agent socket path to the container
+    "remoteEnv": {
+        "SSH_AUTH_SOCK": "/ssh-agent"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter",
+                "astral-sh.ty",
+                "charliermarsh.ruff",
+                "percy.vscode-numpy-viewer",
+                "tamasfe.even-better-toml",
+                "anthropic.claude-code",
+            ],
+            "settings": {
+                // Use fish as the default integrated terminal shell
+                "terminal.integrated.defaultProfile.linux": "fish",
+                "terminal.integrated.profiles.linux": {
+                    "fish": {
+                        "path": "/usr/bin/fish"
+                    }
+                },
+                "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python"
+            }
+        }
+    },
+    // Run as the mapped host user
+    "remoteUser": "lmertens",
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    // "forwardPorts": [],
+    // Post-create: sync dependencies and register the venv as a Jupyter kernel
+    "postCreateCommand": "sudo chown -R lmertens:lmertens /workspaces/master-thesis-lmertens/.venv && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'"
+}
