@@ -222,6 +222,8 @@ class GrandTourLoader:
         timestamps = []
         positions = []
         orientations = []
+        linear_twist = []
+        angular_twist = []
 
         odom_topic = "/boxi/inertial_explorer/tc/odometry"
         messages = _topic_messages(bag_path, odom_topic)
@@ -233,12 +235,19 @@ class GrandTourLoader:
             q = msg.pose.pose.orientation
             positions.append([p.x, p.y, p.z])
             orientations.append([q.x, q.y, q.z, q.w])
+            
+            v = msg.twist.twist.linear
+            w = msg.twist.twist.angular
+            linear_twist.append([v.x, v.y, v.z])
+            angular_twist.append([w.x, w.y, w.z])
 
         odom_ts = np.array(timestamps)
         odom_pos = np.array(positions)
         odom_orien = np.array(orientations)
+        odom_linear = np.array(linear_twist)
+        odom_angular = np.array(angular_twist)
 
-        return odom_ts, odom_pos, odom_orien
+        return odom_ts, odom_pos, odom_orien, odom_linear, odom_angular
 
     def map_cpt7_imu_pose_to_base(self, positions, orientations):
         """Map dynamic poses from ENU->cpt7_imu to ENU->base using static TF.
@@ -260,7 +269,7 @@ class GrandTourLoader:
         v_k = cmd_linear[:, 0]
         omega_k = cmd_angular[:, 2]
 
-        odom_ts, odom_pos, odom_orien = self.load_odometry()
+        odom_ts, odom_pos, odom_orien, odom_linear, odom_angular = self.load_odometry()
         odom_pos_base, odom_rot_base = self.map_cpt7_imu_pose_to_base(
             odom_pos, odom_orien
         )

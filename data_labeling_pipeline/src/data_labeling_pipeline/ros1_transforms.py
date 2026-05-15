@@ -1,10 +1,13 @@
 import pathlib
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_types_from_msg, get_typestore
+from scipy.interpolate import interp1d
 from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Slerp
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,22 @@ class SE3Transform:
         r_out = r_parent * self.rotation
         p_out = positions + r_parent.apply(self.translation)
         return p_out, r_out
+
+    def apply_to_twist(
+        self, linear_vel: np.ndarray, angular_vel: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Transform twist from parent frame to child frame.
+        v_child = R_child_parent * (v_parent + omega_parent x r_parent_child_in_parent)
+        omega_child = R_child_parent * omega_parent
+        """
+        rot_inv = self.rotation.inv()
+        # Angular velocity transformation
+        omega_child = rot_inv.apply(angular_vel)
+        # Linear velocity transformation
+        # self.translation is r_parent_child_in_parent
+        v_rel = np.cross(angular_vel, self.translation)
+        v_child = rot_inv.apply(linear_vel + v_rel)
+        return v_child, omega_child
 
 
 def inv(T_parent_to_child):
@@ -99,7 +118,7 @@ def get_static_transform(mission_path, parent, child) -> SE3Transform:
                         typestore.register(
                             get_types_from_msg(tf2_msg_def, "tf2_msgs/msg/TFMessage")
                         )
-                    msg = typestore.deserialize_ros1(rawdata, connection.msgtype)
+                    msg: Any = typestore.deserialize_ros1(rawdata, connection.msgtype)
                     for tr in msg.transforms:
                         p_frame = tr.header.frame_id.lstrip("/")
                         c_frame = tr.child_frame_id.lstrip("/")
@@ -129,3 +148,133 @@ def get_static_transform(mission_path, parent, child) -> SE3Transform:
                 queue.append((nxt, T_accum @ T_edge))
 
     raise ValueError(f"Could not find transform from {parent} to {child} in tf_static.")
+
+
+# TODO: Test this
+class TransformInterpolator:
+    def __init__(self, times, translations, rotations):
+        self.times = times
+        self.trans_interp = interp1d(
+            times,
+            translations,
+            axis=0,
+            bounds_error=False,
+            fill_value=(translations[0], translations[-1]),
+        )
+        self.rot_interp = Slerp(times, R.from_quat(rotations))
+
+    def __call__(self, t):
+        trans = self.trans_interp(t)
+        rot = self.rot_interp(t)
+
+        if np.isscalar(t):
+            return SE3Transform(rot, trans)
+        else:
+            transforms = []
+            for r, tr in zip(rot, trans):
+                transforms.append(SE3Transform(r, tr))
+            return transforms
+
+
+def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
+    typestore = get_typestore(Stores.ROS1_NOETIC)
+
+    tf_bags = list(pathlib.Path(mission_path).glob("*tf*.bag"))
+    if not tf_bags:
+        raise FileNotFoundError(f"No bag file containing tf found in {mission_path}.")
+
+    parent = parent.lstrip("/")
+    child = child.lstrip("/")
+
+    times = []
+    translations = []
+    rotations = []
+
+    # Note: For now, we assume a direct parent->child or child->parent edge in the /tf topic
+    # A full tree search for dynamic transforms at every timestamp is much more complex
+    # and usually not needed for direct sensor-to-base or sensor-to-world transforms.
+
+    invert = False
+    found_edge = False
+
+    for tf_bag in tf_bags:
+        with Reader(tf_bag) as reader:
+            for connection, timestamp, rawdata in reader.messages():
+                if connection.topic == "/tf":
+                    if "tf2_msgs/msg/TFMessage" not in typestore.types:
+                        tf2_msg_def = "geometry_msgs/TransformStamped[] transforms"
+                        typestore.register(
+                            get_types_from_msg(tf2_msg_def, "tf2_msgs/msg/TFMessage")
+                        )
+                    msg = typestore.deserialize_ros1(rawdata, connection.msgtype)
+                    for tr in msg.transforms:
+                        p_frame = tr.header.frame_id.lstrip("/")
+                        c_frame = tr.child_frame_id.lstrip("/")
+
+                        if p_frame == parent and c_frame == child:
+                            found_edge = True
+                            t = tr.header.stamp.sec  # + tr.header.stamp.nsec * 1e-9
+                            times.append(t)
+                            translations.append([
+                                tr.transform.translation.x,
+                                tr.transform.translation.y,
+                                tr.transform.translation.z,
+                            ])
+                            rotations.append([
+                                tr.transform.rotation.x,
+                                tr.transform.rotation.y,
+                                tr.transform.rotation.z,
+                                tr.transform.rotation.w,
+                            ])
+                        elif p_frame == child and c_frame == parent:
+                            found_edge = True
+                            invert = True
+                            t = tr.header.stamp.sec  # + tr.header.stamp.nsec * 1e-9
+                            times.append(t)
+                            translations.append([
+                                tr.transform.translation.x,
+                                tr.transform.translation.y,
+                                tr.transform.translation.z,
+                            ])
+                            rotations.append([
+                                tr.transform.rotation.x,
+                                tr.transform.rotation.y,
+                                tr.transform.rotation.z,
+                                tr.transform.rotation.w,
+                            ])
+
+    if not found_edge:
+        raise ValueError(
+            f"Could not find direct non-static transform between {parent} and {child} in tf."
+        )
+
+    times = np.array(times)
+    translations = np.array(translations)
+    rotations = np.array(rotations)
+
+    # Sort by time
+    sort_idx = np.argsort(times)
+    times = times[sort_idx]
+    translations = translations[sort_idx]
+    rotations = rotations[sort_idx]
+
+    # Handle duplicates by taking the first one
+    unique_times, unique_idx = np.unique(times, return_index=True)
+    times = unique_times
+    translations = translations[unique_idx]
+    rotations = rotations[unique_idx]
+
+    if invert:
+        # We need to invert every transform
+        inv_translations = []
+        inv_rotations = []
+        for t, r in zip(translations, rotations):
+            rot = R.from_quat(r)
+            rot_inv = rot.inv()
+            inv_trans = -rot_inv.apply(t)
+            inv_translations.append(inv_trans)
+            inv_rotations.append(rot_inv.as_quat())
+        translations = np.array(inv_translations)
+        rotations = np.array(inv_rotations)
+
+    return TransformInterpolator(times, translations, rotations)
