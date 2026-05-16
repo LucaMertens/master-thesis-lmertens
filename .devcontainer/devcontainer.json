@@ -10,8 +10,8 @@
             "CUDA_VERSION": "12.4.1",
             "USERNAME": "lmertens",
             // Automatically maps host UID/GID into the container to avoid permission conflicts
-            "USER_UID": "${localEnv:UID:1000}",
-            "USER_GID": "${localEnv:GID:1000}"
+            "USER_UID": "${localEnv:UID}",
+            "USER_GID": "${localEnv:GID}"
         }
     },
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
