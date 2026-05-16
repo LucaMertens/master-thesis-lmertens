@@ -3,15 +3,57 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 # Add src to path if needed
 sys.path.append(str(Path(__file__).parent.parent / "data_labeling_pipeline" / "src"))
 
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
-from data_labeling_pipeline.ros1_transforms import (
-    get_static_transform,
-    get_transform_series,
-)
+from data_labeling_pipeline.ros1_transforms import get_static_transform
+
+# The /boxi/inertial_explorer/tc/odometry twist is expressed in NED (North-East-Down),
+# not in ENU or body frame, despite what the header frames suggest.
+# The NovAtel Inertial Explorer TC exporter outputs velocity in its native NED navigation
+# frame. Angular velocity is not exported (always zero); it is derived here from the
+# pose orientation time series.
+_R_NED_TO_ENU = R.from_matrix(np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]], dtype=float))
+
+
+def ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base):
+    """Convert odom linear velocity from NED -> ENU -> cpt7_imu -> base."""
+    # v_enu = _R_NED_TO_ENU.apply(odom_linear)  # static cpt7->base
+    # R_enu_to_cpt7 = R.from_quat(odom_orien).inv()  # per-timestep ENU->cpt7
+    # v_cpt7 = R_enu_to_cpt7.apply(v_enu)
+    # v_base = T_cpt7_to_base.rotation.apply(v_cpt7)  # static cpt7->base
+    x = odom_linear
+    R_enu_to_cpt7 = R.from_quat(odom_orien).inv()
+    R_cpt7_to_base = T_cpt7_to_base.rotation
+
+    x = _R_NED_TO_ENU.apply(x)
+    x = R_enu_to_cpt7.apply(x)
+    x = R_cpt7_to_base.apply(x)
+
+    return x
+
+
+def derive_angular_velocity_base(odom_ts, odom_orien, T_cpt7_to_base):
+    """Numerically differentiate pose orientation to get angular velocity in base frame.
+
+    Returns (ts_mid, omega_base) where ts_mid are midpoint timestamps.
+    """
+    rots = R.from_quat(odom_orien)
+    dt = np.diff(odom_ts)
+    valid = dt > 1e-9
+
+    # Body-frame angular velocity: dR_body = R(t).inv() * R(t+dt), rotvec / dt
+    R_prev = rots[:-1][valid]
+    R_next = rots[1:][valid]
+    dR_body = R_prev.inv() * R_next
+    omega_cpt7 = dR_body.as_rotvec() / dt[valid, None]
+
+    omega_base = T_cpt7_to_base.rotation.apply(omega_cpt7)
+    ts_mid = 0.5 * (odom_ts[:-1][valid] + odom_ts[1:][valid])
+    return ts_mid, omega_base
 
 
 def compare_twist(mission_shortname):
@@ -21,82 +63,59 @@ def compare_twist(mission_shortname):
     print(f"Loading data from {mission_path}...")
     loader = GrandTourLoader(mission_path)
 
-    # Load commands (base frame)
-    try:
-        cmd_ts, cmd_linear, cmd_angular = loader.load_commands()
-        print(f"Loaded {len(cmd_ts)} command messages.")
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        return
+    cmd_ts, cmd_linear, cmd_angular = loader.load_commands()
+    print(f"Loaded {len(cmd_ts)} command messages.")
 
-    # Load odometry (cpt7_imu frame)
-    try:
-        odom_ts, odom_pos, odom_orien, odom_linear, odom_angular = (
-            loader.load_odometry()
+    odom_ts, _, odom_orien, odom_linear, _ = loader.load_odometry()
+    print(f"Loaded {len(odom_ts)} odometry messages.")
+
+    T_cpt7_to_base = get_static_transform(mission_path, "cpt7_imu", "base")
+    print("Found static transform cpt7_imu -> base")
+
+    # Linear: NED -> ENU -> cpt7_imu -> base (full dynamic rotation)
+    odom_linear_base = ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base)
+
+    # Angular: derived from pose differentiation (odom_angular is always zero from TC)
+    ang_ts, odom_angular_base = derive_angular_velocity_base(
+        odom_ts, odom_orien, T_cpt7_to_base
+    )
+
+    # Quick stats
+    t0 = max(cmd_ts[0], odom_ts[0])
+    t1 = min(cmd_ts[-1], odom_ts[-1])
+    mask = (odom_ts >= t0) & (odom_ts <= t1)
+    cmd_x_at_odom = np.interp(odom_ts[mask], cmd_ts, cmd_linear[:, 0])
+    moving = np.abs(cmd_x_at_odom) > 0.05
+    vb = odom_linear_base[mask]
+    if moving.any():
+        mse_x = np.mean((vb[moving, 0] - cmd_x_at_odom[moving]) ** 2)
+        corr_x = float(np.corrcoef(vb[moving, 0], cmd_x_at_odom[moving])[0, 1])
+        print(
+            f"\nForward velocity (moving samples): MSE_x={mse_x:.4f}, Corr_x={corr_x:.4f}"
         )
-        print(f"Loaded {len(odom_ts)} odometry messages.")
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        return
 
-    # Get static transform from cpt7_imu to base
-    try:
-        T_cpt7_to_base = get_static_transform(mission_path, "cpt7_imu", "base")
-        print("Found static transform cpt7_imu -> base")
-    except ValueError as e:
-        print(f"Error: {e}")
-        return
+    # --- Plotting ---
+    _, axes = plt.subplots(5, 3, figsize=(18, 10), sharex=True)
+    t_ref = cmd_ts[0]
 
-    # Transform odometry twist to base frame
-    # Assumption: The provided twist is in the world frame (base_enu/enu_origin)
-    # We need to rotate it to the robot's body frame (base).
-    odom_linear_base = []
-    odom_angular_base = []
-
-    # R_cpt7_to_base is constant
-    R_cpt7_to_base = T_cpt7_to_base.rotation
-    interpolator = get_transform_series(mission_path, "enu_origin", "cpt7_imu")
-
-    for i in range(len(odom_linear)):
-        v_world = odom_linear[i]
-        w_world = odom_angular[i]
-
-        # get R_enu_to_base from interpolator
-        R_enu_to_base = interpolator(odom_ts[i]).rotation * T_cpt7_to_base.rotation
-
-        # Rotate linear velocity from world to body frame
-        v_b = R_enu_to_base.apply(v_world)
-        w_b = R_enu_to_base.apply(w_world)
-
-        odom_linear_base.append(v_b)
-        odom_angular_base.append(w_b)
-
-    odom_linear_base = np.array(odom_linear_base)
-    odom_angular_base = np.array(odom_angular_base)
-
-    # Plotting
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=True)
-
-    # Linear velocities
-    for i, label in enumerate(["X", "Y", "Z"]):
+    for i, label in enumerate(["X (forward)", "Y (lateral)", "Z (vertical)"]):
         axes[0, i].plot(
-            cmd_ts - cmd_ts[0], cmd_linear[:, i], label="Command (base)", alpha=0.7
+            cmd_ts - t_ref, cmd_linear[:, i], label="Command (base)", alpha=0.8
         )
         axes[0, i].plot(
-            odom_ts - cmd_ts[0], odom_linear_base[:, i], label="Odom (base)", alpha=0.7
+            odom_ts - t_ref, odom_linear_base[:, i], label="Odom (base)", alpha=0.6
         )
         axes[0, i].set_title(f"Linear Velocity {label}")
         axes[0, i].legend()
         axes[0, i].set_ylabel("m/s")
         axes[0, i].grid(True)
 
-    # Angular velocities
-    for i, label in enumerate(["X", "Y", "Z"]):
+    for i, label in enumerate(["X (roll rate)", "Y (pitch rate)", "Z (yaw rate)"]):
         axes[1, i].plot(
-            cmd_ts - cmd_ts[0], cmd_angular[:, i], label="Command (base)", alpha=0.7
+            cmd_ts - t_ref, cmd_angular[:, i], label="Command (base)", alpha=0.8
         )
         axes[1, i].plot(
-            odom_ts - cmd_ts[0], odom_angular_base[:, i], label="Odom (base)", alpha=0.7
+            ang_ts - t_ref, odom_angular_base[:, i], label="Odom (derived)", alpha=0.6
         )
         axes[1, i].set_title(f"Angular Velocity {label}")
         axes[1, i].legend()
@@ -104,40 +123,52 @@ def compare_twist(mission_shortname):
         axes[1, i].set_xlabel("Time [s]")
         axes[1, i].grid(True)
 
+    curr_row = 2
+
+    # Also plot the raw odom linear for reference
+    for i, label in enumerate(["X (forward)", "Y (lateral)", "Z (vertical)"]):
+        axes[curr_row, i].plot(
+            odom_ts - t_ref,
+            odom_linear[:, i],
+            label="Odom (NED)",
+            alpha=0.6,
+            color="orange",
+        )
+        axes[curr_row, i].set_title(f"Raw Odom Linear Velocity {label} (NED)")
+        axes[curr_row, i].legend()
+        axes[curr_row, i].set_ylabel("m/s")
+        axes[curr_row, i].set_xlabel("Time [s]")
+        axes[curr_row, i].grid(True)
+
+    curr_row += 1
+    x = odom_linear
+
+    # Plot odom linear in ENU frame for reference
+    x = _R_NED_TO_ENU.apply(x)
+    for i, label in enumerate(["X (forward)", "Y (lateral)", "Z (vertical)"]):
+        axes[curr_row, i].plot(
+            odom_ts - t_ref,
+            x[:, i],
+            label="Odom (ENU)",
+            alpha=0.6,
+            color="green",
+        )
+        axes[curr_row, i].set_title(f"Odom Linear Velocity {label} in ENU Frame")
+        axes[curr_row, i].legend()
+        axes[curr_row, i].set_ylabel("m/s")
+        axes[curr_row, i].set_xlabel("Time [s]")
+        axes[curr_row, i].grid(True)
+
+    plt.suptitle(f"Mission {mission_shortname}: Command vs Odometry Twist (base frame)")
     plt.tight_layout()
-    plot_path = Path("twist_comparison.png")
-    plt.savefig(plot_path)
+    plot_path = Path(f"twist_comparison_{mission_shortname}.png")
+    plt.savefig(plot_path, dpi=100)
     print(f"Saved plot to {plot_path}")
-
-    # Demonstrate usage of non-static transform as requested
-    # try:
-    print("\nChecking non-static transforms...")
-    # The user mentioned cpt7-imu --> enu_origin in .tf
-    interpolator = get_transform_series(mission_path, "enu_origin", "cpt7_imu")
-    print(
-        f"Found {len(interpolator.times)} non-static transform entries for enu_origin -> cpt7_imu"
-    )
-
-    # Verify if odometry pose matches TF
-    t_test = odom_ts[len(odom_ts) // 2]
-    T_tf = interpolator(t_test)
-
-    # Find closest odom pose
-    idx = np.argmin(np.abs(odom_ts - t_test))
-    p_odom = odom_pos[idx]
-
-    print(f"At t={t_test - odom_ts[0]:.2f}s:")
-    print(f"  TF translation:   {T_tf.translation}")
-    print(f"  Odom translation: {p_odom}")
-    diff = np.linalg.norm(T_tf.translation - p_odom)
-    print(f"  Position difference: {diff:.4f}m")
-
-    # except Exception as e:
-    #     print(f"Non-static transform check skipped or failed: {e}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python compare_twist.py <mission_path>")
-        sys.exit(1)
-    compare_twist(sys.argv[1])
+    if len(sys.argv) > 1:
+        mission_shortname = sys.argv[1]
+    else:
+        mission_shortname = "ALB-1"
+    compare_twist(mission_shortname)

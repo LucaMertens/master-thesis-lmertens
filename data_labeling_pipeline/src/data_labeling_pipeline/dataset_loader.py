@@ -235,7 +235,7 @@ class GrandTourLoader:
             q = msg.pose.pose.orientation
             positions.append([p.x, p.y, p.z])
             orientations.append([q.x, q.y, q.z, q.w])
-            
+
             v = msg.twist.twist.linear
             w = msg.twist.twist.angular
             linear_twist.append([v.x, v.y, v.z])
@@ -250,7 +250,7 @@ class GrandTourLoader:
         return odom_ts, odom_pos, odom_orien, odom_linear, odom_angular
 
     def map_cpt7_imu_pose_to_base(self, positions, orientations):
-        """Map dynamic poses from ENU->cpt7_imu to ENU->base using static TF.
+        """Map poses from ENU->cpt7_imu to ENU->base using static TF.
         https://github.com/leggedrobotics/grand_tour_dataset/issues/28
         """
         t_cpt7_imu_to_base = get_static_transform(self.mission_path, "cpt7_imu", "base")

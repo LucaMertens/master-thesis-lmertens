@@ -169,11 +169,7 @@ class TransformInterpolator:
 
         if np.isscalar(t):
             return SE3Transform(rot, trans)
-        else:
-            transforms = []
-            for r, tr in zip(rot, trans):
-                transforms.append(SE3Transform(r, tr))
-            return transforms
+        return [SE3Transform(r, tr) for r, tr in zip(rot, trans)]
 
 
 def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
@@ -213,7 +209,7 @@ def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
 
                         if p_frame == parent and c_frame == child:
                             found_edge = True
-                            t = tr.header.stamp.sec  # + tr.header.stamp.nsec * 1e-9
+                            t = tr.header.stamp.sec + tr.header.stamp.nanosec * 1e-9
                             times.append(t)
                             translations.append([
                                 tr.transform.translation.x,
@@ -229,7 +225,7 @@ def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
                         elif p_frame == child and c_frame == parent:
                             found_edge = True
                             invert = True
-                            t = tr.header.stamp.sec  # + tr.header.stamp.nsec * 1e-9
+                            t = tr.header.stamp.sec + tr.header.stamp.nanosec * 1e-9
                             times.append(t)
                             translations.append([
                                 tr.transform.translation.x,
@@ -265,16 +261,9 @@ def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
     rotations = rotations[unique_idx]
 
     if invert:
-        # We need to invert every transform
-        inv_translations = []
-        inv_rotations = []
-        for t, r in zip(translations, rotations):
-            rot = R.from_quat(r)
-            rot_inv = rot.inv()
-            inv_trans = -rot_inv.apply(t)
-            inv_translations.append(inv_trans)
-            inv_rotations.append(rot_inv.as_quat())
-        translations = np.array(inv_translations)
-        rotations = np.array(inv_rotations)
+        rots = R.from_quat(rotations)
+        rots_inv = rots.inv()
+        translations = -rots_inv.apply(translations)
+        rotations = rots_inv.as_quat()
 
     return TransformInterpolator(times, translations, rotations)

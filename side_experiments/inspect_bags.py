@@ -1,8 +1,7 @@
 """
-Inspect bag files and write structured ROS topic documentation to .agents/ros_topics.md.
-Output is designed for agent consumption with expanded subtype definitions.
+Inspect bag files and write structured ROS topic documentation.
 """
-import dataclasses
+
 import pathlib
 import typing
 from collections import defaultdict
@@ -11,7 +10,7 @@ from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
 MISSION_PATH = pathlib.Path("/datahome/lmertens/grand_tour_dataset/ros1/ETH-1")
-OUTPUT_PATH = pathlib.Path(__file__).parent.parent / ".agents" / "ros_topics.md"
+OUTPUT_PATH = pathlib.Path(__file__).parent.parent / "ros_topics.md"
 
 typestore = get_typestore(Stores.ROS1_NOETIC)
 
@@ -47,19 +46,19 @@ def get_msgtype_for_class(cls):
     """Find the ROS msgtype string for a given class."""
     if not cls:
         return None
-        
+
     # First try direct identity match in typestore
     for name, t in typestore.types.items():
         if t == cls:
             return name
-    
+
     # Then try by name matching
     if hasattr(cls, "__name__"):
         name = cls.__name__
         if "__" in name:
             # geometry_msgs__msg__Pose -> geometry_msgs/msg/Pose
             return name.replace("__", "/")
-                
+
     return str(cls)
 
 
@@ -69,29 +68,29 @@ def type_name(t) -> str:
         return "?"
     if t is type(None):
         return "None"
-    
+
     # Annotated[X, ...] -> recurse on X
     if typing.get_origin(t) is typing.Annotated:
         return type_name(typing.get_args(t)[0])
-        
+
     # list[X] -> list[type_name(X)]
     origin = getattr(t, "__origin__", None)
     if origin is list:
         args = getattr(t, "__args__", ())
         inner = type_name(args[0]) if args else "?"
         return f"list[{inner}]"
-        
+
     # Plain class
     if hasattr(t, "__name__"):
         mod = getattr(t, "__module__", "")
         if mod == "numpy":
             return t.__name__
-            
+
         mtype = get_msgtype_for_class(t)
         if mtype:
             return clean_msgtype(mtype)
         return t.__name__
-        
+
     return str(t)
 
 
@@ -119,11 +118,11 @@ def is_complex_type(cls):
     """Check if a type is complex (not atomic and is a ROS msg)."""
     if not is_ros_msg(cls):
         return False
-        
+
     mtype = clean_msgtype(get_msgtype_for_class(cls))
     if mtype in ATOMIC_TYPES:
         return False
-                
+
     return True
 
 
@@ -155,13 +154,13 @@ def find_class(msgtype: str):
     """Try to find class in typestore."""
     if msgtype in typestore.types:
         return typestore.types[msgtype]
-        
+
     # Try fuzzy matching
     target = msgtype.replace("/msg/", "/").replace("/srv/", "/")
     for name, cls in typestore.types.items():
         if name.replace("/msg/", "/").replace("/srv/", "/") == target:
             return cls
-            
+
     return None
 
 
@@ -204,7 +203,9 @@ for bag_path in bags:
                 for conn, timestamp, rawdata in reader.messages(connections=conns):
                     try:
                         msg = typestore.deserialize_ros1(rawdata, conn.msgtype)
-                        frame_id = getattr(getattr(msg, "header", None), "frame_id", None)
+                        frame_id = getattr(
+                            getattr(msg, "header", None), "frame_id", None
+                        )
                         child_frame_id = getattr(msg, "child_frame_id", None)
                         if frame_id:
                             frame_str = frame_id
@@ -245,12 +246,14 @@ for bag_path in bags:
         bag_content_lines.append("")
 
 # Recursively expand subtypes
-expanded_types = {} # class -> lines
+expanded_types = {}  # class -> lines
 while True:
     new_classes = all_complex_classes - set(expanded_types.keys())
     if not new_classes:
         break
-    for cls in sorted(new_classes, key=lambda c: get_msgtype_for_class(c) or c.__name__):
+    for cls in sorted(
+        new_classes, key=lambda c: get_msgtype_for_class(c) or c.__name__
+    ):
         expanded_types[cls] = collect_fields(cls, all_complex_classes)
 
 # Assemble final lines
@@ -268,7 +271,9 @@ if expanded_types:
     final_lines.append("")
     final_lines.append("## Type Definitions")
     final_lines.append("")
-    final_lines.append("Expanded definitions for non-atomic ROS message types used in the topics above.")
+    final_lines.append(
+        "Expanded definitions for non-atomic ROS message types used in the topics above."
+    )
     final_lines.append("")
 
     for cls, flines in expanded_types.items():
