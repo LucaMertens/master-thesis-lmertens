@@ -256,17 +256,20 @@ class GrandTourLoader:
         t_cpt7_imu_to_base = get_static_transform(self.mission_path, "cpt7_imu", "base")
         return t_cpt7_imu_to_base.apply_to_poses(positions, orientations)
 
-    def load_data_shared_timestamps(self, dt=0.1, fill_gaps=True):
+    def load_data_shared_timestamps(self, dt=0.1, fill_gaps=True, include_lateral_command=False):
         """
         Loads topics and returns them with shared timestamps, resampled at a uniform rate of dt seconds.
 
         Returns:
         - T: 1D array of uniformly spaced, shared timestamps
-        - U: 2D array of control inputs (v_k, omega_k) at each timestamp
+        - U: 2D array of control inputs at each timestamp.
+             include_lateral_command=False (default): columns [vx_cmd, omega_cmd]
+             include_lateral_command=True:            columns [vx_cmd, vy_cmd, omega_cmd]
         - Z: 3D array of states (px, py, yaw) at each timestamp
         """
         cmd_ts, cmd_linear, cmd_angular = self.load_commands(fill_gaps=fill_gaps)
-        v_k = cmd_linear[:, 0]
+        vx_k = cmd_linear[:, 0]
+        vy_k = cmd_linear[:, 1]
         omega_k = cmd_angular[:, 2]
 
         odom_ts, odom_pos, odom_orien, odom_linear, odom_angular = self.load_odometry()
@@ -281,13 +284,17 @@ class GrandTourLoader:
         assert _is_strictly_monotonic_increasing(shared_ts)
 
         # Interpolate commands and states to shared timestamps
-        v_k_shared = np.interp(shared_ts, cmd_ts, v_k)
+        vx_k_shared = np.interp(shared_ts, cmd_ts, vx_k)
+        vy_k_shared = np.interp(shared_ts, cmd_ts, vy_k)
         omega_k_shared = np.interp(shared_ts, cmd_ts, omega_k)
         px_shared = np.interp(shared_ts, odom_ts, px)
         py_shared = np.interp(shared_ts, odom_ts, py)
         odom_yaw_shared = interpolate_unwrapped_angles(odom_ts, odom_yaw, shared_ts)
 
-        U = np.column_stack((v_k_shared, omega_k_shared))
+        if include_lateral_command:
+            U = np.column_stack((vx_k_shared, vy_k_shared, omega_k_shared))
+        else:
+            U = np.column_stack((vx_k_shared, omega_k_shared))
         Z = np.column_stack((px_shared, py_shared, odom_yaw_shared))
 
         return shared_ts, U, Z

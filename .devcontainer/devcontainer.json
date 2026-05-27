@@ -14,6 +14,9 @@
             "USER_GID": "${localEnv:GID:1000}"
         }
     },
+    "features": {
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+    },
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
     "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
     // Enable full NVIDIA GPU forwarding
@@ -33,7 +36,8 @@
         "source=/home/lmertens/.kleinkram.json,target=/home/lmertens/.kleinkram.json,readonly,type=bind",
         // Shadow the host .venv with a container-local Docker volume — prevents
         // Python interpreter mismatches between the host and container environments.
-        "source=master-thesis-lmertens-venv,target=/workspaces/master-thesis-lmertens/.venv,type=volume"
+        "source=master-thesis-lmertens-venv,target=/workspaces/master-thesis-lmertens/.venv,type=volume",
+        "source=${localEnv:HOME}/.claude,target=/home/lmertens/.claude,type=bind,consistency=cached"
     ],
     // Forward the SSH agent socket path to the container
     "remoteEnv": {
