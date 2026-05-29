@@ -8,7 +8,7 @@
             // Choose valid combination from https://hub.docker.com/r/nvidia/cuda/tags
             "VARIANT": "ubuntu22.04",
             "CUDA_VERSION": "12.4.1",
-            "USERNAME": "lmertens",
+            "USERNAME": "${localEnv:USER}",
             // Automatically maps host UID/GID into the container to avoid permission conflicts
             "USER_UID": "${localEnv:UID:1000}",
             "USER_GID": "${localEnv:GID:1000}"
@@ -30,14 +30,19 @@
         // Requires a stable symlink on the server: ln -sf $SSH_AUTH_SOCK ~/.ssh/ssh_auth_sock
         // (add to ~/.bashrc on the remote server)
         "source=${localEnv:HOME}/.ssh/ssh_auth_sock,target=/ssh-agent,type=bind",
+        // TODO: Remove this
+        "source=${localEnv:HOME}/git-repos,target=/home/${localEnv:USER}/git-repos,type=bind,consistency=cached",
         // Data home — read/write
         "source=/datahome/lmertens,target=/datahome/lmertens,type=bind",
-        // Secrets file — read-only
-        "source=/home/lmertens/.kleinkram.json,target=/home/lmertens/.kleinkram.json,readonly,type=bind",
         // Shadow the host .venv with a container-local Docker volume — prevents
         // Python interpreter mismatches between the host and container environments.
         "source=master-thesis-lmertens-venv,target=/workspaces/master-thesis-lmertens/.venv,type=volume",
-        "source=${localEnv:HOME}/.claude,target=/home/lmertens/.claude,type=bind,consistency=cached"
+        // Auth tokens
+        "source=${localEnv:HOME}/.kleinkram.json,target=/home/${localEnv:USER}/.kleinkram.json,type=bind,consistency=cached",
+        "source=${localEnv:HOME}/.claude,target=/home/${localEnv:USER}/.claude,type=bind,consistency=cached",
+        "source=${localEnv:HOME}/.claude.json,target=/home/${localEnv:USER}/.claude.json,type=bind,consistency=cached",
+        // Persist container app data, including fish history and uv caches, across rebuilds
+        "source=master-thesis-lmertens-local-share,target=/home/${localEnv:USER}/.local/share,type=volume",
     ],
     // Forward the SSH agent socket path to the container
     "remoteEnv": {
@@ -67,9 +72,9 @@
         }
     },
     // Run as the mapped host user
-    "remoteUser": "lmertens",
+    "remoteUser": "${localEnv:USER}",
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
     // "forwardPorts": [],
     // Post-create: sync dependencies and register the venv as a Jupyter kernel
-    "postCreateCommand": "sudo chown -R lmertens:lmertens /workspaces/master-thesis-lmertens/.venv && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'"
+    "postCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /workspaces/master-thesis-lmertens/.venv /home/${localEnv:USER}/.local/share && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'"
 }

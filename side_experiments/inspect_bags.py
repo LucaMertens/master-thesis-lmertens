@@ -2,6 +2,7 @@
 Inspect bag files and write structured ROS topic documentation.
 """
 
+import fnmatch
 import pathlib
 import typing
 from collections import defaultdict
@@ -11,6 +12,12 @@ from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
 MISSION_PATH = pathlib.Path("/datahome/lmertens/grand_tour_dataset/ros1/ETH-1")
 OUTPUT_PATH = pathlib.Path(__file__).parent.parent / "ros_topics.md"
+# PATTERNS accepts glob patterns (e.g. "*alpha*", "tf_*") or simple
+# tokens (e.g. "alphasense"). Simple tokens are matched as substrings
+# for backwards compatibility; patterns containing glob metachars
+# (*, ?, [) are matched using Unix-style globs.
+# PATTERNS = ["alphasense", "cpt7_ie_tc", "tf_minimal"]
+PATTERNS = ["*"]
 
 typestore = get_typestore(Stores.ROS1_NOETIC)
 
@@ -30,7 +37,6 @@ ATOMIC_TYPES = {
 
 
 def clean_msgtype(msgtype: str) -> str:
-    """Clean msgtype for display: geometry_msgs/msg/Pose -> geometry_msgs/Pose"""
     if not msgtype:
         return "?"
     # Remove /msg/ or /srv/ etc
@@ -58,12 +64,10 @@ def get_msgtype_for_class(cls):
         if "__" in name:
             # geometry_msgs__msg__Pose -> geometry_msgs/msg/Pose
             return name.replace("__", "/")
-
     return str(cls)
 
 
 def type_name(t) -> str:
-    """Return a clean string name for a type annotation."""
     if t is None:
         return "?"
     if t is type(None):
@@ -95,7 +99,6 @@ def type_name(t) -> str:
 
 
 def is_ros_msg(t) -> bool:
-    """Return True if t is a ROS message class."""
     if not isinstance(t, type):
         return False
     # rosbags types have __annotations__ and usually __msgtype__
@@ -151,7 +154,6 @@ def collect_fields(cls, seen_complex_classes: set):
 
 
 def find_class(msgtype: str):
-    """Try to find class in typestore."""
     if msgtype in typestore.types:
         return typestore.types[msgtype]
 
@@ -160,11 +162,33 @@ def find_class(msgtype: str):
     for name, cls in typestore.types.items():
         if name.replace("/msg/", "/").replace("/srv/", "/") == target:
             return cls
-
     return None
 
 
-bags = sorted(MISSION_PATH.glob("*.bag"))
+def bag_matches_patterns(bag_path: pathlib.Path) -> bool:
+    stem = bag_path.stem.lower()
+    for p in PATTERNS:
+        if not p:
+            continue
+        p_low = p.lower()
+        # If the pattern contains glob metacharacters, treat it as a glob.
+        if any(ch in p_low for ch in "*?["):
+            if fnmatch.fnmatch(stem, p_low):
+                return True
+        else:
+            # Otherwise keep substring matching for compatibility.
+            if p_low in stem:
+                return True
+    return False
+
+
+bags = sorted(f for f in MISSION_PATH.glob("*.bag") if bag_matches_patterns(f))
+
+if not bags:
+    print(f"No matching bags found in {MISSION_PATH}")
+    print(f"Expected patterns: {PATTERNS}")
+    print("Run download_wayfaster_data.py first.")
+    raise SystemExit(1)
 
 all_complex_classes = set()
 bag_content_lines = []
@@ -173,6 +197,7 @@ for bag_path in bags:
     stem = bag_path.stem
     _, _, rest = stem.partition("_")
     bag_label = f"*_{rest}.bag"
+    print(f"Inspecting {bag_path.name}...")
 
     topic_infos = []
     tf_infos = []
@@ -216,10 +241,11 @@ for bag_path in bags:
                     break
 
                 cls = find_class(msgtype)
-                if cls:
-                    field_lines = collect_fields(cls, all_complex_classes)
-                else:
-                    field_lines = ["- *(type not registered)*"]
+                field_lines = (
+                    collect_fields(cls, all_complex_classes)
+                    if cls
+                    else ["- *(type not registered)*"]
+                )
                 topic_infos.append((topic, msgtype, frame_str, field_lines))
 
     bag_content_lines.append("---")
@@ -256,7 +282,6 @@ while True:
     ):
         expanded_types[cls] = collect_fields(cls, all_complex_classes)
 
-# Assemble final lines
 final_lines = [
     "# GrandTour Dataset — ROS1 Bag Topics",
     "",
@@ -271,11 +296,6 @@ if expanded_types:
     final_lines.append("")
     final_lines.append("## Type Definitions")
     final_lines.append("")
-    final_lines.append(
-        "Expanded definitions for non-atomic ROS message types used in the topics above."
-    )
-    final_lines.append("")
-
     for cls, flines in expanded_types.items():
         mtype = clean_msgtype(get_msgtype_for_class(cls))
         final_lines.append(f"### `{mtype}`")

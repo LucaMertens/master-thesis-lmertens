@@ -5,7 +5,8 @@ Required bags per mission:
   - *_cpt7_ie_tc.bag       : GNSS/IMU odometry
   - *_tf_minimal.bag       : TF tree (camera extrinsics via /tf_static)
 
-Run for one mission first to inspect bag structure, then expand to full dataset.
+Run for one mission first to inspect bag structure, then expand to full dataset
+by adding mission shortnames to TARGET_MISSIONS.
 """
 
 import subprocess
@@ -13,14 +14,13 @@ import sys
 from pathlib import Path
 
 import kleinkram
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "data_labeling_pipeline" / "src"))
 from data_labeling_pipeline.grandtour_missions import get_mission_by_shortname, missions
 
 GRAND_TOUR_FOLDER = Path("/datahome/lmertens/grand_tour_dataset")
 
-# Mission to download first for inspection / pipeline development.
-# Expand this set once the pipeline is validated.
+# Start with one mission for pipeline development.
+# Expand to all missions once validated:
+#   TARGET_MISSIONS = {m["short_name"] for m in missions}
 TARGET_MISSIONS = {"ETH-1"}
 
 PATTERNS = ["*alphasense*", "*cpt7_ie_tc*", "*tf_minimal*"]
@@ -39,14 +39,14 @@ def get_files(mission_shortname: str):
 
 
 def prompt_download():
-    total = 0
+    total_bytes = 0
     for mission in sorted(TARGET_MISSIONS):
         files = get_files(mission)
         print(f"\n{mission}: {len(files)} files")
         for f in files:
             print(f"  {f.name}  ({f.size / 1e9:.2f} GB)")
-        total += sum(f.size for f in files)
-    print(f"\nTotal: {total / 1e9:.2f} GB")
+        total_bytes += sum(f.size for f in files)
+    print(f"\nTotal: {total_bytes / 1e9:.2f} GB")
     return input("Proceed? [y/N] ").strip().lower() in {"y", "yes"}
 
 
