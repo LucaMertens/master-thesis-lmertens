@@ -1,0 +1,47 @@
+# UPSTREAM DEPENDENCY REFERENCE ONLY -- not used by the Docker image.
+#
+# This is a verbatim copy of NVlabs/FoundationStereo's environment.yml. It pins
+# torch==2.4.1 from PyPI (CUDA 12.1 runtime), which differs from the cu124 wheels
+# the Dockerfile installs. The Docker build does NOT consume this file.
+#
+# Use it only for optional local (non-Docker) conda dev, e.g.:
+#   conda env create -f environment.yml
+#   conda activate foundation_stereo
+#   pip install flash-attn --no-build-isolation
+# For a setup that matches the image exactly, follow the cu124 pip steps in the
+# Dockerfile / README instead.
+name: foundation_stereo
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - torch==2.4.1
+    - torchvision==0.19.1
+    - torchaudio==2.4.1
+    - scikit-image
+    - omegaconf
+    - opencv-contrib-python
+    - imgaug
+    - ninja
+    - timm
+    - albumentations
+    - jupyterlab
+    - scipy
+    - joblib
+    - scikit-learn
+    - ruamel.yaml
+    - trimesh
+    - pyyaml
+    - imageio
+    - open3d
+    - transformations
+    - einops
+    - gdown
+    - nodejs
+    - xformers==0.0.28.post1
+    - huggingface-hub
