@@ -15,7 +15,10 @@
         }
     },
     "features": {
-        "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+        // Docker CLI — lets the devcontainer talk to the host daemon (DooD).
+        // Spawns sibling containers; no Docker-in-Docker, no --privileged needed.
+        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
     },
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
     "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
@@ -43,8 +46,9 @@
         "source=${localEnv:HOME}/.claude.json,target=/home/${localEnv:USER}/.claude.json,type=bind,consistency=cached",
         // Persist container app data, including fish history and uv caches, across rebuilds
         "source=master-thesis-lmertens-local-share,target=/home/${localEnv:USER}/.local/share,type=volume",
+        // Docker socket — required for DooD (spawning sibling containers)
+        "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     ],
-    // Forward the SSH agent socket path to the container
     "remoteEnv": {
         "SSH_AUTH_SOCK": "/ssh-agent"
     },

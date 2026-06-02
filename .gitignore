@@ -192,8 +192,11 @@ CLAUDE.md
 *.mp4
 *.npy
 
-# Output files
+# Output files (written to /datahome/lmertens/grand_tour_dataset/output/, not tracked here)
 twist_comparison*.png
-data_labeling_pipeline/output
-data_labeling_pipeline/tests/benchmark_results
+preprocessing/data_labeling_pipeline/tests/benchmark_results
+
+# depth_generation: cloned at build time, weights downloaded separately
+preprocessing/depth_generation/FoundationStereo/
+preprocessing/depth_generation/pretrained_models/
 

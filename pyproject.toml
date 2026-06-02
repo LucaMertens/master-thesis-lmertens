@@ -9,7 +9,13 @@
 
 
 [tool.uv.workspace]
-members = ["data_labeling_pipeline", "side_experiments", "shared-utils"]
+members = [
+    "preprocessing/data_labeling_pipeline",
+    "preprocessing/grandtour_extraction",
+    "training/traversability_network",
+    "shared-utils",
+    "side_experiments",
+]
 
 [tool.uv.sources]
 shared-utils = { workspace = true }
