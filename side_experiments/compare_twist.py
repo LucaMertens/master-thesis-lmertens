@@ -6,7 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 # Add src to path if needed
-sys.path.append(str(Path(__file__).parent.parent / "data_labeling_pipeline" / "src"))
+sys.path.append(str(Path(__file__).parent.parent / "preprocessing" / "data_labeling_pipeline" / "src"))
 
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
 from data_labeling_pipeline.ros1_transforms import get_static_transform
@@ -21,10 +21,6 @@ _R_NED_TO_ENU = R.from_matrix(np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]], dtype
 
 def ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base):
     """Convert odom linear velocity from NED -> ENU -> cpt7_imu -> base."""
-    # v_enu = _R_NED_TO_ENU.apply(odom_linear)  # static cpt7->base
-    # R_enu_to_cpt7 = R.from_quat(odom_orien).inv()  # per-timestep ENU->cpt7
-    # v_cpt7 = R_enu_to_cpt7.apply(v_enu)
-    # v_base = T_cpt7_to_base.rotation.apply(v_cpt7)  # static cpt7->base
     x = odom_linear
     R_enu_to_cpt7 = R.from_quat(odom_orien).inv()
     R_cpt7_to_base = T_cpt7_to_base.rotation
@@ -72,10 +68,10 @@ def compare_twist(mission_shortname):
     T_cpt7_to_base = get_static_transform(mission_path, "cpt7_imu", "base")
     print("Found static transform cpt7_imu -> base")
 
-    # Linear: NED -> ENU -> cpt7_imu -> base (full dynamic rotation)
+    # NED -> ENU -> cpt7_imu -> base
     odom_linear_base = ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base)
 
-    # Angular: derived from pose differentiation (odom_angular is always zero from TC)
+    # Angular velocity derived from pose differentiation (TC odom has none)
     ang_ts, odom_angular_base = derive_angular_velocity_base(
         odom_ts, odom_orien, T_cpt7_to_base
     )
@@ -94,7 +90,7 @@ def compare_twist(mission_shortname):
             f"\nForward velocity (moving samples): MSE_x={mse_x:.4f}, Corr_x={corr_x:.4f}"
         )
 
-    # --- Plotting ---
+    # Plotting
     _, axes = plt.subplots(5, 3, figsize=(18, 10), sharex=True)
     t_ref = cmd_ts[0]
 
@@ -125,7 +121,7 @@ def compare_twist(mission_shortname):
 
     curr_row = 2
 
-    # Also plot the raw odom linear for reference
+    # Raw NED odom
     for i, label in enumerate(["X (forward)", "Y (lateral)", "Z (vertical)"]):
         axes[curr_row, i].plot(
             odom_ts - t_ref,
@@ -141,10 +137,7 @@ def compare_twist(mission_shortname):
         axes[curr_row, i].grid(True)
 
     curr_row += 1
-    x = odom_linear
-
-    # Plot odom linear in ENU frame for reference
-    x = _R_NED_TO_ENU.apply(x)
+    x = _R_NED_TO_ENU.apply(odom_linear)
     for i, label in enumerate(["X (forward)", "Y (lateral)", "Z (vertical)"]):
         axes[curr_row, i].plot(
             odom_ts - t_ref,
