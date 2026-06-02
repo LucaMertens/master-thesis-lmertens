@@ -1,0 +1,48 @@
+TAG: 'grandtour'
+
+OPTIMIZER:
+    LR: 0.0001
+    WEIGHT_DECAY: 0.0001
+
+TRAINING:
+    BATCHSIZE: 4
+    WORKERS: 4
+    EPOCHS: 20
+    VERBOSE: False
+    GAMMA: 1.0
+    DEPTH_WEIGHT: 0.1
+    HORIZON: 300        # 30 s at 10 Hz
+    DT: 0.1             # matches RHE timestep
+    VIS_INTERVAL: 500
+
+MODEL:
+    TIME_LENGTH: 6
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]   # Alphasense native 1440x1080 (4:3), /3 -> 480x360, /8 divisible
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    LABEL_COLUMNS: [0, 1]    # (mu, nu) columns of trav_labels.npy
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],   # ANYmal is lower, uneven terrain
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: 'data_labeling_pipeline/output'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    # Only ETH-1 currently has extracted images/depth on disk. This is a
+    # development split (with leakage) for smoke testing. The production split
+    # must be terrain-aware (Q6): missions sharing an environment prefix
+    # (ETH-*, SBB-*, ALB-*, SNOW-*, ...) must not straddle train and valid.
+    TRAIN_MISSIONS: ['ETH-1']
+    VALID_MISSIONS: ['ETH-1']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.0
+    MAX_ROTATION: 0.0

@@ -1,0 +1,102 @@
+# Adapted from wayfaster repository (https://github.com/matval/wayfaster) wayfaster/train.py
+# Modifications:
+#   - Dataset -> GrandTourDataset, config loader -> traversability_network.config.
+#   - Train/valid sets built from configs.DATASET.TRAIN_MISSIONS / VALID_MISSIONS.
+#   - TrainingModule (trainer.py) is reused unchanged.
+import argparse
+
+import pytorch_lightning as pl
+import torch
+import torchvision.transforms as transforms
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import DDPStrategy
+from torch.utils.data import DataLoader
+
+from .config import get_cfg
+from .data.grandtour_dataset import GrandTourDataset
+from .network.trainer import TrainingModule
+
+
+def parse_config():
+    parser = argparse.ArgumentParser(description="arg parser")
+    parser.add_argument("--cfg_file", type=str, default=None, help="path to config yaml")
+    args = parser.parse_args()
+    return get_cfg(args.cfg_file)
+
+
+def main():
+    configs = parse_config()
+    print("configs:\n", configs)
+
+    pl.seed_everything(configs.SEED, workers=True)
+
+    transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.ToTensor(),
+    ])
+
+    train_dataset = GrandTourDataset(
+        configs, configs.DATASET.TRAIN_MISSIONS, transform=transform, train=True
+    )
+    valid_dataset = GrandTourDataset(
+        configs, configs.DATASET.VALID_MISSIONS, weights=train_dataset.weights
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=configs.TRAINING.BATCHSIZE,
+        num_workers=configs.TRAINING.WORKERS,
+        shuffle=True,
+        drop_last=True,
+        pin_memory=True,
+    )
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=configs.TRAINING.BATCHSIZE,
+        shuffle=False,
+        num_workers=configs.TRAINING.WORKERS,
+        drop_last=True,
+        pin_memory=True,
+    )
+
+    model = TrainingModule(configs)
+
+    if configs.MODEL.LOAD_NETWORK is not None:
+        print("Loading saved network from {}".format(configs.MODEL.LOAD_NETWORK))
+        pretrained_dict = torch.load(configs.MODEL.LOAD_NETWORK, map_location="cpu")["state_dict"]
+        model.load_state_dict(pretrained_dict)
+
+    wandb_logger = WandbLogger(project="WayFASTER-GrandTour", log_model="all")
+
+    checkpoint_callback = ModelCheckpoint(
+        dirpath="checkpoints",
+        filename="checkpoint_{epoch}-{valid_loss:.4f}",
+        monitor="valid_loss",
+        save_weights_only=True,
+        save_last=True,
+        save_top_k=1,
+    )
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
+
+    trainer = pl.Trainer(
+        devices=-1,
+        num_nodes=1,
+        gradient_clip_val=10,
+        sync_batchnorm=True,
+        enable_model_summary=True,
+        accelerator="gpu",
+        logger=wandb_logger,
+        default_root_dir="checkpoints",
+        max_epochs=configs.TRAINING.EPOCHS,
+        precision=configs.TRAINING.PRECISION,
+        strategy=DDPStrategy(find_unused_parameters=False),
+        callbacks=[checkpoint_callback, lr_monitor],
+    )
+
+    trainer.fit(model, train_loader, valid_loader)
+
+
+if __name__ == "__main__":
+    main()

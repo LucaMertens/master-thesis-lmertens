@@ -1,0 +1,31 @@
+[project]
+name = "traversability_network"
+version = "0.1.0"
+description = "WayFASTER traversability network adapted to the ANYmal GrandTour dataset."
+requires-python = "==3.14.*"
+dependencies = [
+    "torch",
+    "torchvision",
+    "pytorch-lightning",
+    "kornia",
+    "numpy",
+    "scipy",
+    "opencv-python-headless",
+    "pandas",
+    "easydict",
+    "pyyaml",
+    "tqdm",
+    "matplotlib",
+    "wandb",
+    "data_labeling_pipeline",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/traversability_network"]
+
+[tool.uv.sources]
+data_labeling_pipeline = { workspace = true }
