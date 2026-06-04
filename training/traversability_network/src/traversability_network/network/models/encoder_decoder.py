@@ -1,10 +1,12 @@
 # Taken from wayfaster repository (https://github.com/matval/wayfaster)
+# Modifications:
+#   - Updated deprecated pretrained= args to use torchvision weights= enums.
 import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision.models.resnet import resnet18, resnet34
+from torchvision.models.resnet import ResNet34_Weights, resnet18, resnet34
 
 class UpsamplingConcat(nn.Module):
     """
@@ -89,7 +91,7 @@ class Decoder(nn.Module):
     """
     def __init__(self, in_channels):
         super().__init__()
-        backbone = resnet18(pretrained=False, zero_init_residual=True)
+        backbone = resnet18(weights=None, zero_init_residual=True)
         self.first_conv = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = backbone.bn1
         self.relu = backbone.relu
@@ -147,7 +149,7 @@ class Encoder(nn.Module):
         self.downsample = downsample
 
         print('Using Resnet34')
-        resnet = resnet34(pretrained=True)
+        resnet = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
         c0 = 64
         c1 = 128
         c2 = 256

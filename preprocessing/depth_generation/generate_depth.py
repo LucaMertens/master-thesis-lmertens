@@ -134,6 +134,12 @@ def process_mission(
         )
         disp = run_stereo(model, ref_img, partner_img, scale=scale)
         depth = disparity_to_depth(disp, fx, baseline)
+        # zero the unreliable top border: both the rectification black region
+        # and the InputPadder top edge emit spurious near-depth. Crop the top
+        # band and any black pixels (+ halo) elsewhere.
+        depth[:16] = 0.0
+        border = cv2.dilate((ref_img < 10).astype(np.uint8), np.ones((17, 17), np.uint8))
+        depth[border.astype(bool)] = 0.0
         ts_ns = int(ref_arr["ts_ns"][i])
         rel = f"depth/{ts_ns}.png"
         cv2.imwrite(

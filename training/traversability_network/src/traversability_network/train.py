@@ -26,6 +26,8 @@ def parse_config():
 
 
 def main():
+    torch.set_float32_matmul_precision("high")
+    torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
     configs = parse_config()
     print("configs:\n", configs)
 

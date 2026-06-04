@@ -7,7 +7,7 @@ camera data. Everything downstream (``get_states``, ``get_extrinsics``,
 ``read_pcloud``, ``__getitem__``) is inherited unchanged, so ``TrainingModule``
 sees the exact same sample tuple as upstream WayFASTER.
 
-Per-mission files expected in ``<DATA_ROOT>/<mission>/`` (see implementation_plan.md):
+Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
     x_opt.npy            (N, 3)  x, y, theta at the RHE timestep
     timestamp.npy        (N,)    RHE timestamps (seconds)
     trav_labels.npy      (N, >=2) columns LABEL_COLUMNS = (mu, nu)
@@ -32,6 +32,8 @@ from scipy.spatial.transform import Slerp
 
 from ..network.dataloader import Dataset
 
+BORDER_CROP = 14  # top depth rows to drop (rectification border + padding artifact)
+
 
 class GrandTourDataset(Dataset):
     def __init__(self, configs, missions, transform=None, weights=None, train=False):
@@ -54,31 +56,42 @@ class GrandTourDataset(Dataset):
 
         self.bin_width = 0.2
         import torch
+
         self.dtype = torch.float32
 
         self.map_size = (
-            int((self.grid_bounds["xbound"][1] - self.grid_bounds["xbound"][0]) / self.grid_bounds["xbound"][2]),
-            int((self.grid_bounds["ybound"][1] - self.grid_bounds["ybound"][0]) / self.grid_bounds["ybound"][2]),
+            int(
+                (self.grid_bounds["xbound"][1] - self.grid_bounds["xbound"][0])
+                / self.grid_bounds["xbound"][2]
+            ),
+            int(
+                (self.grid_bounds["ybound"][1] - self.grid_bounds["ybound"][0])
+                / self.grid_bounds["ybound"][2]
+            ),
         )
 
         # GrandTour-specific knobs
         self.data_root = configs.DATASET.DATA_ROOT
         self.label_columns = list(configs.MODEL.LABEL_COLUMNS)
         self.time_tolerance = configs.DATASET.TIME_TOLERANCE
+        self.max_time_gap = configs.DATASET.MAX_TIME_GAP
 
         self.rosbags = []
         self.bag_sizes = [0]
 
         for mission in missions:
             mission_dir = os.path.join(self.data_root, mission)
-            formatted_data = self.read_mission(mission_dir)
-            if len(formatted_data["image_timestamp"]) >= self.n_frames:
-                self.rosbags.append(formatted_data)
-                self.bag_sizes.append(
-                    self.bag_sizes[-1] + len(formatted_data["image_timestamp"]) - self.n_frames + 1
-                )
-            elif self.verbose:
-                print(f"  skipping {mission}: too few frames")
+            for segment in self.read_mission(mission_dir):
+                if len(segment["image_timestamp"]) >= self.n_frames:
+                    self.rosbags.append(segment)
+                    self.bag_sizes.append(
+                        self.bag_sizes[-1]
+                        + len(segment["image_timestamp"])
+                        - self.n_frames
+                        + 1
+                    )
+                elif self.verbose:
+                    print(f"  skipping a {mission} segment: too few frames")
 
         if weights is None:
             self.weights, self.bins = self.prepare_weights()
@@ -115,9 +128,31 @@ class GrandTourDataset(Dataset):
         out_xyzw = slerp(clamped).as_quat()
         return out_xyzw[:, [3, 0, 1, 2]]  # xyzw -> wxyz
 
+    def read_pcloud(self, depth_image_list, cam_intrinsics_list, cam_extrinsics_list):
+        """Clean depth before voxelising.
+
+        Zeroes the top ``BORDER_CROP`` rows (the rectification black border and
+        InputPadder top edge emit spurious near-depth -> phantom obstacles right
+        in front of the robot) and clips to the dbound range (drops the rest of
+        the sub-0.3 m halo and >8 m sky that falls outside the grid anyway).
+        """
+        dmin, dmax = (
+            self.grid_bounds["dbound"][0] * 1000,
+            self.grid_bounds["dbound"][1] * 1000,
+        )
+        cleaned = []
+        for depth in depth_image_list:
+            depth = depth.copy()
+            depth[:BORDER_CROP] = 0
+            depth[(depth < dmin) | (depth > dmax)] = 0
+            cleaned.append(depth)
+        return super().read_pcloud(cleaned, cam_intrinsics_list, cam_extrinsics_list)
+
     def read_mission(self, mission_dir):
         x_opt = np.load(os.path.join(mission_dir, "x_opt.npy"))
-        timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
+        timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(
+            np.float64
+        )
         trav = np.load(os.path.join(mission_dir, "trav_labels.npy"))
         cam2base = np.load(os.path.join(mission_dir, "cam2base.npy"))
         intrinsics = np.load(os.path.join(mission_dir, "intrinsics.npy"))
@@ -143,27 +178,32 @@ class GrandTourDataset(Dataset):
         img_ts = img_ts[img_order]
         img_paths = [img_paths[i] for i in img_order]
 
-        # keep only frames with a full future horizon available
-        keep = img_ts < timestamp[-1]
+        # keep only frames inside the RHE state range with a future horizon
+        keep = (img_ts >= timestamp[0]) & (img_ts < timestamp[-1])
         img_ts = img_ts[keep]
         img_paths = [p for p, k in zip(img_paths, keep) if k]
 
         # ---- depth (nearest-neighbour to front_center timestamps) ----
         depth_paths = self._match_depth(mission_dir, img_ts)
 
-        n = len(img_ts)
-        return {
-            "image_timestamp": list(img_ts),
-            "color_image": img_paths,
-            "depth_image": depth_paths,
-            "intrinsics": [intrinsics] * n,
-            "cam2base": [cam2base] * n,
-            "states_timestamp": list(timestamp),
-            "position": position,
-            "quaternion": quaternion,
-            "action": action,
-            "traversability": traversability,
-        }
+        # split into contiguous segments so a temporal window never bridges a gap
+        breaks = np.flatnonzero(np.diff(img_ts) > self.max_time_gap) + 1
+        bounds = np.concatenate(([0], breaks, [len(img_ts)]))
+        segments = []
+        for lo, hi in zip(bounds[:-1], bounds[1:]):
+            segments.append({
+                "image_timestamp": list(img_ts[lo:hi]),
+                "color_image": img_paths[lo:hi],
+                "depth_image": depth_paths[lo:hi],
+                "intrinsics": [intrinsics] * (hi - lo),
+                "cam2base": [cam2base] * (hi - lo),
+                "states_timestamp": list(timestamp),
+                "position": position,
+                "quaternion": quaternion,
+                "action": action,
+                "traversability": traversability,
+            })
+        return segments
 
     def _match_depth(self, mission_dir, img_ts):
         depth_manifest_path = os.path.join(mission_dir, "depth_manifest.npz")
@@ -190,6 +230,8 @@ class GrandTourDataset(Dataset):
         deltas = np.abs(d_ts[nearest] - img_ts)
         n_bad = int(np.sum(deltas > self.time_tolerance))
         if n_bad:
-            print(f"  WARNING: {n_bad}/{len(img_ts)} frames exceed depth time tolerance "
-                  f"{self.time_tolerance}s (max {deltas.max():.3f}s)")
+            print(
+                f"  WARNING: {n_bad}/{len(img_ts)} frames exceed depth time tolerance "
+                f"{self.time_tolerance}s (max {deltas.max():.3f}s)"
+            )
         return [d_paths[i] for i in nearest]

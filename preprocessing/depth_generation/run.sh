@@ -23,7 +23,8 @@ IMAGE="${IMAGE:-grand-tour-depth:latest}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DATA_DIR="${DATA_DIR:-/datahome/lmertens/grand_tour_dataset/output}"
-MODELS_DIR="${MODELS_DIR:-${SCRIPT_DIR}/pretrained_models}"
+# MODELS_DIR="${MODELS_DIR:-${SCRIPT_DIR}/pretrained_models}"
+MODELS_DIR="${MODELS_DIR:-/home/lmertens/git-repos/master-thesis-lmertens/preprocessing/depth_generation/pretrained_models}"
 
 if [ "$#" -eq 0 ]; then
     set -- --missions /data/ETH-1

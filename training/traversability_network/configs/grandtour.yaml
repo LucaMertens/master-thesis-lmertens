@@ -6,7 +6,7 @@ OPTIMIZER:
 
 TRAINING:
     BATCHSIZE: 4
-    WORKERS: 4
+    WORKERS: 63
     EPOCHS: 20
     VERBOSE: False
     GAMMA: 1.0
@@ -31,7 +31,7 @@ MODEL:
         'dbound': [ 0.3, 8.0, 0.2]}
 
 DATASET:
-    DATA_ROOT: 'data_labeling_pipeline/output'
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/output'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5
     # Only ETH-1 currently has extracted images/depth on disk. This is a
