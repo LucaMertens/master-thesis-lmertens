@@ -29,3 +29,10 @@ packages = ["src/traversability_network"]
 
 [tool.uv.sources]
 data_labeling_pipeline = { workspace = true }
+
+[tool.pytest.ini_options]
+markers = [
+    "tier1: geometry checks (path coverage, heading consistency)",
+    "tier2: fast CPU/GPU guards (gradients, labels, velocity, overfit)",
+    "tier3: robustness checks (flip, dataset sweep, depth health)",
+]
