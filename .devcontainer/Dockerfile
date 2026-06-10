@@ -50,6 +50,9 @@ RUN set -eux; \
 # Copy tmux config
 COPY --chown=${USERNAME}:${USERNAME} config/.tmux.conf /home/${USERNAME}/.tmux.conf
 
+# Copy fish tmux shortcuts
+COPY --chown=${USERNAME}:${USERNAME} config/tmux.fish /home/${USERNAME}/.config/fish/conf.d/tmux.fish
+
 # Install the Antigravity Jupyter Notebook MCP server system-wide via pip
 RUN pip3 install --no-cache-dir \
     git+https://github.com/Ian747-tw/Antigravity-Jupiter-Notebook-MCP.git \
