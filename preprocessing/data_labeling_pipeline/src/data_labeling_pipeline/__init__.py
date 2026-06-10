@@ -1,3 +1,3 @@
-from .labeling_pipeline import DataLabelingPipeline
+from .labeling_pipeline import DataLabelingPipeline, run_labels
 
-__all__ = ["DataLabelingPipeline"]
+__all__ = ["DataLabelingPipeline", "run_labels"]

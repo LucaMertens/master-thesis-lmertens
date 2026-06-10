@@ -11,6 +11,7 @@
 [tool.uv.workspace]
 members = [
     "preprocessing/data_labeling_pipeline",
+    "preprocessing/data_download",
     "preprocessing/grandtour_extraction",
     "training/traversability_network",
     "shared-utils",

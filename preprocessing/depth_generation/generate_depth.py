@@ -2,7 +2,7 @@
 """Run FoundationStereo on rectified GrandTour stereo pairs.
 
 Writes 16-bit mm depth PNGs and depth_manifest.npz per mission.
-Run via run.sh (Docker); inputs from grandtour_extraction.preprocess.
+Run via run.sh (Docker); inputs from grandtour_extraction.pipeline.
 """
 
 import argparse
@@ -90,7 +90,7 @@ def match_pairs(left_ts, right_ts, tol=0.01):
 def _require(path: str) -> str:
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"{path} missing — run `uv run python -m grandtour_extraction.preprocess` first."
+            f"{path} missing — run `uv run python -m grandtour_extraction.pipeline --no-labels` first."
         )
     return path
 

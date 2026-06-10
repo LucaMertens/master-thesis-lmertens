@@ -11,6 +11,10 @@ from .hyperparameters import STEP_SIZE, N, P_m, P_w, P_x, dt
 from .rhe import RecedingHorizonEstimator
 
 
+def run_labels(mission_path, output_dir) -> None:
+    DataLabelingPipeline(mission_path=mission_path).process_mission(output_dir=output_dir)
+
+
 class DataLabelingPipeline:
     def __init__(self, mission_path):
         self.mission_path = mission_path

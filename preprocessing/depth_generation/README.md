@@ -19,29 +19,16 @@ cd depth_generation
 
 ## Run
 
-Inputs come from `uv run python -m grandtour_extraction.preprocess` (run that first).
+Don't invoke `run.sh` directly — it's the Docker launcher used internally by
+`grandtour_extraction.pipeline --depth` (needs a Docker + GPU host; not this
+devcontainer). Run the other extraction steps first, then:
 
 ```bash
-cd depth_generation
-
-# all GPUs
-./run.sh --missions /data/ETH-1
-
-# specific GPU
-GPUS='"device=0"' ./run.sh --missions /data/ETH-1
-
-# multiple missions
-GPUS='"device=0"' ./run.sh --missions /data/ETH-1 /data/ETH-3
+uv run python -m grandtour_extraction.pipeline --mission ETH-1 --depth --gpus '"device=0"'
 ```
 
 `run.sh` mounts `/datahome/lmertens/grand_tour_dataset/output/` at `/data` and the
 weights read-only. Depth is written back next to each mission's images.
-
-Override defaults:
-```bash
-DATA_DIR=/abs/path/to/output MODELS_DIR=/abs/path/to/weights GPUS='"device=1"' \
-  ./run.sh --missions /data/ETH-1
-```
 
 ## Output
 
