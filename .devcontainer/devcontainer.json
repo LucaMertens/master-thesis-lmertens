@@ -44,8 +44,8 @@
         "source=${localEnv:HOME}/.kleinkram.json,target=/home/${localEnv:USER}/.kleinkram.json,type=bind,consistency=cached",
         "source=${localEnv:HOME}/.claude,target=/home/${localEnv:USER}/.claude,type=bind,consistency=cached",
         "source=${localEnv:HOME}/.claude.json,target=/home/${localEnv:USER}/.claude.json,type=bind,consistency=cached",
-        // Persist container app data, including fish history and uv caches, across rebuilds
-        "source=master-thesis-lmertens-local-share,target=/home/${localEnv:USER}/.local/share,type=volume",
+        // Persist fish history across rebuilds (uv cache intentionally not persisted)
+        "source=master-thesis-lmertens-fish-history,target=/home/${localEnv:USER}/.local/share/fish,type=volume",
         // Docker socket — required for DooD (spawning sibling containers)
         "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     ],
@@ -80,5 +80,5 @@
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
     // "forwardPorts": [],
     // Post-create: sync dependencies and register the venv as a Jupyter kernel
-    "postCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /workspaces/master-thesis-lmertens/.venv /home/${localEnv:USER}/.local/share && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'"
+    "postCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /workspaces/master-thesis-lmertens/.venv /home/${localEnv:USER}/.local && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'"
 }
