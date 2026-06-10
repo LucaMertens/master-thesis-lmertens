@@ -1,12 +1,9 @@
 """Download bags needed for WayFASTER adaptation from the GrandTour dataset.
 
 Required bags per mission:
-  - *_alphasense.bag       : RGB stereo images (PTP-synchronized)
+  - *_alphasense.bag       : Stereo images
   - *_cpt7_ie_tc.bag       : GNSS/IMU odometry
   - *_tf_minimal.bag       : TF tree (camera extrinsics via /tf_static)
-
-Run for one mission first to inspect bag structure, then expand to full dataset
-by adding mission shortnames to TARGET_MISSIONS.
 """
 
 import subprocess
@@ -20,8 +17,13 @@ GRAND_TOUR_FOLDER = Path("/datahome/lmertens/grand_tour_dataset")
 
 # Start with one mission for pipeline development.
 # Expand to all missions once validated:
-#   TARGET_MISSIONS = {m["short_name"] for m in missions}
-TARGET_MISSIONS = {"ETH-1"}
+INCLUDE_MISSIONS = {m["short_name"] for m in missions}
+# INCLUDE_MISSIONS = {"ETH-1"}
+
+EXCLUDE_MISSIONS = {"ICE-1"}
+
+TARGET_MISSIONS = sorted(INCLUDE_MISSIONS - EXCLUDE_MISSIONS)
+
 
 PATTERNS = ["*alphasense*", "*cpt7_ie_tc*", "*tf_minimal*"]
 
@@ -40,7 +42,7 @@ def get_files(mission_shortname: str):
 
 def prompt_download():
     total_bytes = 0
-    for mission in sorted(TARGET_MISSIONS):
+    for mission in TARGET_MISSIONS:
         files = get_files(mission)
         print(f"\n{mission}: {len(files)} files")
         for f in files:
@@ -51,7 +53,7 @@ def prompt_download():
 
 
 def download():
-    for mission in sorted(TARGET_MISSIONS):
+    for mission in TARGET_MISSIONS:
         files = get_files(mission)
         if not files:
             continue

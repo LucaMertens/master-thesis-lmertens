@@ -94,7 +94,7 @@ class DataLabelingPipeline:
 
         print("Saving continuous labels.")
         np.save(out_path / "timestamp.npy", shared_ts)
-        np.save(out_path / "x_opt.npy", optimized_states)
+        np.save(out_path / "rhe_states.npy", optimized_states)
         np.save(out_path / "trav_labels.npy", optimized_labels)
         np.save(out_path / "mu_confidences.npy", optimized_w_mu)
         np.save(out_path / "nu_confidences.npy", optimized_w_nu)

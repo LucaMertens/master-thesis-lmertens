@@ -8,19 +8,22 @@ camera data. Everything downstream (``get_states``, ``get_extrinsics``,
 sees the exact same sample tuple as upstream WayFASTER.
 
 Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
-    x_opt.npy            (N, 3)  x, y, theta at the RHE timestep
-    timestamp.npy        (N,)    RHE timestamps (seconds)
+    timestamp.npy        (N,)    RHE timestamps (seconds), the reference time grid
     trav_labels.npy      (N, >=2) columns LABEL_COLUMNS = (mu, nu)
     cam2base.npy         (4, 4)  from extract_extrinsics.py
     intrinsics.npy       (3, 3)  front_center K, from extract_images.py
-    cpt7_odom.npy        (M, 8)  t, x, y, z, qw, qx, qy, qz (base in enu)
+    cpt7_odom.npy        (M, 8)  t, x, y, z, qw, qx, qy, qz (base in enu, ground-truth pose)
     image_manifest.npz   front_center structured array {ts_ns, path}
     depth_manifest.npz   structured array {ts_ns, path} (FoundationStereo output)
 
+Pose (position, orientation, action) comes from the cpt7 ground-truth odometry
+interpolated to the RHE timestamps, NOT from rhe_states.npy (the RHE state
+estimate, an optimization byproduct).
+
 Mapping to WayFASTER's rosbag_dict:
-    position       <- (x_opt.x, x_opt.y, 0)
+    position       <- cpt7 (x, y, 0) interpolated to RHE timestamps
     quaternion     <- cpt7 orientation slerped to RHE timestamps (w, x, y, z)
-    action         <- finite-difference (v, omega) from x_opt
+    action         <- finite-difference (v, omega) from cpt7 position and yaw
     traversability <- trav_labels[:, LABEL_COLUMNS]
 """
 
@@ -109,24 +112,27 @@ class GrandTourDataset(Dataset):
         omega = np.gradient(np.unwrap(theta), timestamp)
         return np.column_stack((v, omega))
 
-    def _slerp_orientation(self, cpt7, query_t):
-        """Slerp cpt7 (M,8: t,x,y,z,qw,qx,qy,qz) orientation onto query_t.
+    def _interp_cpt7(self, cpt7, query_t):
+        """Interpolate cpt7 ground-truth pose (M,8: t,x,y,z,qw,qx,qy,qz) onto query_t.
 
-        Returns quaternions in (w, x, y, z) order, matching WayFASTER's storage.
+        Linear interp for position, slerp for orientation, both clamped to the
+        cpt7 time range. Returns (position (N,3), quaternion (N,4) in w,x,y,z order).
         """
         t = cpt7[:, 0]
-        quat_wxyz = cpt7[:, 4:8]
         order = np.argsort(t)
         t = t[order]
-        quat_wxyz = quat_wxyz[order]
+        pos = cpt7[order, 1:4]
+        quat_wxyz = cpt7[order, 4:8]
         # de-duplicate timestamps (Slerp requires strictly increasing)
         t, uniq = np.unique(t, return_index=True)
+        pos = pos[uniq]
         quat_wxyz = quat_wxyz[uniq]
-        rot = R.from_quat(quat_wxyz[:, [1, 2, 3, 0]])  # wxyz -> xyzw
-        slerp = Slerp(t, rot)
         clamped = np.clip(query_t, t[0], t[-1])
-        out_xyzw = slerp(clamped).as_quat()
-        return out_xyzw[:, [3, 0, 1, 2]]  # xyzw -> wxyz
+        position = np.column_stack([np.interp(clamped, t, pos[:, i]) for i in range(3)])
+        rot = R.from_quat(quat_wxyz[:, [1, 2, 3, 0]])  # wxyz -> xyzw
+        out_xyzw = Slerp(t, rot)(clamped).as_quat()
+        quaternion = out_xyzw[:, [3, 0, 1, 2]]  # xyzw -> wxyz
+        return position, quaternion
 
     def read_pcloud(self, depth_image_list, cam_intrinsics_list, cam_extrinsics_list):
         """Clean depth before voxelising.
@@ -149,7 +155,6 @@ class GrandTourDataset(Dataset):
         return super().read_pcloud(cleaned, cam_intrinsics_list, cam_extrinsics_list)
 
     def read_mission(self, mission_dir):
-        x_opt = np.load(os.path.join(mission_dir, "x_opt.npy"))
         timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(
             np.float64
         )
@@ -160,13 +165,14 @@ class GrandTourDataset(Dataset):
 
         order = np.argsort(timestamp)
         timestamp = timestamp[order]
-        x_opt = x_opt[order]
         trav = trav[order]
 
-        x, y, theta = x_opt[:, 0], x_opt[:, 1], x_opt[:, 2]
+        # Ground-truth pose from cpt7 odometry (not the RHE estimate).
+        cpt7_pos, quaternion = self._interp_cpt7(cpt7, timestamp)
+        x, y = cpt7_pos[:, 0], cpt7_pos[:, 1]
+        theta = R.from_quat(quaternion[:, [1, 2, 3, 0]]).as_euler("zyx")[:, 0]
         position = np.column_stack((x, y, np.zeros_like(x)))
         action = self._finite_diff_action(x, y, theta, timestamp)
-        quaternion = self._slerp_orientation(cpt7, timestamp)
         traversability = trav[:, self.label_columns]
 
         # ---- images (front_center) ----

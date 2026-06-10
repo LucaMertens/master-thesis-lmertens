@@ -126,11 +126,11 @@ def test_path_in_map_coverage():
 
 @pytest.mark.tier1
 def test_heading_consistency():
-    """x_opt yaw and cpt7-slerped yaw must agree within 0.1 rad (median)."""
+    """RHE yaw and cpt7-slerped yaw must agree within 0.1 rad (median)."""
     _skip_no_data()
     mission_dir = os.path.join(DATA_ROOT, MISSION)
 
-    x_opt = np.load(os.path.join(mission_dir, "x_opt.npy"))
+    rhe_states = np.load(os.path.join(mission_dir, "rhe_states.npy"))
     timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
     cpt7 = np.load(os.path.join(mission_dir, "cpt7_odom.npy"))
 
@@ -146,7 +146,7 @@ def test_heading_consistency():
     clamped = np.clip(timestamp, t_cpt7[0], t_cpt7[-1])
     yaw_cpt7 = slerp(clamped).as_euler("zyx")[:, 0]
 
-    yaw_rhe = x_opt[:, 2]
+    yaw_rhe = rhe_states[:, 2]
     diff = np.angle(np.exp(1j * (yaw_rhe - yaw_cpt7)))  # wrap to [-π, π]
 
     median_abs = float(np.median(np.abs(diff)))
@@ -164,6 +164,56 @@ def test_heading_consistency():
     assert median_abs < 0.1, (
         f"Heading disagreement too large: median={median_abs:.4f} rad, "
         f"mean_offset={mean_offset:.4f} rad, residual_std={residual_std:.4f} rad"
+    )
+
+
+@pytest.mark.tier1
+def test_position_consistency():
+    """RHE x,y and cpt7 ground-truth x,y must agree within 0.3 m (median)."""
+    _skip_no_data()
+    mission_dir = os.path.join(DATA_ROOT, MISSION)
+    odom_path = os.path.join(mission_dir, "cpt7_odom.npy")
+    if not os.path.exists(odom_path):
+        pytest.skip(
+            f"No ground-truth odom for {MISSION}: {odom_path} missing. "
+            "Rerun extrinsics extraction: "
+            f"uv run python -m grandtour_extraction.extract_extrinsics "
+            f"--mission-dir <bags>/{MISSION} --output-dir {mission_dir}"
+        )
+
+    rhe_states = np.load(os.path.join(mission_dir, "rhe_states.npy"))
+    timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
+    cpt7 = np.load(odom_path)
+
+    order = np.argsort(timestamp)
+    timestamp, rhe_states = timestamp[order], rhe_states[order]
+
+    # Replicate GrandTourDataset._interp_cpt7 position interpolation
+    t_cpt7 = cpt7[:, 0]
+    o = np.argsort(t_cpt7)
+    t_cpt7, pos = t_cpt7[o], cpt7[o, 1:3]
+    t_cpt7, uniq = np.unique(t_cpt7, return_index=True)
+    pos = pos[uniq]
+    clamped = np.clip(timestamp, t_cpt7[0], t_cpt7[-1])
+    x_cpt7 = np.interp(clamped, t_cpt7, pos[:, 0])
+    y_cpt7 = np.interp(clamped, t_cpt7, pos[:, 1])
+
+    dist = np.hypot(rhe_states[:, 0] - x_cpt7, rhe_states[:, 1] - y_cpt7)
+    median, p90, dmax = (
+        float(np.median(dist)),
+        float(np.percentile(dist, 90)),
+        float(dist.max()),
+    )
+    print(
+        f"\nPosition consistency:\n"
+        f"  median |Δpos| = {median:.4f} m\n"
+        f"  p90    |Δpos| = {p90:.4f} m\n"
+        f"  max    |Δpos| = {dmax:.4f} m"
+    )
+
+    assert median < 0.3, (
+        f"Position disagreement too large: median={median:.4f} m, "
+        f"p90={p90:.4f} m, max={dmax:.4f} m"
     )
 
 
@@ -269,19 +319,19 @@ def test_velocity_sanity():
         if os.path.isdir(os.path.join(DATA_ROOT, m))
         and all(
             os.path.exists(os.path.join(DATA_ROOT, m, f))
-            for f in ("x_opt.npy", "timestamp.npy")
+            for f in ("rhe_states.npy", "timestamp.npy")
         )
     )
     if not missions:
-        pytest.skip("No missions with x_opt/timestamp")
+        pytest.skip("No missions with rhe_states/timestamp")
 
     print()
     for m in missions:
         mdir = os.path.join(DATA_ROOT, m)
-        x_opt = np.load(os.path.join(mdir, "x_opt.npy"))
+        rhe_states = np.load(os.path.join(mdir, "rhe_states.npy"))
         ts = np.load(os.path.join(mdir, "timestamp.npy")).astype(np.float64)
 
-        x, y, theta = x_opt[:, 0], x_opt[:, 1], x_opt[:, 2]
+        x, y, theta = rhe_states[:, 0], rhe_states[:, 1], rhe_states[:, 2]
         vx = np.gradient(x, ts)
         vy = np.gradient(y, ts)
         v = vx * np.cos(theta) + vy * np.sin(theta)
@@ -388,7 +438,7 @@ def test_dataset_integrity_sweep():
         pytest.skip(f"DATA_ROOT not available: {DATA_ROOT}")
 
     required = [
-        "x_opt.npy",
+        "rhe_states.npy",
         "timestamp.npy",
         "trav_labels.npy",
         "cam2base.npy",
@@ -405,19 +455,19 @@ def test_dataset_integrity_sweep():
             print(f"  {m}: skip (missing {missing})")
             continue
 
-        x_opt = np.load(os.path.join(mdir, "x_opt.npy"))
+        rhe_states = np.load(os.path.join(mdir, "rhe_states.npy"))
         ts = np.load(os.path.join(mdir, "timestamp.npy"))
         trav = np.load(os.path.join(mdir, "trav_labels.npy"))
 
-        assert x_opt.ndim == 2 and x_opt.shape[1] == 3, (
-            f"{m}: x_opt shape {x_opt.shape}"
+        assert rhe_states.ndim == 2 and rhe_states.shape[1] == 3, (
+            f"{m}: rhe_states shape {rhe_states.shape}"
         )
         assert ts.ndim == 1, f"{m}: timestamp shape {ts.shape}"
         assert trav.ndim == 2 and trav.shape[1] >= 2, (
             f"{m}: trav_labels shape {trav.shape}"
         )
         N = len(ts)
-        assert len(x_opt) == N, f"{m}: x_opt len {len(x_opt)} != ts len {N}"
+        assert len(rhe_states) == N, f"{m}: rhe_states len {len(rhe_states)} != ts len {N}"
         assert len(trav) == N, f"{m}: trav len {len(trav)} != ts len {N}"
 
         has_images = os.path.exists(os.path.join(mdir, "image_manifest.npz"))
