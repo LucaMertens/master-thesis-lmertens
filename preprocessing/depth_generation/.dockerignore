@@ -1,8 +1,6 @@
 # FoundationStereo is cloned inside the image at build time -- never send a local
 # copy into the build context.
 FoundationStereo/
-# Model weights are mounted at runtime, not baked into the image.
-pretrained_models/
 .git/
 __pycache__/
 *.pyc

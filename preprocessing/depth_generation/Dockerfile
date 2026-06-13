@@ -1,57 +1,50 @@
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+# Runtime image only: torch's cu124 wheels ship their own CUDA libs, and nothing
+# is compiled from source (FoundationStereo never imports flash-attn), so the
+# 7GB devel toolkit and the conda install are unnecessary.
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=US/Pacific
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# System libs — many are runtime deps of opencv-contrib and open3d, keep them.
-RUN apt-get update --fix-missing && \
-    apt-get install -y --no-install-recommends \
-        apt-utils bzip2 build-essential ca-certificates checkinstall cmake curl \
-        ffmpeg freeglut3-dev g++ gcc gfortran git libatlas-base-dev libavcodec-dev \
-        libavformat-dev libblas-dev libccd-dev libcgal-dev libfaac-dev libflann-dev \
-        libglew-dev libgphoto2-dev libgtk2.0-dev libhdf5-dev libjpeg8-dev liblapack-dev \
-        libmp3lame-dev libopencore-amrnb-dev libopencore-amrwb-dev libproj-dev \
-        libswscale-dev libtbb-dev libtheora-dev libtiff5-dev libturbojpeg-dev \
-        libusb-1.0-0-dev libv4l-dev libvorbis-dev libxine2-dev libxvidcore-dev \
-        libyaml-cpp-dev libzmq3-dev openexr p7zip-full pkg-config proj-data \
-        protobuf-compiler software-properties-common wget x264 xvfb yasm zlib1g-dev && \
+# Minimal runtime deps: python, git for the clone, GL/gomp/usb for opencv & open3d.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3-pip git ca-certificates \
+    libgl1 libglib2.0-0 libgomp1 libegl1 libusb-1.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /miniconda.sh && \
-    /bin/bash /miniconda.sh -b -p /opt/conda && \
-    rm /miniconda.sh && \
-    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
-    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
-    /opt/conda/bin/conda create -n foundation_stereo python=3.11 -y && \
-    /opt/conda/bin/conda clean -a -y
-
-# PATH must point at the env — exec-form ENTRYPOINT doesn't run a login shell.
-ENV PATH=/opt/conda/envs/foundation_stereo/bin:$PATH
 ENV OPENCV_IO_ENABLE_OPENEXR=1
 
-# Torch from the cu124 index (verbatim from FoundationStereo's own Dockerfile).
+# Torch from the cu124 index, then only the packages FoundationStereo's
+# core/ and Utils.py actually import.
 RUN pip install --no-cache-dir torch==2.4.0 torchvision==0.19.0 \
-        --index-url https://download.pytorch.org/whl/cu124
-
-# flash-attn pinned to 2.6.3 — newer releases need torch >= 2.5.
-# xformers from cu124 to match torch. Order matters: torch first, then flash-attn.
-ARG MAX_JOBS=4
-ENV MAX_JOBS=${MAX_JOBS}
-RUN pip install --no-cache-dir \
-        scikit-image omegaconf opencv-contrib-python imgaug Ninja timm albumentations \
-        scipy joblib scikit-learn ruamel.yaml trimesh pyyaml imageio open3d \
-        transformations einops gdown tqdm && \
-    pip install --no-cache-dir flash-attn==2.6.3 --no-build-isolation && \
+    --index-url https://download.pytorch.org/whl/cu124 && \
     pip install --no-cache-dir xformers==0.0.28.post1 \
-        --index-url https://download.pytorch.org/whl/cu124
+    --index-url https://download.pytorch.org/whl/cu124 && \
+    pip install --no-cache-dir \
+    opencv-python-headless scipy omegaconf timm einops tqdm \
+    imageio joblib trimesh open3d pandas
 
+# Shallow fetch of the pinned commit; full history is >1GB.
 ARG FOUNDATIONSTEREO_COMMIT=6e8806816b533e4d13ddbb95ffa907b797060a62
-RUN git clone https://github.com/NVlabs/FoundationStereo /app/FoundationStereo && \
-    git -C /app/FoundationStereo checkout ${FOUNDATIONSTEREO_COMMIT}
+RUN git init /app/FoundationStereo && \
+    git -C /app/FoundationStereo remote add origin https://github.com/NVlabs/FoundationStereo && \
+    git -C /app/FoundationStereo fetch --depth 1 origin ${FOUNDATIONSTEREO_COMMIT} && \
+    git -C /app/FoundationStereo checkout FETCH_HEAD && \
+    rm -rf /app/FoundationStereo/.git
 
+# Pre-fetch the DINOv2 backbone (code + weights) into the torch hub cache so
+# the GPU workers don't all race to download/extract it at once at runtime,
+# which corrupts the cache (ENOTEMPTY errors). The cache lives outside /root
+# and HOME points to /tmp because run.sh runs the container as the host user,
+# so depth outputs are not root-owned on the host.
+ENV TORCH_HOME=/opt/torch HOME=/tmp
+RUN python3 -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=True)" && \
+    chmod -R a+rwX /opt/torch
+
+# Weights are baked in (not mounted): the docker daemon is the host's, and the
+# devcontainer's repo path does not exist on the host, so a bind mount would be empty.
 WORKDIR /app
 COPY generate_depth.py /app/generate_depth.py
+COPY pretrained_models/23-51-11 /app/pretrained_models/23-51-11
 
-ENTRYPOINT ["python", "generate_depth.py"]
+ENTRYPOINT ["python3", "-u", "generate_depth.py"]
 CMD ["--ckpt", "/app/pretrained_models/23-51-11/model_best_bp2.pth", "--missions", "/data/ETH-1"]
