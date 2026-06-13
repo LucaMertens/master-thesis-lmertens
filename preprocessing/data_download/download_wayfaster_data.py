@@ -24,8 +24,7 @@ EXCLUDE_MISSIONS = {"ICE-1"}
 TARGET_MISSIONS = sorted(INCLUDE_MISSIONS - EXCLUDE_MISSIONS)
 
 
-# PATTERNS = ["*alphasense*", "*dlio*", "*tf_minimal*"]
-PATTERNS = ["*dlio*"]
+PATTERNS = ["*alphasense*", "*dlio*", "*tf_minimal*"]
 
 
 def get_files(mission_shortname: str):
