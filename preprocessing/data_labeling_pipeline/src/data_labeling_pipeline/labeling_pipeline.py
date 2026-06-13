@@ -8,11 +8,17 @@ from tqdm import trange
 from . import hyperparameters as hp
 from .dataset_loader import GrandTourLoader
 from .hyperparameters import STEP_SIZE, N, P_m, P_w, P_x, dt
+from .pipeline_step import is_step_done, log_step, write_step_done
 from .rhe import RecedingHorizonEstimator
 
+# Bump to invalidate labels from older versions of this step.
+LABELS_VERSION = 2
 
-def run_labels(mission_path, output_dir) -> None:
-    DataLabelingPipeline(mission_path=mission_path).process_mission(output_dir=output_dir)
+
+def run_labels(mission_path, output_dir, force: bool = False) -> None:
+    DataLabelingPipeline(mission_path=mission_path).process_mission(
+        output_dir=output_dir, force=force
+    )
 
 
 class DataLabelingPipeline:
@@ -40,7 +46,7 @@ class DataLabelingPipeline:
             P_w=P_w,
         )
 
-    def process_mission(self, output_dir):
+    def process_mission(self, output_dir, force: bool = False):
         """Process the entire mission and save labels.
 
         All data is loaded in ENU convention by GrandTourLoader, which aligns
@@ -49,6 +55,14 @@ class DataLabelingPipeline:
         out_path = pathlib.Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
+        if not force and is_step_done(out_path, "labels", LABELS_VERSION):
+            print(f"Skipping labels (up to date): {out_path}")
+            return None
+
+        with log_step("labels", out_path):
+            return self._run(out_path)
+
+    def _run(self, out_path):
         print(f"Loading data from {self.mission_path} ...")
         shared_ts, U, Z = self.loader.load_data_shared_timestamps(dt=self.dt)
 
@@ -65,7 +79,10 @@ class DataLabelingPipeline:
         self.rhe.reset()
 
         print("Running Receding Horizon Estimator ...")
-        for i in trange(0, total_steps - self.N + 1, STEP_SIZE, desc="RHE Progress"):
+        # disable=None turns the bar off when stdout is not a tty (e.g. log files)
+        for i in trange(
+            0, total_steps - self.N + 1, STEP_SIZE, desc="RHE Progress", disable=None
+        ):
             U_window = U[i : i + self.N]
             Z_window = Z[i : i + self.N]
 
@@ -81,8 +98,8 @@ class DataLabelingPipeline:
             v_means[i : i + STEP_SIZE] = v_mean
             omega_means[i : i + STEP_SIZE] = omega_mean
 
-            if i % 100 == 0:
-                print(f"Processed step {i}/{total_steps - self.N}")
+            if i % (100 * STEP_SIZE) == 0:
+                print(f"Processed step {i}/{total_steps - self.N}", flush=True)
 
         # Fill remaining steps if any
         last_processed_idx = ((total_steps - self.N) // STEP_SIZE) * STEP_SIZE
@@ -121,6 +138,7 @@ class DataLabelingPipeline:
         with open(out_path / "hyperparameters.json", "w") as hf:
             json.dump(hyperparams, hf, indent=2)
 
+        write_step_done(out_path, "labels", LABELS_VERSION)
         print("Mission processing complete.")
         return (
             optimized_states,

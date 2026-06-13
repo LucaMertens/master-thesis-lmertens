@@ -50,6 +50,7 @@ class Rectifiers:
 
 
 def read_camera_infos(mission_dir, cameras=CAMERAS) -> dict[str, CamInfo]:
+    """Raw (pre-rectification) per-camera intrinsics from the first camera_info messages."""
     bag = next(pathlib.Path(mission_dir).glob("*_alphasense.bag"))
     topic2cam = {f"/boxi/alphasense/{c}/camera_info": c for c in cameras}
     ts = get_typestore(Stores.ROS1_NOETIC)
