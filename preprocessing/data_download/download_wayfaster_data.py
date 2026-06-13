@@ -15,13 +15,16 @@ from data_labeling_pipeline.grandtour_missions import get_mission_by_shortname, 
 
 GRAND_TOUR_FOLDER = Path("/datahome/lmertens/grand_tour_dataset")
 
-# Re-download dlio bags for the odometry fallback:
-INCLUDE_MISSIONS = {"CON-4"}
+# Start with one mission for pipeline development.
+# Expand to all missions once validated:
+INCLUDE_MISSIONS = {m["short_name"] for m in missions}
 
 EXCLUDE_MISSIONS = {"ICE-1"}
 
 TARGET_MISSIONS = sorted(INCLUDE_MISSIONS - EXCLUDE_MISSIONS)
 
+
+# PATTERNS = ["*alphasense*", "*dlio*", "*tf_minimal*"]
 PATTERNS = ["*dlio*"]
 
 
