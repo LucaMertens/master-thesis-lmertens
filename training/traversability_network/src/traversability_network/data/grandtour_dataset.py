@@ -10,20 +10,20 @@ sees the exact same sample tuple as upstream WayFASTER.
 Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
     timestamp.npy        (N,)    RHE timestamps (seconds), the reference time grid
     trav_labels.npy      (N, >=2) columns LABEL_COLUMNS = (mu, nu)
-    cam2base.npy         (4, 4)  from extract_extrinsics.py
-    intrinsics.npy       (3, 3)  front_center K, from extract_images.py
-    cpt7_odom.npy        (M, 8)  t, x, y, z, qw, qx, qy, qz (base in enu, ground-truth pose)
+    cam2base.npy         (4, 4)  front_center, from extract_alphasense.py
+    intrinsics.npy       (3, 3)  front_center K, from extract_alphasense.py
+    dlio_odom.npy        (M, 8)  t, x, y, z, qw, qx, qy, qz (base in dlio_map, ground-truth pose), from extract_dlio.py
     image_manifest.npz   front_center structured array {ts_ns, path}
     depth_manifest.npz   structured array {ts_ns, path} (FoundationStereo output)
 
-Pose (position, orientation, action) comes from the cpt7 ground-truth odometry
+Pose (position, orientation, action) comes from the dlio ground-truth odometry
 interpolated to the RHE timestamps, NOT from rhe_states.npy (the RHE state
 estimate, an optimization byproduct).
 
 Mapping to WayFASTER's rosbag_dict:
-    position       <- cpt7 (x, y, 0) interpolated to RHE timestamps
-    quaternion     <- cpt7 orientation slerped to RHE timestamps (w, x, y, z)
-    action         <- finite-difference (v, omega) from cpt7 position and yaw
+    position       <- dlio (x, y, 0) interpolated to RHE timestamps
+    quaternion     <- dlio orientation slerped to RHE timestamps (w, x, y, z)
+    action         <- finite-difference (v, omega) from dlio position and yaw
     traversability <- trav_labels[:, LABEL_COLUMNS]
 """
 
@@ -112,17 +112,17 @@ class GrandTourDataset(Dataset):
         omega = np.gradient(np.unwrap(theta), timestamp)
         return np.column_stack((v, omega))
 
-    def _interp_cpt7(self, cpt7, query_t):
-        """Interpolate cpt7 ground-truth pose (M,8: t,x,y,z,qw,qx,qy,qz) onto query_t.
+    def _interp_odom(self, odom, query_t):
+        """Interpolate dlio ground-truth pose (M,8: t,x,y,z,qw,qx,qy,qz) onto query_t.
 
         Linear interp for position, slerp for orientation, both clamped to the
-        cpt7 time range. Returns (position (N,3), quaternion (N,4) in w,x,y,z order).
+        odom time range. Returns (position (N,3), quaternion (N,4) in w,x,y,z order).
         """
-        t = cpt7[:, 0]
+        t = odom[:, 0]
         order = np.argsort(t)
         t = t[order]
-        pos = cpt7[order, 1:4]
-        quat_wxyz = cpt7[order, 4:8]
+        pos = odom[order, 1:4]
+        quat_wxyz = odom[order, 4:8]
         # de-duplicate timestamps (Slerp requires strictly increasing)
         t, uniq = np.unique(t, return_index=True)
         pos = pos[uniq]
@@ -161,15 +161,15 @@ class GrandTourDataset(Dataset):
         trav = np.load(os.path.join(mission_dir, "trav_labels.npy"))
         cam2base = np.load(os.path.join(mission_dir, "cam2base.npy"))
         intrinsics = np.load(os.path.join(mission_dir, "intrinsics.npy"))
-        cpt7 = np.load(os.path.join(mission_dir, "cpt7_odom.npy"))
+        odom = np.load(os.path.join(mission_dir, "dlio_odom.npy"))
 
         order = np.argsort(timestamp)
         timestamp = timestamp[order]
         trav = trav[order]
 
-        # Ground-truth pose from cpt7 odometry (not the RHE estimate).
-        cpt7_pos, quaternion = self._interp_cpt7(cpt7, timestamp)
-        x, y = cpt7_pos[:, 0], cpt7_pos[:, 1]
+        # Ground-truth pose from dlio odometry (not the RHE estimate).
+        odom_pos, quaternion = self._interp_odom(odom, timestamp)
+        x, y = odom_pos[:, 0], odom_pos[:, 1]
         theta = R.from_quat(quaternion[:, [1, 2, 3, 0]]).as_euler("zyx")[:, 0]
         position = np.column_stack((x, y, np.zeros_like(x)))
         action = self._finite_diff_action(x, y, theta, timestamp)

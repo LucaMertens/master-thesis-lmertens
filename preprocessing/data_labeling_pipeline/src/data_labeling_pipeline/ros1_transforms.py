@@ -111,21 +111,23 @@ def get_static_transform(mission_path, parent, child) -> SE3Transform:
 
     for tf_bag in tf_bags:
         with Reader(tf_bag) as reader:
-            for connection, timestamp, rawdata in reader.messages():
-                if connection.topic == "/tf_static":
-                    if "tf2_msgs/msg/TFMessage" not in typestore.types:
-                        tf2_msg_def = "geometry_msgs/TransformStamped[] transforms"
-                        typestore.register(
-                            get_types_from_msg(tf2_msg_def, "tf2_msgs/msg/TFMessage")
-                        )
-                    msg: Any = typestore.deserialize_ros1(rawdata, connection.msgtype)
-                    for tr in msg.transforms:
-                        p_frame = tr.header.frame_id.lstrip("/")
-                        c_frame = tr.child_frame_id.lstrip("/")
-                        T_p_c = pq_to_se3(
-                            tr.transform.translation, tr.transform.rotation
-                        )
-                        add_edge(p_frame, c_frame, T_p_c)
+            conns = [c for c in reader.connections if c.topic == "/tf_static"]
+            if not conns:
+                continue
+            for connection, timestamp, rawdata in reader.messages(conns):
+                if "tf2_msgs/msg/TFMessage" not in typestore.types:
+                    tf2_msg_def = "geometry_msgs/TransformStamped[] transforms"
+                    typestore.register(
+                        get_types_from_msg(tf2_msg_def, "tf2_msgs/msg/TFMessage")
+                    )
+                msg: Any = typestore.deserialize_ros1(rawdata, connection.msgtype)
+                for tr in msg.transforms:
+                    p_frame = tr.header.frame_id.lstrip("/")
+                    c_frame = tr.child_frame_id.lstrip("/")
+                    T_p_c = pq_to_se3(
+                        tr.transform.translation, tr.transform.rotation
+                    )
+                    add_edge(p_frame, c_frame, T_p_c)
 
     parent = parent.lstrip("/")
     child = child.lstrip("/")

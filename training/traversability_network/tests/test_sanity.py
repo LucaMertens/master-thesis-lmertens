@@ -126,28 +126,32 @@ def test_path_in_map_coverage():
 
 @pytest.mark.tier1
 def test_heading_consistency():
-    """RHE yaw and cpt7-slerped yaw must agree within 0.1 rad (median)."""
+    """RHE yaw and dlio-slerped yaw must agree within 0.1 rad (median)."""
     _skip_no_data()
     mission_dir = os.path.join(DATA_ROOT, MISSION)
 
+    odom_path = os.path.join(mission_dir, "dlio_odom.npy")
+    if not os.path.exists(odom_path):
+        pytest.skip(f"No ground-truth odom for {MISSION}: {odom_path} missing.")
+
     rhe_states = np.load(os.path.join(mission_dir, "rhe_states.npy"))
     timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
-    cpt7 = np.load(os.path.join(mission_dir, "cpt7_odom.npy"))
+    odom = np.load(odom_path)
 
-    # Replicate GrandTourDataset._slerp_orientation
-    t_cpt7 = cpt7[:, 0]
-    quat_wxyz = cpt7[:, 4:8]
-    order = np.argsort(t_cpt7)
-    t_cpt7, quat_wxyz = t_cpt7[order], quat_wxyz[order]
-    t_cpt7, uniq = np.unique(t_cpt7, return_index=True)
+    # Replicate GrandTourDataset orientation slerp
+    t_odom = odom[:, 0]
+    quat_wxyz = odom[:, 4:8]
+    order = np.argsort(t_odom)
+    t_odom, quat_wxyz = t_odom[order], quat_wxyz[order]
+    t_odom, uniq = np.unique(t_odom, return_index=True)
     quat_wxyz = quat_wxyz[uniq]
     rot = R.from_quat(quat_wxyz[:, [1, 2, 3, 0]])  # wxyz -> xyzw for scipy
-    slerp = Slerp(t_cpt7, rot)
-    clamped = np.clip(timestamp, t_cpt7[0], t_cpt7[-1])
-    yaw_cpt7 = slerp(clamped).as_euler("zyx")[:, 0]
+    slerp = Slerp(t_odom, rot)
+    clamped = np.clip(timestamp, t_odom[0], t_odom[-1])
+    yaw_odom = slerp(clamped).as_euler("zyx")[:, 0]
 
     yaw_rhe = rhe_states[:, 2]
-    diff = np.angle(np.exp(1j * (yaw_rhe - yaw_cpt7)))  # wrap to [-π, π]
+    diff = np.angle(np.exp(1j * (yaw_rhe - yaw_odom)))  # wrap to [-π, π]
 
     median_abs = float(np.median(np.abs(diff)))
     mean_offset = float(np.angle(np.mean(np.exp(1j * diff))))
@@ -169,36 +173,36 @@ def test_heading_consistency():
 
 @pytest.mark.tier1
 def test_position_consistency():
-    """RHE x,y and cpt7 ground-truth x,y must agree within 0.3 m (median)."""
+    """RHE x,y and dlio ground-truth x,y must agree within 0.3 m (median)."""
     _skip_no_data()
     mission_dir = os.path.join(DATA_ROOT, MISSION)
-    odom_path = os.path.join(mission_dir, "cpt7_odom.npy")
+    odom_path = os.path.join(mission_dir, "dlio_odom.npy")
     if not os.path.exists(odom_path):
         pytest.skip(
             f"No ground-truth odom for {MISSION}: {odom_path} missing. "
-            "Rerun extrinsics extraction: "
-            f"uv run python -m grandtour_extraction.extract_extrinsics "
+            "Rerun dlio extraction: "
+            f"uv run python -m grandtour_extraction.extract_dlio "
             f"--mission-dir <bags>/{MISSION} --output-dir {mission_dir}"
         )
 
     rhe_states = np.load(os.path.join(mission_dir, "rhe_states.npy"))
     timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
-    cpt7 = np.load(odom_path)
+    odom = np.load(odom_path)
 
     order = np.argsort(timestamp)
     timestamp, rhe_states = timestamp[order], rhe_states[order]
 
-    # Replicate GrandTourDataset._interp_cpt7 position interpolation
-    t_cpt7 = cpt7[:, 0]
-    o = np.argsort(t_cpt7)
-    t_cpt7, pos = t_cpt7[o], cpt7[o, 1:3]
-    t_cpt7, uniq = np.unique(t_cpt7, return_index=True)
+    # Replicate GrandTourDataset._interp_odom position interpolation
+    t_odom = odom[:, 0]
+    o = np.argsort(t_odom)
+    t_odom, pos = t_odom[o], odom[o, 1:3]
+    t_odom, uniq = np.unique(t_odom, return_index=True)
     pos = pos[uniq]
-    clamped = np.clip(timestamp, t_cpt7[0], t_cpt7[-1])
-    x_cpt7 = np.interp(clamped, t_cpt7, pos[:, 0])
-    y_cpt7 = np.interp(clamped, t_cpt7, pos[:, 1])
+    clamped = np.clip(timestamp, t_odom[0], t_odom[-1])
+    x_odom = np.interp(clamped, t_odom, pos[:, 0])
+    y_odom = np.interp(clamped, t_odom, pos[:, 1])
 
-    dist = np.hypot(rhe_states[:, 0] - x_cpt7, rhe_states[:, 1] - y_cpt7)
+    dist = np.hypot(rhe_states[:, 0] - x_odom, rhe_states[:, 1] - y_odom)
     median, p90, dmax = (
         float(np.median(dist)),
         float(np.percentile(dist, 90)),
@@ -443,7 +447,7 @@ def test_dataset_integrity_sweep():
         "trav_labels.npy",
         "cam2base.npy",
         "intrinsics.npy",
-        "cpt7_odom.npy",
+        "dlio_odom.npy",
     ]
     print()
     for m in sorted(os.listdir(DATA_ROOT)):

@@ -2,7 +2,7 @@
 
 Required bags per mission:
   - *_alphasense.bag       : Stereo images
-  - *_cpt7_ie_tc.bag       : GNSS/IMU odometry
+  - *_dlio.bag             : Lidar-odometry ground truth
   - *_tf_minimal.bag       : TF tree (camera extrinsics via /tf_static)
 """
 
@@ -15,17 +15,14 @@ from data_labeling_pipeline.grandtour_missions import get_mission_by_shortname, 
 
 GRAND_TOUR_FOLDER = Path("/datahome/lmertens/grand_tour_dataset")
 
-# Start with one mission for pipeline development.
-# Expand to all missions once validated:
-INCLUDE_MISSIONS = {m["short_name"] for m in missions}
-# INCLUDE_MISSIONS = {"ETH-1"}
+# Re-download dlio bags for the odometry fallback:
+INCLUDE_MISSIONS = {"CON-4"}
 
 EXCLUDE_MISSIONS = {"ICE-1"}
 
 TARGET_MISSIONS = sorted(INCLUDE_MISSIONS - EXCLUDE_MISSIONS)
 
-
-PATTERNS = ["*alphasense*", "*cpt7_ie_tc*", "*tf_minimal*"]
+PATTERNS = ["*dlio*"]
 
 
 def get_files(mission_shortname: str):
@@ -63,7 +60,7 @@ def download():
         kleinkram.download(
             file_ids=[f.id for f in files],
             dest=str(dest),
-            verbose=True,
+            verbose=False,
             overwrite=False,
         )
 
@@ -75,7 +72,7 @@ if __name__ == "__main__":
         if prompt_download():
             log_file = Path("download_wayfaster.log")
             subprocess.Popen(
-                f"nohup uv run python -u {__file__} --background > {log_file} 2>&1 &",
+                f"TQDM_DISABLE=1 nohup uv run python -u {__file__} --background > {log_file} 2>&1 &",
                 shell=True,
             )
             print(f"Download started in background. Tailing {log_file}...")

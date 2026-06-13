@@ -109,6 +109,22 @@ def test_box_base_to_base_has_180_x_rotation_and_translation(sample_mission_path
     _expect_180_deg_rotation_around_x(T_inv, description="base -> box_base (inverse)")
 
 
+def test_hesai_lidar_to_base_is_minus_90_yaw(sample_mission_path):
+    """dlio odometry is map->hesai_lidar; the lidar is mounted ~-90deg in yaw vs base."""
+    tf_bags = list(sample_mission_path.glob("*tf*.bag"))
+    if not tf_bags:
+        pytest.skip(f"Reference dataset not available at {sample_mission_path}")
+
+    T = get_static_transform(sample_mission_path, "hesai_lidar", "base")
+    roll, pitch, yaw = T.rotation.as_euler("xyz", degrees=True)
+
+    assert abs(_wrap_deg(yaw - (-90.0))) < 5.0, f"Expected ~-90deg yaw, got {yaw:.2f}"
+    assert abs(roll) < 5.0 and abs(pitch) < 5.0, (
+        f"Expected level lidar, got roll={roll:.2f}, pitch={pitch:.2f}"
+    )
+    assert np.linalg.norm(T.translation) > 0.01, "Expected non-trivial lever arm"
+
+
 def test_loader_correctly_parses_real_sample(sample_mission_path):
     mission_path = sample_mission_path
     if not mission_path.exists():

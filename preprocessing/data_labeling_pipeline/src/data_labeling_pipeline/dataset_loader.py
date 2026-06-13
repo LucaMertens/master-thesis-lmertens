@@ -214,7 +214,7 @@ class GrandTourLoader:
         return cmd_ts, cmd_linear, cmd_angular
 
     def load_odometry(self):
-        bag_name = f"{self.mission_timestamp}_cpt7_ie_tc.bag"
+        bag_name = f"{self.mission_timestamp}_dlio.bag"
         bag_path = self.mission_path / bag_name
         if not bag_path.exists():
             raise FileNotFoundError(f"Odometry bag not found: {bag_path}")
@@ -225,7 +225,7 @@ class GrandTourLoader:
         linear_twist = []
         angular_twist = []
 
-        odom_topic = "/boxi/inertial_explorer/tc/odometry"
+        odom_topic = "/boxi/dlio/lidar_map_odometry"
         messages = _topic_messages(bag_path, odom_topic)
         for connection, timestamp, rawdata in messages:
             msg: Any = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
@@ -249,12 +249,10 @@ class GrandTourLoader:
 
         return odom_ts, odom_pos, odom_orien, odom_linear, odom_angular
 
-    def map_cpt7_imu_pose_to_base(self, positions, orientations):
-        """Map poses from ENU->cpt7_imu to ENU->base using static TF.
-        https://github.com/leggedrobotics/grand_tour_dataset/issues/28
-        """
-        t_cpt7_imu_to_base = get_static_transform(self.mission_path, "cpt7_imu", "base")
-        return t_cpt7_imu_to_base.apply_to_poses(positions, orientations)
+    def map_lidar_pose_to_base(self, positions, orientations):
+        """Map poses from dlio_map->hesai_lidar to dlio_map->base using static TF."""
+        t_lidar_to_base = get_static_transform(self.mission_path, "hesai_lidar", "base")
+        return t_lidar_to_base.apply_to_poses(positions, orientations)
 
     def load_data_shared_timestamps(self, dt=0.1, fill_gaps=True, include_lateral_command=False):
         """
@@ -273,7 +271,7 @@ class GrandTourLoader:
         omega_k = cmd_angular[:, 2]
 
         odom_ts, odom_pos, odom_orien, odom_linear, odom_angular = self.load_odometry()
-        odom_pos_base, odom_rot_base = self.map_cpt7_imu_pose_to_base(
+        odom_pos_base, odom_rot_base = self.map_lidar_pose_to_base(
             odom_pos, odom_orien
         )
         px = odom_pos_base[:, 0]

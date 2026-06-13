@@ -34,8 +34,9 @@ class RecedingHorizonEstimator:
         py_next = py + mu * sin(theta) * v * dt
         theta_next = theta + nu * omega * dt
 
-    All inputs (U, Z) must be in ENU frame (CCW-positive yaw, x=East, y=North).
-    The GrandTourLoader handles the NED->ENU conversion for cpt7 odometry data.
+    All inputs (U, Z) must use a gravity-aligned, right-handed frame (z up,
+    CCW-positive yaw). The GrandTourLoader provides this from dlio odometry, whose
+    map frame is gravity-aligned; the yaw origin is arbitrary and does not matter.
     """
 
     def __init__(
