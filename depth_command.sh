@@ -1,1 +1,0 @@
-uv run python preprocessing/pipeline.py --exclude ETH-1 ICE-1 --no-images --no-extrinsics --no-labels --depth --gpus '"device=0,2,3"' > depth.log 2>&1

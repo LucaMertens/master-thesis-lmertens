@@ -1,6 +1,6 @@
 """Download *ap20_prism_position* and *zed2i_vio* bags for every mission that has ap20 GT.
 
-Used by odometry_fallback.ipynb to benchmark dlio/zed2i against the ap20 total-station GT
+Used by odometry_eval.ipynb to benchmark dlio/zed2i against the ap20 total-station GT
 across the whole dataset. Run as a single instance: concurrent runs race on the same files.
 
   uv run python download_odometry_eval.py            # show plan
@@ -11,15 +11,18 @@ import sys
 from pathlib import Path
 
 import kleinkram
-from rosbags.rosbag1 import Reader
 from data_labeling_pipeline.grandtour_missions import missions
+from rosbags.rosbag1 import Reader
 
 GT = Path("/datahome/lmertens/grand_tour_dataset")
 PATTERNS = {"ap20_prism": "*ap20_prism_position*", "zed2i_vio": "*zed2i_vio*"}
 
 
 def remote_files(short_name, mission_timestamp):
-    m = kleinkram.list_missions(project_names=["GrandTourDataset"], mission_names=[f"release_{mission_timestamp}"])
+    m = kleinkram.list_missions(
+        project_names=["GrandTourDataset"],
+        mission_names=[f"release_{mission_timestamp}"],
+    )
     if not m:
         return {}
     out = {}
@@ -58,7 +61,11 @@ def plan():
             if local is None:
                 state, missing, total = "MISSING", missing + 1, total + f.size
             elif not is_valid(local, f.size):
-                state, missing, total = "CORRUPT -> refetch", missing + 1, total + f.size
+                state, missing, total = (
+                    "CORRUPT -> refetch",
+                    missing + 1,
+                    total + f.size,
+                )
             else:
                 state = "ok"
             if state != "ok":
@@ -82,7 +89,9 @@ def download():
             dest = GT / "ros1" / sn
             dest.mkdir(parents=True, exist_ok=True)
             print(f"\nDownloading {sn}/{k} -> {dest}", flush=True)
-            kleinkram.download(file_ids=[f.id], dest=str(dest), verbose=False, overwrite=False)
+            kleinkram.download(
+                file_ids=[f.id], dest=str(dest), verbose=False, overwrite=False
+            )
 
 
 if __name__ == "__main__":
