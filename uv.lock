@@ -9,6 +9,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "config",
     "data-download",
     "data-labeling-pipeline",
     "grandtour-extraction",
@@ -441,6 +442,11 @@ wheels = [
 ]
 
 [[package]]
+name = "config"
+version = "0.1.0"
+source = { editable = "config" }
+
+[[package]]
 name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -641,6 +647,7 @@ name = "data-download"
 version = "0.1.0"
 source = { virtual = "preprocessing/data_download" }
 dependencies = [
+    { name = "config" },
     { name = "data-labeling-pipeline" },
     { name = "jupyter" },
     { name = "kleinkram" },
@@ -648,6 +655,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "config", editable = "config" },
     { name = "data-labeling-pipeline", editable = "preprocessing/data_labeling_pipeline" },
     { name = "jupyter" },
     { name = "kleinkram", specifier = ">=0.59.0" },
@@ -658,6 +666,7 @@ name = "data-labeling-pipeline"
 version = "0.1.0"
 source = { editable = "preprocessing/data_labeling_pipeline" }
 dependencies = [
+    { name = "config" },
     { name = "imageio" },
     { name = "imageio-ffmpeg" },
     { name = "jupyter" },
@@ -678,6 +687,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "config", editable = "config" },
     { name = "imageio", specifier = ">=2.37.3" },
     { name = "imageio-ffmpeg", specifier = ">=0.6.0" },
     { name = "jupyter" },
@@ -926,6 +936,7 @@ name = "grandtour-extraction"
 version = "0.1.0"
 source = { editable = "preprocessing/grandtour_extraction" }
 dependencies = [
+    { name = "config" },
     { name = "data-labeling-pipeline" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
@@ -936,6 +947,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "config", editable = "config" },
     { name = "data-labeling-pipeline", editable = "preprocessing/data_labeling_pipeline" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
@@ -2918,6 +2930,7 @@ name = "side-experiments"
 version = "0.1.0"
 source = { virtual = "side_experiments" }
 dependencies = [
+    { name = "config" },
     { name = "huggingface-hub" },
     { name = "imageio-ffmpeg" },
     { name = "jupyter" },
@@ -2935,6 +2948,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "config", editable = "config" },
     { name = "huggingface-hub" },
     { name = "imageio-ffmpeg" },
     { name = "jupyter" },
@@ -3189,6 +3203,7 @@ name = "traversability-network"
 version = "0.1.0"
 source = { editable = "training/traversability_network" }
 dependencies = [
+    { name = "config" },
     { name = "data-labeling-pipeline" },
     { name = "easydict" },
     { name = "kornia" },
@@ -3207,6 +3222,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "config", editable = "config" },
     { name = "data-labeling-pipeline", editable = "preprocessing/data_labeling_pipeline" },
     { name = "easydict" },
     { name = "kornia" },

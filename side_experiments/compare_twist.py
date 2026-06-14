@@ -3,6 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from config.paths import ROS1_ROOT
 from scipy.spatial.transform import Rotation as R
 
 # Add src to path if needed
@@ -53,9 +54,7 @@ def derive_angular_velocity_base(odom_ts, odom_orien, T_cpt7_to_base):
 
 
 def compare_twist(mission_shortname):
-    mission_path = (
-        Path("/datahome/lmertens/grand_tour_dataset/ros1/") / mission_shortname
-    )
+    mission_path = ROS1_ROOT / mission_shortname
     print(f"Loading data from {mission_path}...")
     loader = GrandTourLoader(mission_path)
 

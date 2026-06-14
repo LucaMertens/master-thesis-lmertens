@@ -18,6 +18,7 @@ dependencies = [
     "matplotlib",
     "wandb",
     "data_labeling_pipeline",
+    "config",
 ]
 
 [build-system]
@@ -29,6 +30,7 @@ packages = ["src/traversability_network"]
 
 [tool.uv.sources]
 data_labeling_pipeline = { workspace = true }
+config = { workspace = true }
 
 [tool.pytest.ini_options]
 markers = [

@@ -11,9 +11,8 @@ import sys
 from pathlib import Path
 
 import kleinkram
+from config.paths import ROS1_ROOT
 from data_labeling_pipeline.grandtour_missions import get_mission_by_shortname, missions
-
-GRAND_TOUR_FOLDER = Path("/datahome/lmertens/grand_tour_dataset")
 
 # Start with one mission for pipeline development.
 # Expand to all missions once validated:
@@ -56,7 +55,7 @@ def download():
         files = get_files(mission)
         if not files:
             continue
-        dest = GRAND_TOUR_FOLDER / "ros1" / mission
+        dest = ROS1_ROOT / mission
         dest.mkdir(parents=True, exist_ok=True)
         print(f"\nDownloading {mission} → {dest}")
         kleinkram.download(

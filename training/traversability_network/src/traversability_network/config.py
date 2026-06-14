@@ -8,6 +8,7 @@ import copy
 import sys
 
 import yaml
+from config.paths import OUTPUT_ROOT
 from easydict import EasyDict
 
 _C = EasyDict()
@@ -51,7 +52,7 @@ _C.OPTIMIZER.WEIGHT_DECAY = 1e-4
 
 _C.DATASET = EasyDict()
 # Directory holding one sub-directory per mission (the RHE label output dir).
-_C.DATASET.DATA_ROOT = "/datahome/lmertens/grand_tour_dataset/output"
+_C.DATASET.DATA_ROOT = str(OUTPUT_ROOT)
 _C.DATASET.TRAIN_MISSIONS = []
 _C.DATASET.VALID_MISSIONS = []
 _C.DATASET.TIME_TOLERANCE = 0.05  # s, max camera<->RHE/depth timestamp mismatch

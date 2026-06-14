@@ -7,10 +7,11 @@ import pathlib
 import typing
 from collections import defaultdict
 
+from config.paths import ROS1_ROOT
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
-MISSION_PATH = pathlib.Path("/datahome/lmertens/grand_tour_dataset/ros1/ETH-1")
+MISSION_PATH = ROS1_ROOT / "ETH-1"
 OUTPUT_PATH = pathlib.Path(__file__).parent.parent / "ros_topics.md"
 # PATTERNS accepts glob patterns (e.g. "*alpha*", "tf_*") or simple
 # tokens (e.g. "alphasense"). Simple tokens are matched as substrings

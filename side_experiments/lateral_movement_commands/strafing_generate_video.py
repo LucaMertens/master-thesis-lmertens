@@ -1,10 +1,9 @@
-from pathlib import Path
-
 import imageio_ffmpeg
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import zarr
+from config.paths import DATASET_ROOT, OUTPUT_ROOT
 from matplotlib.animation import FFMpegWriter, PillowWriter
 from PIL import Image
 from tqdm.auto import tqdm
@@ -34,10 +33,10 @@ def _read_frame(path, max_width=960):
         return np.asarray(img)
 
 
-mission_dir = Path("/datahome/lmertens/grand_tour_dataset/2024-10-01-11-47-44")
+mission_dir = DATASET_ROOT / "huggingface" / "2024-10-01-11-47-44"
 data_dir = mission_dir / "data"
 images_dir = mission_dir / "images" / "zed2i_left_images"
-notebook_dir = Path("/home/lmertens/git-repos/ma-lucamertens/side_experiments")
+output_dir = OUTPUT_ROOT / "side_experiments"
 
 # Output controls
 fps = 10
@@ -46,9 +45,9 @@ max_frames = None  # Set int to limit frames; None keeps full sequence.
 output_mode = "mp4"  # "mp4" (fast) or "gif" (slow)
 
 if output_mode == "mp4":
-    output_file = notebook_dir / f"{mission_dir.name}_zed2i_left_custom.mp4"
+    output_file = output_dir / f"{mission_dir.name}_zed2i_left_custom.mp4"
 else:
-    output_file = notebook_dir / f"{mission_dir.name}_zed2i_left_custom.gif"
+    output_file = output_dir / f"{mission_dir.name}_zed2i_left_custom.gif"
 
 # Use packaged ffmpeg binary when available (no system ffmpeg needed).
 if output_mode == "mp4":
@@ -57,7 +56,7 @@ if output_mode == "mp4":
     except Exception as e:
         print(f"Could not resolve ffmpeg binary ({e}); falling back to GIF.")
         output_mode = "gif"
-        output_file = notebook_dir / f"{mission_dir.name}_zed2i_left_custom.gif"
+        output_file = output_dir / f"{mission_dir.name}_zed2i_left_custom.gif"
 
 # Content controls
 include_camera = True
@@ -93,14 +92,12 @@ if include_stim_imu:
         zarr.open_array(data_dir / "stim320_imu" / "lin_acc", mode="r")[:, 1],
         dtype=float,
     )
-    plot_items.append(
-        {
-            "name": "stim320_imu y",
-            "t": stim_t,
-            "y": stim_y,
-            "idx": _nearest_indices(stim_t, cam_t),
-        }
-    )
+    plot_items.append({
+        "name": "stim320_imu y",
+        "t": stim_t,
+        "y": stim_y,
+        "idx": _nearest_indices(stim_t, cam_t),
+    })
 
 if include_anymal_imu:
     anymal_t = _seconds(
@@ -110,14 +107,12 @@ if include_anymal_imu:
         zarr.open_array(data_dir / "anymal_imu" / "lin_acc", mode="r")[:, 1],
         dtype=float,
     )
-    plot_items.append(
-        {
-            "name": "anymal_imu y",
-            "t": anymal_t,
-            "y": anymal_y,
-            "idx": _nearest_indices(anymal_t, cam_t),
-        }
-    )
+    plot_items.append({
+        "name": "anymal_imu y",
+        "t": anymal_t,
+        "y": anymal_y,
+        "idx": _nearest_indices(anymal_t, cam_t),
+    })
 
 if include_twist_cmd:
     twist_t = _seconds(
@@ -127,14 +122,12 @@ if include_twist_cmd:
         zarr.open_array(data_dir / "anymal_command_twist" / "linear", mode="r")[:, 1],
         dtype=float,
     )
-    plot_items.append(
-        {
-            "name": "command_twist y",
-            "t": twist_t,
-            "y": twist_y,
-            "idx": _nearest_indices(twist_t, cam_t),
-        }
-    )
+    plot_items.append({
+        "name": "command_twist y",
+        "t": twist_t,
+        "y": twist_y,
+        "idx": _nearest_indices(twist_t, cam_t),
+    })
 
 if include_camera and plot_items:
     fig, (ax_img, ax_sig) = plt.subplots(

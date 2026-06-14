@@ -8,13 +8,12 @@ across the whole dataset. Run as a single instance: concurrent runs race on the 
 """
 
 import sys
-from pathlib import Path
 
 import kleinkram
+from config.paths import ROS1_ROOT
 from data_labeling_pipeline.grandtour_missions import missions
 from rosbags.rosbag1 import Reader
 
-GT = Path("/datahome/lmertens/grand_tour_dataset")
 PATTERNS = {"ap20_prism": "*ap20_prism_position*", "zed2i_vio": "*zed2i_vio*"}
 
 
@@ -34,7 +33,7 @@ def remote_files(short_name, mission_timestamp):
 
 
 def local_file(short_name, key):
-    return next((GT / "ros1" / short_name).glob(f"*{key}*.bag"), None)
+    return next((ROS1_ROOT / short_name).glob(f"*{key}*.bag"), None)
 
 
 def is_valid(path, expected_size):
@@ -86,7 +85,7 @@ def download():
             if local is not None:  # corrupt / partial: remove so it is re-fetched
                 print(f"deleting corrupt {local.name}", flush=True)
                 local.unlink()
-            dest = GT / "ros1" / sn
+            dest = ROS1_ROOT / sn
             dest.mkdir(parents=True, exist_ok=True)
             print(f"\nDownloading {sn}/{k} -> {dest}", flush=True)
             kleinkram.download(

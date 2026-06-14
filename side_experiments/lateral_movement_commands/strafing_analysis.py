@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import zarr
+from config.paths import DATASET_ROOT
 
 TWIST_DIR = "anymal_command_twist"
 IMU_DIR = "stim320_imu"
@@ -246,7 +247,7 @@ def main() -> None:
     parser.add_argument(
         "dataset_folder",
         type=Path,
-        default=Path("/datahome/lmertens/grand_tour_dataset/"),
+        default=DATASET_ROOT,
         help="Root dataset folder containing mission subfolders.",
     )
     parser.add_argument(

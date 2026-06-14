@@ -19,6 +19,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from config.paths import OUTPUT_ROOT, ROS1_ROOT
 from data_labeling_pipeline import labeling_pipeline, run_labels
 from data_labeling_pipeline.pipeline_step import write_step_done
 from grandtour_extraction import extract_alphasense, extract_dlio, rectify
@@ -26,8 +27,8 @@ from grandtour_extraction import extract_alphasense, extract_dlio, rectify
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "depth_generation"))
 import run_depth  # noqa: E402
 
-DEFAULT_BAGS_ROOT = pathlib.Path("/datahome/lmertens/grand_tour_dataset/ros1")
-DEFAULT_OUTPUT_ROOT = pathlib.Path("/datahome/lmertens/grand_tour_dataset/output")
+DEFAULT_BAGS_ROOT = ROS1_ROOT
+DEFAULT_OUTPUT_ROOT = OUTPUT_ROOT
 
 
 def discover_missions(bags_root: pathlib.Path) -> list[str]:

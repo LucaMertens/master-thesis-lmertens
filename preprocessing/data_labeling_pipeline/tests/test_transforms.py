@@ -1,7 +1,6 @@
-from pathlib import Path
-
 import numpy as np
 import pytest
+from config.paths import ROS1_ROOT
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
 from data_labeling_pipeline.ros1_transforms import get_static_transform
 from scipy.spatial.transform import Rotation as R
@@ -13,7 +12,7 @@ def _wrap_deg(angle: float) -> float:
 
 @pytest.fixture
 def sample_mission_path():
-    return Path("/datahome/lmertens/grand_tour_dataset/ros1/ETH-1")
+    return ROS1_ROOT / "ETH-1"
 
 
 def test_cpt7_yaw_inversion_via_transforms(sample_mission_path):

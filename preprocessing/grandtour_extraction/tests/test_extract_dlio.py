@@ -4,18 +4,18 @@ Reuses the prism-projection + yaw/translation ATE method validated in
 odometry_fallback.ipynb (dlio median ATE ~0.38 m vs ap20 GT).
 """
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from config.paths import ROS1_ROOT
 from data_labeling_pipeline.ros1_transforms import get_static_transform
 from grandtour_extraction.extract_dlio import extract_dlio_odom
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_typestore
 from scipy.spatial.transform import Rotation as R
 
-MISSION = Path("/datahome/lmertens/grand_tour_dataset/ros1/ETH-1")
+MISSION = ROS1_ROOT / "ETH-1"
 
 
 def _read_point(bag_path, topic):
