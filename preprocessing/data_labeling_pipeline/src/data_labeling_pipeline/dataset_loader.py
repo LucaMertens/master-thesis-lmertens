@@ -2,12 +2,12 @@ import pathlib
 from typing import Any, Iterator
 
 import numpy as np
+from config.paths import EXTRACTED_ROOT
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_typestore
 from scipy.spatial.transform import Rotation
 
 from .grandtour_missions import get_mission_by_shortname
-from .ros1_transforms import get_static_transform
 
 TIME_RANGE_WARNING_THRESHOLD = 1.0  # seconds
 
@@ -57,6 +57,10 @@ def interpolate_unwrapped_angles(timestamps, angles, shared_timestamps):
 
 
 class TopicNotFoundError(Exception):
+    pass
+
+
+class MissingExtractedDataError(Exception):
     pass
 
 
@@ -163,9 +167,14 @@ def fill_command_gaps_with_zero_commands(
 
 
 class GrandTourLoader:
-    def __init__(self, mission_path):
+    def __init__(self, mission_path, extracted_dir=None):
         self.mission_path = pathlib.Path(mission_path)
         self.mission_shortname = self.mission_path.name
+        self.extracted_dir = (
+            pathlib.Path(extracted_dir)
+            if extracted_dir is not None
+            else EXTRACTED_ROOT / self.mission_shortname
+        )
         try:
             mission_info = get_mission_by_shortname(self.mission_shortname)
             self.mission_timestamp = mission_info["timestamp"]
@@ -177,35 +186,18 @@ class GrandTourLoader:
 
         self.typestore = get_typestore(Stores.ROS1_NOETIC)
 
+    def _load_extracted(self, filename, step_name):
+        path = self.extracted_dir / filename
+        if not path.exists():
+            raise MissingExtractedDataError(
+                f"{path} not found. Run the '{step_name}' extraction step first "
+                f"(uv run python preprocessing/pipeline.py --mission {self.mission_shortname})."
+            )
+        return np.load(path)
+
     def load_commands(self, fill_gaps=True):
-        bag_name = f"{self.mission_timestamp}_anymal_command.bag"
-        bag_path = self.mission_path / bag_name
-        if not bag_path.exists():
-            raise FileNotFoundError(f"Command bag not found: {bag_path}")
-
-        timestamps = []
-        linear = []
-        angular = []
-
-        messages = _topic_messages(bag_path, "/anymal/twist_command")
-        for connection, timestamp, rawdata in messages:
-            msg: Any = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
-            ts = timestamp * 1e-9
-            timestamps.append(ts)
-            linear.append([
-                msg.twist.linear.x,
-                msg.twist.linear.y,
-                msg.twist.linear.z,
-            ])
-            angular.append([
-                msg.twist.angular.x,
-                msg.twist.angular.y,
-                msg.twist.angular.z,
-            ])
-
-        cmd_ts = np.array(timestamps)
-        cmd_linear = np.array(linear)
-        cmd_angular = np.array(angular)
+        cmd = self._load_extracted("command.npy", "command")
+        cmd_ts, cmd_linear, cmd_angular = cmd[:, 0], cmd[:, 1:4], cmd[:, 4:7]
 
         if fill_gaps:
             cmd_ts, cmd_linear, cmd_angular = fill_command_gaps_with_zero_commands(
@@ -214,45 +206,9 @@ class GrandTourLoader:
         return cmd_ts, cmd_linear, cmd_angular
 
     def load_odometry(self):
-        bag_name = f"{self.mission_timestamp}_dlio.bag"
-        bag_path = self.mission_path / bag_name
-        if not bag_path.exists():
-            raise FileNotFoundError(f"Odometry bag not found: {bag_path}")
-
-        timestamps = []
-        positions = []
-        orientations = []
-        linear_twist = []
-        angular_twist = []
-
-        odom_topic = "/boxi/dlio/lidar_map_odometry"
-        messages = _topic_messages(bag_path, odom_topic)
-        for connection, timestamp, rawdata in messages:
-            msg: Any = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
-            ts = timestamp * 1e-9
-            timestamps.append(ts)
-            p = msg.pose.pose.position
-            q = msg.pose.pose.orientation
-            positions.append([p.x, p.y, p.z])
-            orientations.append([q.x, q.y, q.z, q.w])
-
-            v = msg.twist.twist.linear
-            w = msg.twist.twist.angular
-            linear_twist.append([v.x, v.y, v.z])
-            angular_twist.append([w.x, w.y, w.z])
-
-        odom_ts = np.array(timestamps)
-        odom_pos = np.array(positions)
-        odom_orien = np.array(orientations)
-        odom_linear = np.array(linear_twist)
-        odom_angular = np.array(angular_twist)
-
-        return odom_ts, odom_pos, odom_orien, odom_linear, odom_angular
-
-    def map_lidar_pose_to_base(self, positions, orientations):
-        """Map poses from dlio_map->hesai_lidar to dlio_map->base using static TF."""
-        t_lidar_to_base = get_static_transform(self.mission_path, "hesai_lidar", "base")
-        return t_lidar_to_base.apply_to_poses(positions, orientations)
+        odom = self._load_extracted("dlio_odom.npy", "dlio")
+        odom_ts, odom_pos, odom_orien = odom[:, 0], odom[:, 1:4], odom[:, 4:8]
+        return odom_ts, odom_pos, odom_orien
 
     def load_data_shared_timestamps(self, dt=0.1, fill_gaps=True, include_lateral_command=False):
         """
@@ -270,13 +226,10 @@ class GrandTourLoader:
         vy_k = cmd_linear[:, 1]
         omega_k = cmd_angular[:, 2]
 
-        odom_ts, odom_pos, odom_orien, odom_linear, odom_angular = self.load_odometry()
-        odom_pos_base, odom_rot_base = self.map_lidar_pose_to_base(
-            odom_pos, odom_orien
-        )
-        px = odom_pos_base[:, 0]
-        py = odom_pos_base[:, 1]
-        odom_yaw = odom_rot_base.as_euler("zyx", degrees=False)[:, 0]
+        odom_ts, odom_pos, odom_orien = self.load_odometry()
+        px = odom_pos[:, 0]
+        py = odom_pos[:, 1]
+        odom_yaw = Rotation.from_quat(odom_orien).as_euler("zyx", degrees=False)[:, 0]
 
         shared_ts = get_shared_timestamps(cmd_ts, odom_ts, dt=dt)
         assert _is_strictly_monotonic_increasing(shared_ts)

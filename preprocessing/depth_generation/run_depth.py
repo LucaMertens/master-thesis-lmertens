@@ -6,7 +6,7 @@ import pathlib
 import shutil
 import subprocess
 
-from config.paths import OUTPUT_ROOT
+from config.paths import EXTRACTED_ROOT
 
 DEPTH_REPO = pathlib.Path(__file__).parent
 
@@ -48,7 +48,7 @@ def run_depth(missions: list[str], output_root, gpus: str = "all",
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mission", nargs="+", required=True)
-    p.add_argument("--output-root", type=pathlib.Path, default=OUTPUT_ROOT)
+    p.add_argument("--output-root", type=pathlib.Path, default=EXTRACTED_ROOT)
     p.add_argument("--gpus", default="all")
     p.add_argument("--force", action="store_true", help="Re-run even if up to date")
     args = p.parse_args()

@@ -18,12 +18,12 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from torch.utils.data import DataLoader, Subset
 
-from config.paths import OUTPUT_ROOT
+from config.paths import EXTRACTED_ROOT
 from traversability_network.config import get_cfg
 from traversability_network.data.grandtour_dataset import BORDER_CROP, GrandTourDataset
 from traversability_network.network.trainer import TrainingModule
 
-DATA_ROOT = str(OUTPUT_ROOT)
+DATA_ROOT = str(EXTRACTED_ROOT)
 MISSION = "ETH-1"
 CFG = os.path.join(os.path.dirname(__file__), "..", "configs", "grandtour.yaml")
 

@@ -60,10 +60,10 @@ def test_dlio_extraction_matches_ap20_ground_truth():
     if not MISSION.exists() or not list(MISSION.glob("*ap20_prism*")):
         pytest.skip("Reference dataset / ap20 GT not available.")
 
-    odom = extract_dlio_odom(MISSION)  # dlio_map->base, N x 8: t,x,y,z,qw,qx,qy,qz
+    odom = extract_dlio_odom(MISSION)  # dlio_map->base, N x 8: t,x,y,z,qx,qy,qz,qw
     t = odom[:, 0]
     p_base = odom[:, 1:4]
-    r_base = R.from_quat(odom[:, [5, 6, 7, 4]])  # wxyz -> xyzw
+    r_base = R.from_quat(odom[:, 4:8])
 
     # project base pose onto the physical prism point the total station observes
     t_bp = get_static_transform(MISSION, "base", "prism").translation

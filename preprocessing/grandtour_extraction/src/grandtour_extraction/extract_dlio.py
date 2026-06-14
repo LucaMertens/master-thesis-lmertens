@@ -1,6 +1,6 @@
 """Extract DLIO lidar-map odometry per mission.
 
-Writes dlio_odom.npy (N x 8: t, x, y, z, qw, qx, qy, qz), the dlio_map->base
+Writes dlio_odom.npy (N x 8: t, x, y, z, qx, qy, qz, qw), the dlio_map->base
 pose. dlio_map is gravity-aligned (DLIO inits from IMU gravity), so z is up as
 in cpt7's ENU; the yaw origin is the mission's initial heading.
 """
@@ -18,7 +18,7 @@ from rosbags.typesys import Stores, get_typestore
 ODOM_TOPIC = "/boxi/dlio/lidar_map_odometry"
 
 # Bump to invalidate dlio_odom.npy from older versions of this step.
-DLIO_VERSION = 2
+DLIO_VERSION = 3
 
 
 def extract_dlio_odom(mission_dir: pathlib.Path) -> np.ndarray:
@@ -47,13 +47,11 @@ def extract_dlio_odom(mission_dir: pathlib.Path) -> np.ndarray:
     # Full SE3 lidar->base so position picks up the lever arm, matching dataset_loader.
     t_lidar_to_base = get_static_transform(mission_dir, child_frame, "base")
     pos_base, rot_base = t_lidar_to_base.apply_to_poses(arr[:, 1:4], arr[:, 4:8])
-    quat_xyzw = rot_base.as_quat()
 
     odom = np.empty_like(arr)
     odom[:, 0] = arr[:, 0]
     odom[:, 1:4] = pos_base
-    odom[:, 4] = quat_xyzw[:, 3]
-    odom[:, 5:8] = quat_xyzw[:, :3]
+    odom[:, 4:8] = rot_base.as_quat()
     return odom
 
 

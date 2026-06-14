@@ -7,7 +7,8 @@ DATASET_ROOT = Path(
     os.environ.get("GRAND_TOUR_DATASET_ROOT", "/datahome/lmertens/grand_tour_dataset")
 )
 ROS1_ROOT = DATASET_ROOT / "ros1"  # raw bags
-OUTPUT_ROOT = DATASET_ROOT / "output"  # extraction + labeling output
+EXTRACTED_ROOT = DATASET_ROOT / "extracted"  # per-mission extraction + labeling output
+OUTPUT_ROOT = DATASET_ROOT / "output"  # graphs, plots, analysis results
 
 WAYFASTER_DATASET_ROOT = Path(
     os.environ.get("WAYFASTER_DATASET_ROOT", "/datahome/lmertens/wayfaster_dataset")

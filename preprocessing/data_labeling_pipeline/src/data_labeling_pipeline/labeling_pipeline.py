@@ -16,17 +16,18 @@ LABELS_VERSION = 2
 
 
 def run_labels(mission_path, output_dir, force: bool = False) -> None:
-    DataLabelingPipeline(mission_path=mission_path).process_mission(
-        output_dir=output_dir, force=force
+    DataLabelingPipeline(mission_path=mission_path, output_dir=output_dir).process_mission(
+        force=force
     )
 
 
 class DataLabelingPipeline:
-    def __init__(self, mission_path):
+    def __init__(self, mission_path, output_dir):
         self.mission_path = mission_path
+        self.out_path = pathlib.Path(output_dir)
         self.dt = dt
         self.N = N
-        self.loader = GrandTourLoader(mission_path)
+        self.loader = GrandTourLoader(mission_path, extracted_dir=self.out_path)
 
         print(
             f"Using hyperparameters:\n"
@@ -46,13 +47,13 @@ class DataLabelingPipeline:
             P_w=P_w,
         )
 
-    def process_mission(self, output_dir, force: bool = False):
+    def process_mission(self, force: bool = False):
         """Process the entire mission and save labels.
 
         All data is loaded in ENU convention by GrandTourLoader, which aligns
         with the unicycle kinematic model used by the RHE (see rhe.py).
         """
-        out_path = pathlib.Path(output_dir)
+        out_path = self.out_path
         out_path.mkdir(parents=True, exist_ok=True)
 
         if not force and is_step_done(out_path, "labels", LABELS_VERSION):

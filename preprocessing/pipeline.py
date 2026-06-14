@@ -19,16 +19,16 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from config.paths import OUTPUT_ROOT, ROS1_ROOT
+from config.paths import EXTRACTED_ROOT, ROS1_ROOT
 from data_labeling_pipeline import labeling_pipeline, run_labels
 from data_labeling_pipeline.pipeline_step import write_step_done
-from grandtour_extraction import extract_alphasense, extract_dlio, rectify
+from grandtour_extraction import extract_alphasense, extract_commands, extract_dlio, rectify
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "depth_generation"))
 import run_depth  # noqa: E402
 
 DEFAULT_BAGS_ROOT = ROS1_ROOT
-DEFAULT_OUTPUT_ROOT = OUTPUT_ROOT
+DEFAULT_OUTPUT_ROOT = EXTRACTED_ROOT
 
 
 def discover_missions(bags_root: pathlib.Path) -> list[str]:
@@ -55,6 +55,7 @@ STEP_OUTPUTS = {
     "extrinsics": ["cam2base.npy", "stereo_extrinsics.npz"],
     "images": ["image_manifest.npz", "intrinsics.npy"],
     "dlio": ["dlio_odom.npy"],
+    "command": ["command.npy"],
     "labels": ["trav_labels.npy", "timestamp.npy"],
     "depth": ["depth_manifest.npz"],
 }
@@ -82,6 +83,7 @@ def _current_versions() -> dict[str, int]:
         "extrinsics": extract_alphasense.EXTRINSICS_VERSION,
         "images": extract_alphasense.IMAGES_VERSION,
         "dlio": extract_dlio.DLIO_VERSION,
+        "command": extract_commands.COMMAND_VERSION,
         "labels": labeling_pipeline.LABELS_VERSION,
         "depth": _depth_version(),
     }
@@ -186,7 +188,7 @@ def run_pipeline(
     """Run the requested steps for one mission.
 
     Raises if images/extrinsics fail, since depth generation depends on their
-    output. dlio/labels failures (e.g. a mission with no dlio bag) are
+    output. dlio/command/labels failures (e.g. a mission with no dlio bag) are
     non-fatal and returned as {step: error} so depth can still proceed.
     """
     mission_dir = pathlib.Path(bags_root) / mission
@@ -225,6 +227,12 @@ def run_pipeline(
         except Exception as e:
             log(f"!! {mission}: dlio failed: {e}")
             step_errors["dlio"] = str(e)
+        log(f"== {mission}: command ==")
+        try:
+            extract_commands.extract(mission_dir, output_dir, force=force)
+        except Exception as e:
+            log(f"!! {mission}: command failed: {e}")
+            step_errors["command"] = str(e)
     if labels:
         log(f"== {mission}: labels ==")
         try:

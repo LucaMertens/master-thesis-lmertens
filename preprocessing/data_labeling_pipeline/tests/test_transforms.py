@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from config.paths import ROS1_ROOT
+from config.paths import EXTRACTED_ROOT, ROS1_ROOT
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
 from data_labeling_pipeline.ros1_transforms import get_static_transform
 from scipy.spatial.transform import Rotation as R
@@ -129,7 +129,13 @@ def test_loader_correctly_parses_real_sample(sample_mission_path):
     if not mission_path.exists():
         pytest.skip("Reference dataset missing.")
 
-    loader = GrandTourLoader(mission_path)
+    extracted_dir = EXTRACTED_ROOT / mission_path.name
+    if not (extracted_dir / "dlio_odom.npy").exists() or not (
+        extracted_dir / "command.npy"
+    ).exists():
+        pytest.skip(f"Extracted dlio/command data missing in {extracted_dir}.")
+
+    loader = GrandTourLoader(mission_path, extracted_dir=extracted_dir)
     ts, U, Z = loader.load_data_shared_timestamps(dt=0.1)
 
     assert len(ts) > 0
