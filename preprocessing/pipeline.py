@@ -19,16 +19,21 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from config.paths import EXTRACTED_ROOT, ROS1_ROOT
+from config.paths import EXTRACTED_ROOT, LABELS_ROOT, ROS1_ROOT
 from data_labeling_pipeline import labeling_pipeline, run_labels
-from data_labeling_pipeline.pipeline_step import write_step_done
-from grandtour_extraction import extract_alphasense, extract_commands, extract_dlio, rectify
+from grandtour_extraction import (
+    extract_alphasense,
+    extract_commands,
+    extract_dlio,
+    rectify,
+)
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "depth_generation"))
 import run_depth  # noqa: E402
 
 DEFAULT_BAGS_ROOT = ROS1_ROOT
 DEFAULT_OUTPUT_ROOT = EXTRACTED_ROOT
+DEFAULT_LABELS_ROOT = LABELS_ROOT
 
 
 def discover_missions(bags_root: pathlib.Path) -> list[str]:
@@ -50,41 +55,13 @@ def _depth_version() -> int:
     return int(re.search(r"DEPTH_PIPELINE_VERSION = (\d+)", src).group(1))
 
 
-# Files that prove a step ran before the metadata system existed.
-STEP_OUTPUTS = {
-    "extrinsics": ["cam2base.npy", "stereo_extrinsics.npz"],
-    "images": ["image_manifest.npz", "intrinsics.npy"],
-    "dlio": ["dlio_odom.npy"],
-    "command": ["command.npy"],
-    "labels": ["trav_labels.npy", "timestamp.npy"],
-    "depth": ["depth_manifest.npz"],
-}
-
-
-def adopt_existing(
-    missions: list[str], output_root: pathlib.Path, steps: list[str] | None = None
-) -> None:
-    """Backfill *_metadata.json for outputs created before step versioning existed."""
-    current = _current_versions()
-    for mission in missions:
-        mission_dir = pathlib.Path(output_root) / mission
-        for step, outputs in STEP_OUTPUTS.items():
-            if steps and step not in steps:
-                continue
-            meta = mission_dir / f"{step}_metadata.json"
-            if meta.exists() or not all((mission_dir / f).exists() for f in outputs):
-                continue
-            write_step_done(mission_dir, step, current[step])
-            print(f"{mission}: adopted {step} as v{current[step]}")
-
-
 def _current_versions() -> dict[str, int]:
     return {
         "extrinsics": extract_alphasense.EXTRINSICS_VERSION,
         "images": extract_alphasense.IMAGES_VERSION,
         "dlio": extract_dlio.DLIO_VERSION,
         "command": extract_commands.COMMAND_VERSION,
-        "labels": labeling_pipeline.LABELS_VERSION,
+        "rhe_labels": labeling_pipeline.LABELS_VERSION,
         "depth": _depth_version(),
     }
 
@@ -127,16 +104,19 @@ def _running_step(mission_dir: pathlib.Path) -> str | None:
     return open_steps[-1] if open_steps else None
 
 
-def print_status(missions: list[str], output_root: pathlib.Path) -> None:
+def print_status(
+    missions: list[str], output_root: pathlib.Path, labels_root: pathlib.Path
+) -> None:
     """Render the per-mission step state from the *_metadata.json files."""
     current = _current_versions()
 
-    def cell(mission_dir: pathlib.Path, step: str, running: str | None) -> str:
+    def cell(mission_dir: pathlib.Path, rhe_dir: pathlib.Path, step: str, running: str | None) -> str:
         if step == running:
             return "RUNNING"
         if step == "depth" and (depth := _depth_running(mission_dir)):
             return depth
-        meta = mission_dir / f"{step}_metadata.json"
+        meta_dir = rhe_dir if step == "rhe_labels" else mission_dir
+        meta = meta_dir / f"{step}_metadata.json"
         if not meta.exists():
             return "-"
         data = json.loads(meta.read_text())
@@ -158,10 +138,11 @@ def print_status(missions: list[str], output_root: pathlib.Path) -> None:
     rows = []
     for m in missions:
         mission_dir = pathlib.Path(output_root) / m
+        rhe_dir = pathlib.Path(labels_root) / m / "rhe"
         running = _running_step(mission_dir)
         rows.append([
             m,
-            *(cell(mission_dir, s, running) for s in current),
+            *(cell(mission_dir, rhe_dir, s, running) for s in current),
             activity(mission_dir),
         ])
     header = ["mission", *current, "last activity"]
@@ -174,6 +155,7 @@ def run_pipeline(
     mission: str,
     bags_root,
     output_root,
+    labels_root,
     max_frames,
     balance,
     fov_scale,
@@ -234,12 +216,13 @@ def run_pipeline(
             log(f"!! {mission}: command failed: {e}")
             step_errors["command"] = str(e)
     if labels:
-        log(f"== {mission}: labels ==")
+        log(f"== {mission}: rhe_labels ==")
         try:
-            run_labels(mission_dir, output_dir, force=force)
+            labels_dir = pathlib.Path(labels_root) / mission / "rhe"
+            run_labels(mission_dir, output_dir, labels_dir, force=force)
         except Exception as e:
-            log(f"!! {mission}: labels failed: {e}")
-            step_errors["labels"] = str(e)
+            log(f"!! {mission}: rhe_labels failed: {e}")
+            step_errors["rhe_labels"] = str(e)
     return step_errors
 
 
@@ -264,6 +247,7 @@ def main() -> None:
     )
     p.add_argument("--bags-root", type=pathlib.Path, default=DEFAULT_BAGS_ROOT)
     p.add_argument("--output-root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT)
+    p.add_argument("--labels-root", type=pathlib.Path, default=DEFAULT_LABELS_ROOT)
     p.add_argument("--max-frames", type=int, default=None)
     p.add_argument("--balance", type=float, default=rectify.DEFAULT_BALANCE)
     p.add_argument("--fov-scale", type=float, default=rectify.DEFAULT_FOV_SCALE)
@@ -306,15 +290,6 @@ def main() -> None:
         action="store_true",
         help="Print per-mission step status and exit (combine with `watch` for a live view).",
     )
-    p.add_argument(
-        "--adopt-existing",
-        nargs="*",
-        default=None,
-        choices=list(STEP_OUTPUTS),
-        metavar="STEP",
-        help="Mark steps whose output files exist but predate step versioning as done, then exit. "
-        f"Optionally limit to specific steps: {', '.join(STEP_OUTPUTS)}. No steps = all.",
-    )
     args = p.parse_args()
 
     if args.mission:
@@ -332,16 +307,14 @@ def main() -> None:
         raise SystemExit(f"No missions to process under {args.bags_root}")
 
     if args.status:
-        print_status(missions, args.output_root)
-        return
-    if args.adopt_existing is not None:
-        adopt_existing(missions, args.output_root, args.adopt_existing)
+        print_status(missions, args.output_root, args.labels_root)
         return
 
     jobs = args.jobs or max(1, (os.cpu_count() or 8) // args.parallel_missions)
     common_kwargs = dict(
         bags_root=args.bags_root,
         output_root=args.output_root,
+        labels_root=args.labels_root,
         max_frames=args.max_frames,
         balance=args.balance,
         fov_scale=args.fov_scale,

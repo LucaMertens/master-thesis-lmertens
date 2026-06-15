@@ -3,12 +3,12 @@
 #   - DATASET section reworked for the GrandTour layout: DATA_ROOT + named
 #     TRAIN_MISSIONS / VALID_MISSIONS lists instead of CSV-based bag folders.
 #   - Added DATASET.TIME_TOLERANCE and DATASET.MAX_TIME_GAP for timestamp matching.
-#   - Added MODEL.LABEL_COLUMNS to pick (mu, nu) out of trav_labels.npy.
+#   - Added MODEL.LABEL_COLUMNS to pick (mu, nu) out of rhe_trav_labels.npy.
 import copy
 import sys
 
 import yaml
-from config.paths import EXTRACTED_ROOT
+from config.paths import EXTRACTED_ROOT, LABELS_ROOT
 from easydict import EasyDict
 
 _C = EasyDict()
@@ -37,7 +37,7 @@ _C.MODEL.PREDICT_DEPTH = True
 _C.MODEL.TRAIN_DEPTH = True
 _C.MODEL.FUSE_PCLOUD = True
 _C.MODEL.INPUT_SIZE = [480, 360]  # (W, H); Alphasense native is 1440x1080 (4:3)
-_C.MODEL.LABEL_COLUMNS = [0, 1]  # columns of trav_labels.npy used as (mu, nu)
+_C.MODEL.LABEL_COLUMNS = [0, 1]  # columns of rhe_trav_labels.npy used as (mu, nu)
 _C.MODEL.GRID_BOUNDS = {
     "xbound": [-2.0, 8.0, 0.1],
     "ybound": [-5.0, 5.0, 0.1],
@@ -51,8 +51,10 @@ _C.OPTIMIZER.LR = 1e-4
 _C.OPTIMIZER.WEIGHT_DECAY = 1e-4
 
 _C.DATASET = EasyDict()
-# Directory holding one sub-directory per mission (the RHE label output dir).
+# Directory holding one sub-directory per mission (images, depth, odom, intrinsics, ...).
 _C.DATASET.DATA_ROOT = str(EXTRACTED_ROOT)
+# Directory holding one sub-directory per mission with rhe/ and simple/ label outputs.
+_C.DATASET.LABELS_ROOT = str(LABELS_ROOT)
 _C.DATASET.TRAIN_MISSIONS = []
 _C.DATASET.VALID_MISSIONS = []
 _C.DATASET.TIME_TOLERANCE = 0.05  # s, max camera<->RHE/depth timestamp mismatch

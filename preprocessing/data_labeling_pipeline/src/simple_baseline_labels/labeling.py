@@ -152,7 +152,7 @@ class SimpleBaselineLabeler:
             1.0,
         )
 
-        np.save(out_path / "timestamp.npy", shared_ts)
+        np.save(out_path / "rhe_timestamp.npy", shared_ts)
         np.save(out_path / "simple_trav_lin.npy", tau_lin)
         np.save(out_path / "simple_trav_ang.npy", tau_ang)
         np.save(out_path / "simple_v_error_lin.npy", v_err_lin)

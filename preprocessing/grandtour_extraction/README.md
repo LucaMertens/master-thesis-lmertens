@@ -13,8 +13,9 @@ Into `/datahome/lmertens/grand_tour_dataset/output/<mission>/`:
 - `image_manifest.npz` — per-camera `{ts_ns, path}`
 - `cam2base.npy` (base ← rectified `front_center`), `stereo_extrinsics.npz` (`baseline`)
 - `dlio_odom.npy` — base pose in the gravity-aligned dlio_map frame (ground-truth odometry)
-- `timestamp.npy`, `rhe_states.npy`, `trav_labels.npy`, `mu_confidences.npy`,
-  `nu_confidences.npy`, `v_means.npy`, `omega_means.npy`, `hyperparameters.json`
+- `rhe_timestamp.npy`, `rhe_states.npy`, `rhe_trav_labels.npy`,
+  `rhe_mu_confidences.npy`, `rhe_nu_confidences.npy`, `rhe_v_means.npy`,
+  `rhe_omega_means.npy`, `rhe_hyperparameters.json`
   — RHE traversability labels (see `data_labeling_pipeline`)
 
 `front_center` (colour) and `front_right` (mono) are stereo-rectified together with

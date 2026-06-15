@@ -8,13 +8,15 @@ camera data. Everything downstream (``get_states``, ``get_extrinsics``,
 sees the exact same sample tuple as upstream WayFASTER.
 
 Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
-    timestamp.npy        (N,)    RHE timestamps (seconds), the reference time grid
-    trav_labels.npy      (N, >=2) columns LABEL_COLUMNS = (mu, nu)
     cam2base.npy         (4, 4)  front_center, from extract_alphasense.py
     intrinsics.npy       (3, 3)  front_center K, from extract_alphasense.py
     dlio_odom.npy        (M, 8)  t, x, y, z, qw, qx, qy, qz (base in dlio_map, ground-truth pose), from extract_dlio.py
     image_manifest.npz   front_center structured array {ts_ns, path}
     depth_manifest.npz   structured array {ts_ns, path} (FoundationStereo output)
+
+Per-mission files expected in ``<LABELS_ROOT>/<mission>/rhe/``:
+    rhe_timestamp.npy    (N,)    RHE timestamps (seconds), the reference time grid
+    rhe_trav_labels.npy  (N, >=2) columns LABEL_COLUMNS = (mu, nu)
 
 Pose (position, orientation, action) comes from the dlio ground-truth odometry
 interpolated to the RHE timestamps, NOT from rhe_states.npy (the RHE state
@@ -75,6 +77,7 @@ class GrandTourDataset(Dataset):
 
         # GrandTour-specific knobs
         self.data_root = configs.DATASET.DATA_ROOT
+        self.labels_root = configs.DATASET.LABELS_ROOT
         self.label_columns = list(configs.MODEL.LABEL_COLUMNS)
         self.time_tolerance = configs.DATASET.TIME_TOLERANCE
         self.max_time_gap = configs.DATASET.MAX_TIME_GAP
@@ -84,7 +87,8 @@ class GrandTourDataset(Dataset):
 
         for mission in missions:
             mission_dir = os.path.join(self.data_root, mission)
-            for segment in self.read_mission(mission_dir):
+            rhe_dir = os.path.join(self.labels_root, mission, "rhe")
+            for segment in self.read_mission(mission_dir, rhe_dir):
                 if len(segment["image_timestamp"]) >= self.n_frames:
                     self.rosbags.append(segment)
                     self.bag_sizes.append(
@@ -154,11 +158,11 @@ class GrandTourDataset(Dataset):
             cleaned.append(depth)
         return super().read_pcloud(cleaned, cam_intrinsics_list, cam_extrinsics_list)
 
-    def read_mission(self, mission_dir):
-        timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(
+    def read_mission(self, mission_dir, rhe_dir):
+        timestamp = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy")).astype(
             np.float64
         )
-        trav = np.load(os.path.join(mission_dir, "trav_labels.npy"))
+        trav = np.load(os.path.join(rhe_dir, "rhe_trav_labels.npy"))
         cam2base = np.load(os.path.join(mission_dir, "cam2base.npy"))
         intrinsics = np.load(os.path.join(mission_dir, "intrinsics.npy"))
         odom = np.load(os.path.join(mission_dir, "dlio_odom.npy"))

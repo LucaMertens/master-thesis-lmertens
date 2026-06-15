@@ -12,22 +12,22 @@ from .pipeline_step import is_step_done, log_step, write_step_done
 from .rhe import RecedingHorizonEstimator
 
 # Bump to invalidate labels from older versions of this step.
-LABELS_VERSION = 2
+LABELS_VERSION = 4
 
 
-def run_labels(mission_path, output_dir, force: bool = False) -> None:
-    DataLabelingPipeline(mission_path=mission_path, output_dir=output_dir).process_mission(
-        force=force
-    )
+def run_labels(mission_path, extraction_dir, labels_dir, force: bool = False) -> None:
+    DataLabelingPipeline(
+        mission_path=mission_path, extraction_dir=extraction_dir, labels_dir=labels_dir
+    ).process_mission(force=force)
 
 
 class DataLabelingPipeline:
-    def __init__(self, mission_path, output_dir):
+    def __init__(self, mission_path, extraction_dir, labels_dir):
         self.mission_path = mission_path
-        self.out_path = pathlib.Path(output_dir)
+        self.out_path = pathlib.Path(labels_dir)
         self.dt = dt
         self.N = N
-        self.loader = GrandTourLoader(mission_path, extracted_dir=self.out_path)
+        self.loader = GrandTourLoader(mission_path, extracted_dir=pathlib.Path(extraction_dir))
 
         print(
             f"Using hyperparameters:\n"
@@ -56,11 +56,11 @@ class DataLabelingPipeline:
         out_path = self.out_path
         out_path.mkdir(parents=True, exist_ok=True)
 
-        if not force and is_step_done(out_path, "labels", LABELS_VERSION):
-            print(f"Skipping labels (up to date): {out_path}")
+        if not force and is_step_done(out_path, "rhe_labels", LABELS_VERSION):
+            print(f"Skipping rhe_labels (up to date): {out_path}")
             return None
 
-        with log_step("labels", out_path):
+        with log_step("rhe_labels", out_path):
             return self._run(out_path)
 
     def _run(self, out_path):
@@ -115,13 +115,13 @@ class DataLabelingPipeline:
             omega_means[remaining_start:] = omega_mean
 
         print("Saving continuous labels.")
-        np.save(out_path / "timestamp.npy", shared_ts)
+        np.save(out_path / "rhe_timestamp.npy", shared_ts)
         np.save(out_path / "rhe_states.npy", optimized_states)
-        np.save(out_path / "trav_labels.npy", optimized_labels)
-        np.save(out_path / "mu_confidences.npy", optimized_w_mu)
-        np.save(out_path / "nu_confidences.npy", optimized_w_nu)
-        np.save(out_path / "v_means.npy", v_means)
-        np.save(out_path / "omega_means.npy", omega_means)
+        np.save(out_path / "rhe_trav_labels.npy", optimized_labels)
+        np.save(out_path / "rhe_mu_confidences.npy", optimized_w_mu)
+        np.save(out_path / "rhe_nu_confidences.npy", optimized_w_nu)
+        np.save(out_path / "rhe_v_means.npy", v_means)
+        np.save(out_path / "rhe_omega_means.npy", omega_means)
 
         # Save hyperparameters used for this run as JSON
         hyperparams = {
@@ -136,10 +136,10 @@ class DataLabelingPipeline:
             "w_thresh": float(hp.w_thresh),
             "max_tie_strengh": float(hp.max_tie_strengh),
         }
-        with open(out_path / "hyperparameters.json", "w") as hf:
+        with open(out_path / "rhe_hyperparameters.json", "w") as hf:
             json.dump(hyperparams, hf, indent=2)
 
-        write_step_done(out_path, "labels", LABELS_VERSION)
+        write_step_done(out_path, "rhe_labels", LABELS_VERSION)
         print("Mission processing complete.")
         return (
             optimized_states,

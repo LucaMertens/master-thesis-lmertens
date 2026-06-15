@@ -14,16 +14,16 @@ import numpy as np
 import pytest
 import pytorch_lightning as pl
 import torch
+from config.paths import EXTRACTED_ROOT, LABELS_ROOT
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from torch.utils.data import DataLoader, Subset
-
-from config.paths import EXTRACTED_ROOT
 from traversability_network.config import get_cfg
 from traversability_network.data.grandtour_dataset import BORDER_CROP, GrandTourDataset
 from traversability_network.network.trainer import TrainingModule
 
 DATA_ROOT = str(EXTRACTED_ROOT)
+LABELS_ROOT = str(LABELS_ROOT)
 MISSION = "ETH-1"
 CFG = os.path.join(os.path.dirname(__file__), "..", "configs", "grandtour.yaml")
 
@@ -117,10 +117,10 @@ def test_path_in_map_coverage():
     mean_fin = float(np.mean(finite_fracs))
     print(
         f"\nPath-in-map coverage (HORIZON={horizon}, {n_sample} samples sampled):\n"
-        f"  finite steps : {mean_fin*100:.1f}% mean "
-        f"({np.min(finite_fracs)*100:.0f}–{np.max(finite_fracs)*100:.0f}%)\n"
-        f"  in-map steps : {mean_map*100:.1f}% mean "
-        f"({np.min(fracs)*100:.0f}–{np.max(fracs)*100:.0f}%)"
+        f"  finite steps : {mean_fin * 100:.1f}% mean "
+        f"({np.min(finite_fracs) * 100:.0f}–{np.max(finite_fracs) * 100:.0f}%)\n"
+        f"  in-map steps : {mean_map * 100:.1f}% mean "
+        f"({np.min(fracs) * 100:.0f}–{np.max(fracs) * 100:.0f}%)"
     )
     # diagnostic only — no threshold assert; result informs HORIZON / xbound tuning
 
@@ -130,13 +130,14 @@ def test_heading_consistency():
     """RHE yaw and dlio-slerped yaw must agree within 0.1 rad (median)."""
     _skip_no_data()
     mission_dir = os.path.join(DATA_ROOT, MISSION)
+    rhe_dir = os.path.join(LABELS_ROOT, MISSION, "rhe")
 
     odom_path = os.path.join(mission_dir, "dlio_odom.npy")
     if not os.path.exists(odom_path):
         pytest.skip(f"No ground-truth odom for {MISSION}: {odom_path} missing.")
 
-    rhe_states = np.load(os.path.join(mission_dir, "rhe_states.npy"))
-    timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
+    rhe_states = np.load(os.path.join(rhe_dir, "rhe_states.npy"))
+    timestamp = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy")).astype(np.float64)
     odom = np.load(odom_path)
 
     # Replicate GrandTourDataset orientation slerp
@@ -177,6 +178,7 @@ def test_position_consistency():
     """RHE x,y and dlio ground-truth x,y must agree within 0.3 m (median)."""
     _skip_no_data()
     mission_dir = os.path.join(DATA_ROOT, MISSION)
+    rhe_dir = os.path.join(LABELS_ROOT, MISSION, "rhe")
     odom_path = os.path.join(mission_dir, "dlio_odom.npy")
     if not os.path.exists(odom_path):
         pytest.skip(
@@ -186,8 +188,8 @@ def test_position_consistency():
             f"--mission-dir <bags>/{MISSION} --output-dir {mission_dir}"
         )
 
-    rhe_states = np.load(os.path.join(mission_dir, "rhe_states.npy"))
-    timestamp = np.load(os.path.join(mission_dir, "timestamp.npy")).astype(np.float64)
+    rhe_states = np.load(os.path.join(rhe_dir, "rhe_states.npy"))
+    timestamp = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy")).astype(np.float64)
     odom = np.load(odom_path)
 
     order = np.argsort(timestamp)
@@ -315,16 +317,16 @@ def test_label_weight_integrity():
 @pytest.mark.tier2
 def test_velocity_sanity():
     """|v| < 3 m/s and |ω| < 3 rad/s for >99% of steps (plausible ANYmal ranges)."""
-    if not os.path.isdir(DATA_ROOT):
-        pytest.skip(f"DATA_ROOT not available: {DATA_ROOT}")
+    if not os.path.isdir(LABELS_ROOT):
+        pytest.skip(f"LABELS_ROOT not available: {LABELS_ROOT}")
 
     missions = sorted(
         m
-        for m in os.listdir(DATA_ROOT)
-        if os.path.isdir(os.path.join(DATA_ROOT, m))
+        for m in os.listdir(LABELS_ROOT)
+        if os.path.isdir(os.path.join(LABELS_ROOT, m, "rhe"))
         and all(
-            os.path.exists(os.path.join(DATA_ROOT, m, f))
-            for f in ("rhe_states.npy", "timestamp.npy")
+            os.path.exists(os.path.join(LABELS_ROOT, m, "rhe", f))
+            for f in ("rhe_states.npy", "rhe_timestamp.npy")
         )
     )
     if not missions:
@@ -332,9 +334,9 @@ def test_velocity_sanity():
 
     print()
     for m in missions:
-        mdir = os.path.join(DATA_ROOT, m)
-        rhe_states = np.load(os.path.join(mdir, "rhe_states.npy"))
-        ts = np.load(os.path.join(mdir, "timestamp.npy")).astype(np.float64)
+        rhe_dir = os.path.join(LABELS_ROOT, m, "rhe")
+        rhe_states = np.load(os.path.join(rhe_dir, "rhe_states.npy"))
+        ts = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy")).astype(np.float64)
 
         x, y, theta = rhe_states[:, 0], rhe_states[:, 1], rhe_states[:, 2]
         vx = np.gradient(x, ts)
@@ -345,11 +347,11 @@ def test_velocity_sanity():
         v_ok = float(np.mean(np.abs(v) < 3.0))
         o_ok = float(np.mean(np.abs(omega) < 3.0))
         print(
-            f"  {m}: |v|_max={np.abs(v).max():.2f} m/s ({v_ok*100:.1f}% ok),  "
-            f"|ω|_max={np.abs(omega).max():.2f} rad/s ({o_ok*100:.1f}% ok)"
+            f"  {m}: |v|_max={np.abs(v).max():.2f} m/s ({v_ok * 100:.1f}% ok),  "
+            f"|ω|_max={np.abs(omega).max():.2f} rad/s ({o_ok * 100:.1f}% ok)"
         )
-        assert v_ok >= 0.99, f"{m}: {(1-v_ok)*100:.1f}% of v exceeds 3 m/s"
-        assert o_ok >= 0.99, f"{m}: {(1-o_ok)*100:.1f}% of omega exceeds 3 rad/s"
+        assert v_ok >= 0.99, f"{m}: {(1 - v_ok) * 100:.1f}% of v exceeds 3 m/s"
+        assert o_ok >= 0.99, f"{m}: {(1 - o_ok) * 100:.1f}% of omega exceeds 3 rad/s"
 
 
 @pytest.mark.tier2
@@ -429,10 +431,10 @@ def test_flip_augmentation():
     cx_fl = (w_orig - cx_nf_raw) * (input_w / w_orig)
     print(
         f"\nFlip intrinsics: cx_no_flip={cx_nf:.2f}, cx_flip={cx_fl:.2f}, "
-        f"sum={cx_nf+cx_fl:.2f} (expected {input_w})"
+        f"sum={cx_nf + cx_fl:.2f} (expected {input_w})"
     )
     assert abs(cx_nf + cx_fl - input_w) < 1e-3, (
-        f"cx_flip + cx_no_flip = {cx_nf+cx_fl:.3f} != input_W={input_w}"
+        f"cx_flip + cx_no_flip = {cx_nf + cx_fl:.3f} != input_W={input_w}"
     )
 
 
@@ -442,27 +444,23 @@ def test_dataset_integrity_sweep():
     if not os.path.isdir(DATA_ROOT):
         pytest.skip(f"DATA_ROOT not available: {DATA_ROOT}")
 
-    required = [
-        "rhe_states.npy",
-        "timestamp.npy",
-        "trav_labels.npy",
-        "cam2base.npy",
-        "intrinsics.npy",
-        "dlio_odom.npy",
-    ]
+    required_extracted = ["cam2base.npy", "intrinsics.npy", "dlio_odom.npy"]
+    required_labels = ["rhe_states.npy", "rhe_timestamp.npy", "rhe_trav_labels.npy"]
     print()
     for m in sorted(os.listdir(DATA_ROOT)):
         mdir = os.path.join(DATA_ROOT, m)
         if not os.path.isdir(mdir):
             continue
-        missing = [f for f in required if not os.path.exists(os.path.join(mdir, f))]
+        rhe_dir = os.path.join(LABELS_ROOT, m, "rhe")
+        missing = [f for f in required_extracted if not os.path.exists(os.path.join(mdir, f))]
+        missing += [f for f in required_labels if not os.path.exists(os.path.join(rhe_dir, f))]
         if missing:
             print(f"  {m}: skip (missing {missing})")
             continue
 
-        rhe_states = np.load(os.path.join(mdir, "rhe_states.npy"))
-        ts = np.load(os.path.join(mdir, "timestamp.npy"))
-        trav = np.load(os.path.join(mdir, "trav_labels.npy"))
+        rhe_states = np.load(os.path.join(rhe_dir, "rhe_states.npy"))
+        ts = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy"))
+        trav = np.load(os.path.join(rhe_dir, "rhe_trav_labels.npy"))
 
         assert rhe_states.ndim == 2 and rhe_states.shape[1] == 3, (
             f"{m}: rhe_states shape {rhe_states.shape}"
@@ -472,7 +470,9 @@ def test_dataset_integrity_sweep():
             f"{m}: trav_labels shape {trav.shape}"
         )
         N = len(ts)
-        assert len(rhe_states) == N, f"{m}: rhe_states len {len(rhe_states)} != ts len {N}"
+        assert len(rhe_states) == N, (
+            f"{m}: rhe_states len {len(rhe_states)} != ts len {N}"
+        )
         assert len(trav) == N, f"{m}: trav len {len(trav)} != ts len {N}"
 
         has_images = os.path.exists(os.path.join(mdir, "image_manifest.npz"))
@@ -506,7 +506,7 @@ def test_depth_health():
     if not missions:
         pytest.skip("No missions with depth_manifest.npz")
 
-    dmin_mm = 300   # 0.3 m
+    dmin_mm = 300  # 0.3 m
     dmax_mm = 8000  # 8.0 m
 
     print()
