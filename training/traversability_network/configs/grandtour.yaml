@@ -11,7 +11,7 @@ TRAINING:
     VERBOSE: False
     GAMMA: 1.0
     DEPTH_WEIGHT: 0.1
-    HORIZON: 300        # 30 s at 10 Hz
+    HORIZON: 200        # 20 s at 10 Hz
     DT: 0.1             # matches RHE timestep
     VIS_INTERVAL: 500
 
@@ -23,7 +23,7 @@ MODEL:
     PREDICT_DEPTH: True
     TRAIN_DEPTH: True
     FUSE_PCLOUD: True
-    LABEL_COLUMNS: [0, 1]    # (mu, nu) columns of trav_labels.npy
+    LABEL_COLUMNS: [0, 1]    # (mu, nu) columns of rhe_trav_labels.npy
     GRID_BOUNDS: {
         'xbound': [-2.0, 8.0, 0.1],
         'ybound': [-5.0, 5.0, 0.1],
@@ -31,7 +31,8 @@ MODEL:
         'dbound': [ 0.3, 8.0, 0.2]}
 
 DATASET:
-    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/output'
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5
     # Only ETH-1 currently has extracted images/depth on disk. This is a
