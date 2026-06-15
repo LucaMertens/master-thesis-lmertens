@@ -21,14 +21,17 @@ How much to penalize deviation from ground truth.
 P_w = np.diag([1.2, 1.2, 1])
 
 
-"""Horizon length (the same as used in the paper: https://github.com/matval/wayfaster/issues/2)"""
+"""Horizon length. Trade-off between label responsiveness (smaller N) and smoothness (larger N)."""
 N = 10
 
 """Step size used when advancing the receding horizon window.
 Needs at least one step overlap (N-1).
+
+Smaller step size --> more optimization windows and smoother labels, but also more computation time.
 """
-STEP_SIZE = max(1, N - 1)
+# STEP_SIZE = max(1, N - 1)
 # STEP_SIZE = max(1, int(N // 2))
+STEP_SIZE = 2
 
 """Time step (https://github.com/matval/wayfaster/issues/2)"""
 dt = 0.1
