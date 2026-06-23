@@ -11,7 +11,7 @@ TRAINING:
     VERBOSE: False
     GAMMA: 1.0
     DEPTH_WEIGHT: 0.1
-    HORIZON: 200        # 20 s at 10 Hz
+    HORIZON: 500        # 50 s at 10 Hz
     DT: 0.1             # matches RHE timestep
     VIS_INTERVAL: 500
 
