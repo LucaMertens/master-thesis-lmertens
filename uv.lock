@@ -938,6 +938,9 @@ source = { editable = "preprocessing/grandtour_extraction" }
 dependencies = [
     { name = "config" },
     { name = "data-labeling-pipeline" },
+    { name = "imageio" },
+    { name = "imageio-ffmpeg" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "rosbags" },
@@ -949,6 +952,9 @@ dependencies = [
 requires-dist = [
     { name = "config", editable = "config" },
     { name = "data-labeling-pipeline", editable = "preprocessing/data_labeling_pipeline" },
+    { name = "imageio" },
+    { name = "imageio-ffmpeg" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "rosbags", specifier = ">=0.11.2" },

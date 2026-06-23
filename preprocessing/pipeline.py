@@ -19,12 +19,13 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from config.paths import EXTRACTED_ROOT, LABELS_ROOT, ROS1_ROOT
+from config.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT, ROS1_ROOT
 from data_labeling_pipeline import labeling_pipeline, run_labels
 from grandtour_extraction import (
     extract_alphasense,
     extract_commands,
     extract_dlio,
+    label_video,
     rectify,
 )
 
@@ -63,6 +64,7 @@ def _current_versions() -> dict[str, int]:
         "command": extract_commands.COMMAND_VERSION,
         "rhe_labels": labeling_pipeline.LABELS_VERSION,
         "depth": _depth_version(),
+        "label_video": label_video.LABEL_VIDEO_VERSION,
     }
 
 
@@ -87,6 +89,15 @@ def _depth_running(mission_dir: pathlib.Path) -> str | None:
     newest = max((f.stat().st_mtime for f in files), default=0)
     if time.time() - newest < ACTIVE_SECONDS:
         return f"RUNNING ({len(files)} written)"
+    return None
+
+
+def _label_video_running(mission_dir: pathlib.Path) -> str | None:
+    """Progress string if label_video rendering is live, from its heartbeat."""
+    progress = mission_dir / "label_video_progress.json"
+    if progress.exists() and time.time() - progress.stat().st_mtime < ACTIVE_SECONDS:
+        p = json.loads(progress.read_text())
+        return f"RUNNING {p['done']}/{p['total']}"
     return None
 
 
@@ -115,6 +126,10 @@ def print_status(
             return "RUNNING"
         if step == "depth" and (depth := _depth_running(mission_dir)):
             return depth
+        if step == "label_video":
+            if lv := _label_video_running(mission_dir):
+                return lv
+            return label_video.video_status(mission_dir.name, OUTPUT_ROOT)
         meta_dir = rhe_dir if step == "rhe_labels" else mission_dir
         meta = meta_dir / f"{step}_metadata.json"
         if not meta.exists():
@@ -128,7 +143,11 @@ def print_status(
     def activity(mission_dir: pathlib.Path) -> str:
         mtimes = [
             f.stat().st_mtime
-            for f in (mission_dir / "pipeline.log", mission_dir / "depth_progress.json")
+            for f in (
+                mission_dir / "pipeline.log",
+                mission_dir / "depth_progress.json",
+                mission_dir / "label_video_progress.json",
+            )
             if f.exists()
         ]
         if not mtimes:
@@ -226,6 +245,48 @@ def run_pipeline(
     return step_errors
 
 
+def _render_video(
+    mission: str, output_root, labels_root, force: bool, log_to_file: bool
+) -> None:
+    """Worker for the parallel video stage: render one mission's label video."""
+    if log_to_file:
+        mission_dir = pathlib.Path(output_root) / mission
+        mission_dir.mkdir(parents=True, exist_ok=True)
+        # Append so the video stage does not clobber the extraction log.
+        log_file = open(mission_dir / "pipeline.log", "a", buffering=1)
+        os.dup2(log_file.fileno(), sys.stdout.fileno())
+        os.dup2(log_file.fileno(), sys.stderr.fileno())
+    label_video.extract(mission, output_root, labels_root, OUTPUT_ROOT, force=force)
+
+
+def run_videos(
+    missions: list[str],
+    output_root,
+    labels_root,
+    workers: int,
+    force: bool = False,
+) -> dict[str, str]:
+    """Render label videos for all missions, workers missions in parallel."""
+    failed: dict[str, str] = {}
+    log_to_file = workers > 1
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                _render_video, m, output_root, labels_root, force, log_to_file
+            ): m
+            for m in missions
+        }
+        for fut in as_completed(futures):
+            mission = futures[fut]
+            try:
+                fut.result()
+                log(f"{mission}: label_video done")
+            except Exception as e:
+                log(f"!! {mission}: label_video failed: {e}")
+                failed[mission] = str(e)
+    return failed
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -275,6 +336,18 @@ def main() -> None:
     p.add_argument("--no-images", action="store_false", dest="images")
     p.add_argument("--no-extrinsics", action="store_false", dest="extrinsics")
     p.add_argument("--no-labels", action="store_false", dest="labels")
+    p.add_argument(
+        "--videos",
+        action="store_true",
+        help="Render OUTPUT_ROOT/label_videos/<mission>.mp4 (off by default).",
+    )
+    p.add_argument(
+        "--video-workers",
+        type=int,
+        default=None,
+        help="Missions rendered in parallel for --videos "
+        "(default: min(missions, cpu_count)).",
+    )
     p.add_argument(
         "--no-depth",
         action="store_false",
@@ -375,6 +448,29 @@ def main() -> None:
                 log(f"!! depth failed: {e}")
                 depth_failed = {m: str(e) for m in depth_missions}
 
+    video_failed: dict[str, str] = {}
+    if args.videos:
+        video_missions = [m for m in missions if m not in failed]
+        if video_missions:
+            workers = args.video_workers or min(
+                len(video_missions), os.cpu_count() or 8
+            )
+            log(
+                f"== label_video: {len(video_missions)} mission(s), "
+                f"{workers} in parallel =="
+            )
+            try:
+                video_failed = run_videos(
+                    video_missions,
+                    args.output_root,
+                    args.labels_root,
+                    workers=workers,
+                    force=args.force,
+                )
+            except Exception as e:
+                log(f"!! label_video failed: {e}")
+                video_failed = {m: str(e) for m in video_missions}
+
     print("\n=== Report ===")
     n_ok = 0
     for mission in missions:
@@ -385,6 +481,8 @@ def main() -> None:
             notes.append(f"{step} FAILED - {err}")
         if mission in depth_failed:
             notes.append(f"depth FAILED - {depth_failed[mission]}")
+        if mission in video_failed:
+            notes.append(f"label_video FAILED - {video_failed[mission]}")
         if notes:
             print(f"  {mission}: {', '.join(notes)}")
         else:
@@ -392,8 +490,10 @@ def main() -> None:
             n_ok += 1
     print(f"{n_ok}/{len(missions)} mission(s) fully succeeded")
 
-    if failed or depth_failed or step_failed:
-        all_failed = sorted(set(failed) | set(depth_failed) | set(step_failed))
+    if failed or depth_failed or step_failed or video_failed:
+        all_failed = sorted(
+            set(failed) | set(depth_failed) | set(step_failed) | set(video_failed)
+        )
         raise SystemExit(f"Failed missions: {', '.join(all_failed)}")
 
 

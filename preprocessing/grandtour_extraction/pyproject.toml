@@ -6,6 +6,9 @@ requires-python = "==3.14.*"
 dependencies = [
     "numpy",
     "scipy",
+    "matplotlib",
+    "imageio",
+    "imageio-ffmpeg",
     "opencv-python-headless",
     "rosbags>=0.11.2",
     "tqdm",
