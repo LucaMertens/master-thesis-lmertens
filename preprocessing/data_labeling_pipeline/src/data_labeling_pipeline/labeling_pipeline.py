@@ -12,7 +12,23 @@ from .pipeline_step import is_step_done, log_step, write_step_done
 from .rhe import RecedingHorizonEstimator
 
 # Bump to invalidate labels from older versions of this step.
-LABELS_VERSION = 4
+LABELS_VERSION = 5
+
+
+def _center_on_window(a, offset):
+    """Place each per-window estimate at the window center instead of its start.
+
+    The RHE fits a constant parameter over the whole horizon, so its estimate
+    describes the terrain at the window center (~(N-1)/2 steps in), not its first
+    step. Shift forward so index i refers to the window centered there; pad the
+    leading gap with the first estimate.
+    """
+    if offset == 0:
+        return a
+    shifted = np.empty_like(a)
+    shifted[offset:] = a[:-offset]
+    shifted[:offset] = a[0]
+    return shifted
 
 
 def run_labels(mission_path, extraction_dir, labels_dir, force: bool = False) -> None:
@@ -113,6 +129,15 @@ class DataLabelingPipeline:
             optimized_w_nu[remaining_start:] = w_nu
             v_means[remaining_start:] = v_mean
             omega_means[remaining_start:] = omega_mean
+
+        # rhe_states stays aligned with timestamps (per-step pose); only the
+        # per-window estimates are recentered onto the window midpoint.
+        offset = (self.N - 1) // 2
+        optimized_labels = _center_on_window(optimized_labels, offset)
+        optimized_w_mu = _center_on_window(optimized_w_mu, offset)
+        optimized_w_nu = _center_on_window(optimized_w_nu, offset)
+        v_means = _center_on_window(v_means, offset)
+        omega_means = _center_on_window(omega_means, offset)
 
         print("Saving continuous labels.")
         np.save(out_path / "rhe_timestamp.npy", shared_ts)
