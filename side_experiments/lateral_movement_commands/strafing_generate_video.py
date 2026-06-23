@@ -188,7 +188,7 @@ if output_mode == "mp4":
     writer = FFMpegWriter(
         fps=fps,
         codec="libx264",
-        extra_args=["-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"],
+        extra_args=["-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p"],
     )
     with writer.saving(fig, str(output_file), dpi=fig.dpi):
         for i in frame_iter:
