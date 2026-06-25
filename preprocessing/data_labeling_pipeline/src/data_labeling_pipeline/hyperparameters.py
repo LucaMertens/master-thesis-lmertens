@@ -38,11 +38,16 @@ dt = 0.1
 
 #### Tying logic
 
-"""Linear velocity confidence threshold (if the linear velocity command is at v_thresh, our confidence in mu is ~99%)."""
+"""Deprecated: Linear velocity observability threshold (legacy, kept for benchmarking scripts)."""
 v_thresh = 0.2
 
-"""Angular velocity confidence threshold (if the angular velocity command is at w_thresh, nu is ~99%)."""
+"""Deprecated: Angular velocity observability threshold (legacy, kept for benchmarking scripts)."""
 w_thresh = 0.2
+
+"""Observability smoothstep ramp on the mean command magnitude (m/s for v, rad/s for omega).
+A parameter is unobservable (0) below obs_lo and fully observable (1) above obs_hi."""
+obs_lo = 0.01
+obs_hi = 0.1
 
 """Maximum tie strength (how important the tying is, compared to P_m and P_x)."""
 max_tie_strengh = 1.3

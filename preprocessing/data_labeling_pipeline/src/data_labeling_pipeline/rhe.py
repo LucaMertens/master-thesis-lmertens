@@ -6,9 +6,17 @@ from .hyperparameters import (
     P_w,
     P_x,
     max_tie_strengh,
+    obs_hi,
+    obs_lo,
     v_thresh,
     w_thresh,
 )
+
+
+def observability(mean, lo=obs_lo, hi=obs_hi):
+    """Cubic smoothstep ramp: 0 below lo, 1 above hi, smooth in between."""
+    t = np.clip((mean - lo) / (hi - lo), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 def integrate_route_from_twist(U, dt=0.1, x0=(0.0, 0.0, 0.0)):
@@ -134,16 +142,15 @@ class RecedingHorizonEstimator:
         v_mean = np.mean(np.abs(U[:, 0]))
         omega_mean = np.mean(np.abs(U[:, 1]))
 
-        # Confidence in each parameter follows an exponential ramp.
-        # We use a multiplier of 5.0 so that confidence reaches ~99.3% at the threshold.
-        mu_confidence = 1.0 - np.exp(-5.0 * v_mean / self.v_thresh)
-        nu_confidence = 1.0 - np.exp(-5.0 * omega_mean / self.w_thresh)
+        # Observability is a smoothstep ramp in the mean excitation.
+        mu_observability = observability(v_mean)
+        nu_observability = observability(omega_mean)
 
         # Coupling strength peaks when one parameter is observable and the other isn't.
         # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap).
         coupling_strength = self.max_tie_strengh * (
-            (1.0 - mu_confidence) * nu_confidence**2
-            + (1.0 - nu_confidence) * mu_confidence**2
+            (1.0 - mu_observability) * nu_observability**2
+            + (1.0 - nu_observability) * mu_observability**2
         )
         cost_tie = coupling_strength * (mu - nu) ** 2
 
@@ -168,8 +175,8 @@ class RecedingHorizonEstimator:
         v_mean = float(np.mean(np.abs(U[:, 0])))
         omega_mean = float(np.mean(np.abs(U[:, 1])))
 
-        w_mu = 1.0 - np.exp(-5.0 * v_mean / self.v_thresh)
-        w_nu = 1.0 - np.exp(-5.0 * omega_mean / self.w_thresh)
+        mu_observability = float(observability(v_mean))
+        nu_observability = float(observability(omega_mean))
 
         bounds = [
             (None, None),
@@ -201,7 +208,7 @@ class RecedingHorizonEstimator:
         self.prev_x = X_optimized[step_size]
         self.prev_m = m_optimized
 
-        return X_optimized, m_optimized, w_mu, w_nu, v_mean, omega_mean
+        return X_optimized, m_optimized, mu_observability, nu_observability, v_mean, omega_mean
 
     def reset(self):
         """Reset the estimator state to be able to start a new mission."""

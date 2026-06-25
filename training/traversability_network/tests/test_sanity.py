@@ -100,7 +100,7 @@ def test_path_in_map_coverage():
     for idx in indices:
         rosbag, data_idx = _locate(ds, int(idx))
         ts = [rosbag["image_timestamp"][data_idx + t] for t in range(ds.n_frames)]
-        states, _ = ds.get_states(rosbag, ts, np.eye(4), False)
+        states, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
 
         finite = np.isfinite(states[:, 0])
         in_map = (
@@ -410,8 +410,8 @@ def test_flip_augmentation():
     rosbag, data_idx = _locate(ds, 0)
     ts = [rosbag["image_timestamp"][data_idx + t] for t in range(ds.n_frames)]
 
-    states_nf, _ = ds.get_states(rosbag, ts, np.eye(4), False)
-    states_fl, _ = ds.get_states(rosbag, ts, np.eye(4), True)
+    states_nf, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
+    states_fl, _, _ = ds.get_states(rosbag, ts, np.eye(4), True)
 
     np.testing.assert_allclose(states_fl[:, 0], states_nf[:, 0], atol=1e-6)  # x
     np.testing.assert_allclose(states_fl[:, 1], -states_nf[:, 1], atol=1e-6)  # y

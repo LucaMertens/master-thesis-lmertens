@@ -12,7 +12,7 @@ from .pipeline_step import is_step_done, log_step, write_step_done
 from .rhe import RecedingHorizonEstimator
 
 # Bump to invalidate labels from older versions of this step.
-LABELS_VERSION = 5
+LABELS_VERSION = 6
 
 
 def _center_on_window(a, offset):
@@ -43,7 +43,9 @@ class DataLabelingPipeline:
         self.out_path = pathlib.Path(labels_dir)
         self.dt = dt
         self.N = N
-        self.loader = GrandTourLoader(mission_path, extracted_dir=pathlib.Path(extraction_dir))
+        self.loader = GrandTourLoader(
+            mission_path, extracted_dir=pathlib.Path(extraction_dir)
+        )
 
         print(
             f"Using hyperparameters:\n"
@@ -88,8 +90,8 @@ class DataLabelingPipeline:
 
         optimized_states = np.zeros_like(Z)
         optimized_labels = np.zeros((total_steps, 3))
-        optimized_w_mu = np.zeros(total_steps)
-        optimized_w_nu = np.zeros(total_steps)
+        optimized_mu_obs = np.zeros(total_steps)
+        optimized_nu_obs = np.zeros(total_steps)
         v_means = np.zeros(total_steps)
         omega_means = np.zeros(total_steps)
 
@@ -103,15 +105,15 @@ class DataLabelingPipeline:
             U_window = U[i : i + self.N]
             Z_window = Z[i : i + self.N]
 
-            X_optimized, m_optimized, w_mu, w_nu, v_mean, omega_mean = (
+            X_optimized, m_optimized, mu_obs, nu_obs, v_mean, omega_mean = (
                 self.rhe.estimate(U_window, Z_window, step_size=STEP_SIZE)
             )
 
             # Fill the block with the optimized values
             optimized_states[i : i + STEP_SIZE] = X_optimized[:STEP_SIZE]
             optimized_labels[i : i + STEP_SIZE] = m_optimized[0:3]
-            optimized_w_mu[i : i + STEP_SIZE] = w_mu
-            optimized_w_nu[i : i + STEP_SIZE] = w_nu
+            optimized_mu_obs[i : i + STEP_SIZE] = mu_obs
+            optimized_nu_obs[i : i + STEP_SIZE] = nu_obs
             v_means[i : i + STEP_SIZE] = v_mean
             omega_means[i : i + STEP_SIZE] = omega_mean
 
@@ -125,8 +127,8 @@ class DataLabelingPipeline:
             remaining_steps = total_steps - remaining_start
             optimized_states[remaining_start:] = X_optimized[-remaining_steps:]
             optimized_labels[remaining_start:] = m_optimized[0:3]
-            optimized_w_mu[remaining_start:] = w_mu
-            optimized_w_nu[remaining_start:] = w_nu
+            optimized_mu_obs[remaining_start:] = mu_obs
+            optimized_nu_obs[remaining_start:] = nu_obs
             v_means[remaining_start:] = v_mean
             omega_means[remaining_start:] = omega_mean
 
@@ -134,8 +136,8 @@ class DataLabelingPipeline:
         # per-window estimates are recentered onto the window midpoint.
         offset = (self.N - 1) // 2
         optimized_labels = _center_on_window(optimized_labels, offset)
-        optimized_w_mu = _center_on_window(optimized_w_mu, offset)
-        optimized_w_nu = _center_on_window(optimized_w_nu, offset)
+        optimized_mu_obs = _center_on_window(optimized_mu_obs, offset)
+        optimized_nu_obs = _center_on_window(optimized_nu_obs, offset)
         v_means = _center_on_window(v_means, offset)
         omega_means = _center_on_window(omega_means, offset)
 
@@ -143,8 +145,8 @@ class DataLabelingPipeline:
         np.save(out_path / "rhe_timestamp.npy", shared_ts)
         np.save(out_path / "rhe_states.npy", optimized_states)
         np.save(out_path / "rhe_trav_labels.npy", optimized_labels)
-        np.save(out_path / "rhe_mu_confidences.npy", optimized_w_mu)
-        np.save(out_path / "rhe_nu_confidences.npy", optimized_w_nu)
+        np.save(out_path / "rhe_mu_observability.npy", optimized_mu_obs)
+        np.save(out_path / "rhe_nu_observability.npy", optimized_nu_obs)
         np.save(out_path / "rhe_v_means.npy", v_means)
         np.save(out_path / "rhe_omega_means.npy", omega_means)
 
@@ -169,8 +171,8 @@ class DataLabelingPipeline:
         return (
             optimized_states,
             optimized_labels,
-            optimized_w_mu,
-            optimized_w_nu,
+            optimized_mu_obs,
+            optimized_nu_obs,
             v_means,
             omega_means,
         )

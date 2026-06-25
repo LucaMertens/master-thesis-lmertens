@@ -164,7 +164,7 @@ class Dataset(DataLoader.Dataset):
             cam2base_list.append(cam2base)
 
         # Read states and traversability information already with horizontal flip
-        states, traversability = self.get_states(rosbag_dict, image_timestamp_list, aug_transformation, horizontal_flip)
+        states, traversability, mu_obs = self.get_states(rosbag_dict, image_timestamp_list, aug_transformation, horizontal_flip)
         extrinsics_list = self.get_extrinsics(rosbag_dict, image_timestamp_list, cam2base_list, horizontal_flip)
         # Get pointcloud from depth
         pcloud_data = self.read_pcloud(depth_img_list, intrinsics_list, extrinsics_list)
@@ -242,6 +242,11 @@ class Dataset(DataLoader.Dataset):
         trav_weights = np.zeros_like(traversability)
         trav_weights[:,0] = self.weights[weight_idxs[:,0],0]
         trav_weights[:,1] = self.weights[weight_idxs[:,1],1]
+
+        # mu observability gate: precomputed smoothstep from the RHE (0 at standstill
+        # where mu is unobservable, 1 in normal motion). A soft mask, never a general
+        # scalar reweighting.
+        trav_weights[:,0] *= mu_obs
 
         # Because we have a single camera
         color_img = torch.stack(color_img_list)
@@ -389,7 +394,9 @@ class Dataset(DataLoader.Dataset):
         quaternion  = np.asarray(rosbag_dict['quaternion'])[sync]
         action      = np.asarray(rosbag_dict['action'])[sync]
         traversability = np.asarray(rosbag_dict['traversability'])[sync]
-        # Swap columns w, x, y, z => x, y, z, w
+        # mu observability gate (1 -> fully observable when absent, e.g. CSV path)
+                    mu_obs = np.asarray(rosbag_dict['mu_observability'])[sync]
+                # Swap columns w, x, y, z => x, y, z, w
         quaternion = quaternion[:, [1,2,3,0]]
 
         # Get current position and rotation
@@ -420,7 +427,7 @@ class Dataset(DataLoader.Dataset):
             states[:,2] = -states[:,2]
             states[:,4] = -states[:,4]
 
-        return states, traversability
+        return states, traversability, mu_obs
     
     def get_extrinsics(self, rosbag_dict, image_timestamp, cam2base_list, horizontal_flip=False):
         """

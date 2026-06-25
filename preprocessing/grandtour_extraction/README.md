@@ -14,7 +14,7 @@ Into `/datahome/lmertens/grand_tour_dataset/output/<mission>/`:
 - `cam2base.npy` (base ← rectified `front_center`), `stereo_extrinsics.npz` (`baseline`)
 - `dlio_odom.npy` — base pose in the gravity-aligned dlio_map frame (ground-truth odometry)
 - `rhe_timestamp.npy`, `rhe_states.npy`, `rhe_trav_labels.npy`,
-  `rhe_mu_confidences.npy`, `rhe_nu_confidences.npy`, `rhe_v_means.npy`,
+  `rhe_mu_observability.npy`, `rhe_nu_observability.npy`, `rhe_v_means.npy`,
   `rhe_omega_means.npy`, `rhe_hyperparameters.json`
   — RHE traversability labels (see `data_labeling_pipeline`)
 
