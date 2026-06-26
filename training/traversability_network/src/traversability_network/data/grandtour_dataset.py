@@ -205,6 +205,7 @@ class GrandTourDataset(Dataset):
         )
         trav = np.load(os.path.join(rhe_dir, "rhe_trav_labels.npy"))
         mu_observability = np.load(os.path.join(rhe_dir, "rhe_mu_observability.npy"))
+        nu_observability = np.load(os.path.join(rhe_dir, "rhe_nu_observability.npy"))
         cam2base = np.load(os.path.join(mission_dir, "cam2base.npy"))
         intrinsics = np.load(os.path.join(mission_dir, "intrinsics.npy"))
         odom = np.load(os.path.join(mission_dir, "dlio_odom.npy"))
@@ -213,6 +214,7 @@ class GrandTourDataset(Dataset):
         timestamp = timestamp[order]
         trav = trav[order]
         mu_observability = mu_observability[order]
+        nu_observability = nu_observability[order]
 
         # Ground-truth pose from dlio odometry (not the RHE estimate).
         odom_pos, quaternion = self._interp_odom(odom, timestamp)
@@ -256,6 +258,7 @@ class GrandTourDataset(Dataset):
                 "action": action,
                 "traversability": traversability,
                 "mu_observability": mu_observability,
+                "nu_observability": nu_observability,
             })
         return segments
 

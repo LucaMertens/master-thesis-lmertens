@@ -82,7 +82,7 @@ def _geometry(ds, idx, bev_scale):
         K_list.append(rosbag["intrinsics"][data_idx + t].copy())
         cam2base.append(rosbag["cam2base"][data_idx + t].copy())
 
-    states, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
+    states, _, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
     extrinsics = ds.get_extrinsics(rosbag, ts, cam2base, False)
     occ = _occupancy(ds, depths, K_list, extrinsics, bev_scale)
 

@@ -182,7 +182,7 @@ class Dataset(DataLoader.Dataset):
             cam2base_list.append(cam2base)
 
         # Read states and traversability information already with horizontal flip
-        states, traversability, mu_observability = self.get_states(
+        states, traversability, mu_observability, nu_observability = self.get_states(
             rosbag_dict, image_timestamp_list, aug_transformation, horizontal_flip
         )
         extrinsics_list = self.get_extrinsics(
@@ -284,10 +284,11 @@ class Dataset(DataLoader.Dataset):
         trav_weights[:, 0] = self.weights[weight_idxs[:, 0], 0]
         trav_weights[:, 1] = self.weights[weight_idxs[:, 1], 1]
 
-        # mu observability gate: precomputed smoothstep from the RHE (0 at standstill
-        # where mu is unobservable, 1 in normal motion). A soft mask, never a general
-        # scalar reweighting.
+        # mu/nu observability gates: precomputed smoothstep from the RHE (0 at standstill
+        # where the parameter is unobservable, 1 in normal motion). A soft mask, never a
+        # general scalar reweighting.
         trav_weights[:, 0] *= mu_observability
+        trav_weights[:, 1] *= nu_observability
 
         # Because we have a single camera
         color_img = torch.stack(color_img_list)
@@ -459,8 +460,9 @@ class Dataset(DataLoader.Dataset):
         quaternion = np.asarray(rosbag_dict["quaternion"])[sync]
         action = np.asarray(rosbag_dict["action"])[sync]
         traversability = np.asarray(rosbag_dict["traversability"])[sync]
-        # mu observability gate (1 -> fully observable when absent, e.g. CSV path)
+        # mu/nu observability gates (1 -> fully observable when absent, e.g. CSV path)
         mu_observability = np.asarray(rosbag_dict["mu_observability"])[sync]
+        nu_observability = np.asarray(rosbag_dict["nu_observability"])[sync]
         # Swap columns w, x, y, z => x, y, z, w
         quaternion = quaternion[:, [1, 2, 3, 0]]
 
@@ -498,7 +500,7 @@ class Dataset(DataLoader.Dataset):
             states[:, 2] = -states[:, 2]
             states[:, 4] = -states[:, 4]
 
-        return states, traversability, mu_observability
+        return states, traversability, mu_observability, nu_observability
 
     def get_extrinsics(
         self, rosbag_dict, image_timestamp, cam2base_list, horizontal_flip=False
