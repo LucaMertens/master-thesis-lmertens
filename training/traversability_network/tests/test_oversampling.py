@@ -44,11 +44,11 @@ def brute_flags(ds):
     for bag in ds.rosbags:
         st = np.asarray(bag["states_timestamp"])
         mu = np.asarray(bag["traversability"])[:, 0]
-        obs = np.asarray(bag["mu_observability"])
+        observability = np.asarray(bag["mu_observability"])
         nw = len(bag["image_timestamp"]) - ds.n_frames + 1
         for t in np.asarray(bag["image_timestamp"])[:nw]:
             in_win = (st >= t) & (st < t + n_flag * ds.dt)
-            qual = (mu <= ds.os_mu_max) & (obs >= ds.os_obs_min)
+            qual = (mu <= ds.os_mu_max) & (observability >= ds.os_obs_min)
             out.append(bool((in_win & qual).any()))
     return np.array(out)
 
@@ -65,8 +65,8 @@ def test_flagged_matches_bruteforce():
 
 def test_observability_gate_excludes_unobserved_low_mu():
     mu = np.full(10, 0.2)  # all low mu
-    obs = np.full(10, 0.1)  # but unobservable -> must not flag
-    ds = make_ds([make_bag(mu, obs)], horizon=5)
+    observability = np.full(10, 0.1)  # but unobservable -> must not flag
+    ds = make_ds([make_bag(mu, observability)], horizon=5)
     assert not ds._flagged_windows().any()
 
 

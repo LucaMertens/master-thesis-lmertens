@@ -57,14 +57,14 @@ def bin_exposure(ds):
         nw = len(bag["image_timestamp"]) - ds.n_frames + 1
         st = np.asarray(bag["states_timestamp"])
         mu = np.asarray(bag["traversability"])[:, 0]
-        obs = np.asarray(bag["mu_observability"])
+        observability = np.asarray(bag["mu_observability"])
         b = np.clip((mu * NBINS).astype(int), 0, NBINS - 1)
         img = np.asarray(bag["image_timestamp"])[:nw]
         lo = np.searchsorted(st, img, "left")
         hi = np.searchsorted(st, img + n_flag * ds.dt, "left")
         per = np.empty((NBINS, nw))
         for k in range(NBINS):
-            pref = np.concatenate(([0], np.cumsum(np.where(b == k, obs, 0.0))))
+            pref = np.concatenate(([0], np.cumsum(np.where(b == k, observability, 0.0))))
             per[k] = pref[hi] - pref[lo]
         cols.append(per)
     return np.concatenate(cols, axis=1)

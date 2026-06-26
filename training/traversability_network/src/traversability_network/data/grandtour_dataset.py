@@ -126,8 +126,8 @@ class GrandTourDataset(Dataset):
             n_windows = len(bag["image_timestamp"]) - self.n_frames + 1
             st = np.asarray(bag["states_timestamp"])
             mu = np.asarray(bag["traversability"])[:, 0]
-            obs = np.asarray(bag["mu_observability"])
-            qualifying = (mu <= self.os_mu_max) & (obs >= self.os_obs_min)
+            observability = np.asarray(bag["mu_observability"])
+            qualifying = (mu <= self.os_mu_max) & (observability >= self.os_obs_min)
             prefix = np.concatenate(([0], np.cumsum(qualifying)))
             img_ts = np.asarray(bag["image_timestamp"])[:n_windows]
             lo = np.searchsorted(st, img_ts, "left")
@@ -204,7 +204,7 @@ class GrandTourDataset(Dataset):
             np.float64
         )
         trav = np.load(os.path.join(rhe_dir, "rhe_trav_labels.npy"))
-        mu_obs = np.load(os.path.join(rhe_dir, "rhe_mu_observability.npy"))
+        mu_observability = np.load(os.path.join(rhe_dir, "rhe_mu_observability.npy"))
         cam2base = np.load(os.path.join(mission_dir, "cam2base.npy"))
         intrinsics = np.load(os.path.join(mission_dir, "intrinsics.npy"))
         odom = np.load(os.path.join(mission_dir, "dlio_odom.npy"))
@@ -212,7 +212,7 @@ class GrandTourDataset(Dataset):
         order = np.argsort(timestamp)
         timestamp = timestamp[order]
         trav = trav[order]
-        mu_obs = mu_obs[order]
+        mu_observability = mu_observability[order]
 
         # Ground-truth pose from dlio odometry (not the RHE estimate).
         odom_pos, quaternion = self._interp_odom(odom, timestamp)
@@ -255,7 +255,7 @@ class GrandTourDataset(Dataset):
                 "quaternion": quaternion,
                 "action": action,
                 "traversability": traversability,
-                "mu_observability": mu_obs,
+                "mu_observability": mu_observability,
             })
         return segments
 
