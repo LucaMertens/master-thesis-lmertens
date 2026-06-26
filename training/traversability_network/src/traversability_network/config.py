@@ -19,7 +19,8 @@ _C.TRAINING = EasyDict()
 _C.TRAINING.EPOCHS = 50
 _C.TRAINING.BATCHSIZE = 4
 _C.TRAINING.WORKERS = 8
-_C.TRAINING.PRECISION = 16
+# Ampere bf16: fp16 speed/memory, fp32 range (no overflow / loss scaling)
+_C.TRAINING.PRECISION = "bf16-mixed"
 _C.TRAINING.DT = 0.1  # time step in seconds
 _C.TRAINING.HORIZON = 300  # horizon in number of points
 _C.TRAINING.GAMMA = 0.998
@@ -59,6 +60,13 @@ _C.DATASET.TRAIN_MISSIONS = []
 _C.DATASET.VALID_MISSIONS = []
 _C.DATASET.TIME_TOLERANCE = 0.05  # s, max camera<->RHE/depth timestamp mismatch
 _C.DATASET.MAX_TIME_GAP = 0.5  # s, skip image sequences crossing a larger gap
+# Low-mu oversampling: replicate loss horizons with any cell (mu <= MAX & observability >= MIN)
+# until they reach OVERSAMPLE_FRACTION of the (train) index list.
+_C.DATASET.OVERSAMPLE_FRACTION = 0.40
+_C.DATASET.OVERSAMPLE_MU_MAX = 0.6
+_C.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH = 0.6
+# LDS exponent for the mu loss weight: w = (1/density)^alpha. Higher = more low-mu loss mass.
+_C.DATASET.LDS_ALPHA = 0.75
 
 _C.AUGMENTATIONS = EasyDict()
 _C.AUGMENTATIONS.HORIZ_FLIP = 0.5

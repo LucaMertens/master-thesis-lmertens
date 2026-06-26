@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
+from torchmetrics import MeanMetric
 
 from .utils import path_to_map
 from .models.traversability_net import TravNet
@@ -64,6 +66,13 @@ class TrainingModule(pl.LightningModule):
 
         # Visualization rate
         self.vis_interval = configs.TRAINING.VIS_INTERVAL
+
+        # Graded low-mu eval: per-0.1-bin MAE and mean-predicted-mu (calibration)
+        # over [0.0,0.1) ... [0.5,0.6). torchmetrics handles DDP reduction.
+        self.n_mu_bins = 10
+        self.mu_bin_width = 0.1
+        self.val_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+        self.val_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
 
     def training_step(self, batch, batch_idx):
         """
@@ -132,6 +141,9 @@ class TrainingModule(pl.LightningModule):
         # Calculate traversability loss
         trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights)
 
+        # Update graded low-mu metrics (per-0.1-bin MAE + calibration)
+        self._update_mu_metrics(path, trav_map, target_trav)
+
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
         depth_mask = depth_mask.view(-1, *depth_mask.shape[2:])
@@ -153,6 +165,55 @@ class TrainingModule(pl.LightningModule):
         self.log("valid_depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
 
         return loss
+
+    @torch.no_grad()
+    def _update_mu_metrics(self, states, trav_map, target_trav):
+        """Accumulate per-true-mu-bin MAE and mean predicted mu over valid cells."""
+        pred, mask = self._sample_path(states, trav_map)
+        mask = mask.bool()
+        pred_mu = pred[..., 0][mask]
+        true_mu = target_trav[..., 0][mask]
+        for b in range(self.n_mu_bins):
+            lo = b * self.mu_bin_width
+            sel = (true_mu >= lo) & (true_mu < lo + self.mu_bin_width)
+            if sel.any():
+                self.val_mae[b].update((pred_mu[sel] - true_mu[sel]).abs())
+                self.val_calib[b].update(pred_mu[sel])
+
+    def on_validation_epoch_end(self):
+        """Log per-sub-bin MAE, mean predicted mu, and a calibration curve."""
+        centers, means = [], []
+        for b in range(self.n_mu_bins):
+            lo = b * self.mu_bin_width
+            name = f"{lo:.1f}-{lo + self.mu_bin_width:.1f}"
+            # compute() is collective: call for every bin on every rank
+            mae = self.val_mae[b].compute()
+            calib = self.val_calib[b].compute()
+            self.val_mae[b].reset()
+            self.val_calib[b].reset()
+            # empty bins compute() to NaN (same on every rank, so logging stays consistent)
+            seen = not torch.isnan(calib)
+            if seen:
+                self.log(f"val/mae_mu_{name}", mae, sync_dist=False)
+                self.log(f"val/calib_mu_{name}", calib, sync_dist=False)
+            centers.append(lo + self.mu_bin_width / 2)
+            means.append(float(calib) if seen else None)
+        self._log_calibration_curve(centers, means)
+
+    def _log_calibration_curve(self, centers, means):
+        if not self.trainer.is_global_zero or not isinstance(self.logger, WandbLogger):
+            return
+        import wandb
+        table = wandb.Table(
+            data=[[c, m] for c, m in zip(centers, means) if m is not None],
+            columns=["true_mu_bin", "mean_pred_mu"],
+        )
+        self.logger.experiment.log({
+            "val/calibration_mu": wandb.plot.line(
+                table, "true_mu_bin", "mean_pred_mu",
+                title="Calibration: mean predicted mu vs true mu bin",
+            )
+        })
 
     def configure_optimizers(self):
         """
@@ -182,26 +243,34 @@ class TrainingModule(pl.LightningModule):
         Returns:
             tuple: Tuple containing the loss and the error.
         """
-        # Calculate traversability
-        idxu = 2 * (states[...,0] - self.grid_bounds['xbound'][0]) / (self.grid_bounds['xbound'][1] - self.grid_bounds['xbound'][0]) - 1
-        idxv = 2 * (states[...,1] - self.grid_bounds['ybound'][0]) / (self.grid_bounds['ybound'][1] - self.grid_bounds['ybound'][0]) - 1
-        grid = torch.stack((-idxv, -idxu), -1).unsqueeze(1)
-        mask = (grid[...,0] >= -1) * (grid[...,0] <= 1) * (grid[...,1] >= -1) * (grid[...,1] <= 1)
-        
-        # Sample from map
-        traversability = F.grid_sample(trav_map, grid, align_corners=True)
-        traversability = traversability.permute((0,2,3,1)).squeeze(1)
-        
+        # Sample predicted traversability along the path
+        traversability, mask = self._sample_path(states, trav_map)
+
         # Calculate loss
         gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
         error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.1)
         loss = error * target_weights * gamma
-        loss = torch.mean(loss[mask.squeeze(1),:])
+        loss = torch.mean(loss[mask,:])
 
         # Calculate error
-        error = torch.mean(error[mask.squeeze(1),:])
+        error = torch.mean(error[mask,:])
 
         return loss, error
+
+    def _sample_path(self, states, trav_map):
+        """Sample the predicted traversability map along the path states.
+
+        Returns (traversability (B, H, 2), mask (B, H) of in-bounds cells).
+        """
+        idxu = 2 * (states[...,0] - self.grid_bounds['xbound'][0]) / (self.grid_bounds['xbound'][1] - self.grid_bounds['xbound'][0]) - 1
+        idxv = 2 * (states[...,1] - self.grid_bounds['ybound'][0]) / (self.grid_bounds['ybound'][1] - self.grid_bounds['ybound'][0]) - 1
+        grid = torch.stack((-idxv, -idxu), -1).unsqueeze(1)
+        mask = (grid[...,0] >= -1) * (grid[...,0] <= 1) * (grid[...,1] >= -1) * (grid[...,1] <= 1)
+
+        traversability = F.grid_sample(trav_map, grid, align_corners=True)
+        traversability = traversability.permute((0,2,3,1)).squeeze(1)
+
+        return traversability, mask.squeeze(1)
     
     def depth_criterion(self, prediction, target, mask):
         """

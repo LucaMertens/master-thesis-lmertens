@@ -1,17 +1,18 @@
 # Taken from wayfaster repository (https://github.com/matval/wayfaster)
 # Used as the base Dataset; GrandTourDataset subclasses it (see grandtour_dataset.py).
-import os
-import cv2
-import torch
-import random
 import bisect
+import os
+import random
+from itertools import compress
+
+import cv2
 import numpy as np
 import pandas as pd
+import torch
 import torch.utils.data as DataLoader
-
-from itertools import compress
-from scipy.spatial.transform import Rotation as R
 from scipy.ndimage import gaussian_filter1d
+from scipy.spatial.transform import Rotation as R
+
 
 class Dataset(DataLoader.Dataset):
     """
@@ -44,6 +45,7 @@ class Dataset(DataLoader.Dataset):
         self.predict_depth  = configs.MODEL.PREDICT_DEPTH
         self.max_translation_aug = configs.AUGMENTATIONS.MAX_TRANSLATION
         self.max_rotation_aug = configs.AUGMENTATIONS.MAX_ROTATION
+        self.lds_alpha   = configs.DATASET.LDS_ALPHA
 
         self.bin_width = 0.2
         self.dtype = torch.float32
@@ -82,17 +84,18 @@ class Dataset(DataLoader.Dataset):
             self.weights = weights
             self.bins = np.linspace(0, 1, int(1/self.bin_width)+1)
 
-        if self.verbose:    
+        # Flat list of physical window indices (identity here; subclasses may
+        # replicate entries to oversample, see GrandTourDataset).
+        self.indices = list(range(self.bag_sizes[-1]))
+
+        if self.verbose:
             print('weights:', self.weights)
             print('bins:', self.bins)
 
         print("Dataset initialized!")
 
     def __len__(self):
-        length = 0
-        for bag in self.rosbags:
-            length += len(bag['image_timestamp']) - self.n_frames + 1
-        return length
+        return len(self.indices)
 
     def __getitem__(self, idx):
         """
@@ -112,6 +115,8 @@ class Dataset(DataLoader.Dataset):
                 traversability: torch.Tensor<float> (300, 2)
                     array containing (mu, nu)
         """
+        # Map the logical index to a physical window (oversampling replicates entries)
+        idx = self.indices[idx]
         # Find the rosbag that contains this data index
         bag_idx = bisect.bisect_right(self.bag_sizes, idx)-1
         # Get the respective rosbag data
@@ -395,8 +400,8 @@ class Dataset(DataLoader.Dataset):
         action      = np.asarray(rosbag_dict['action'])[sync]
         traversability = np.asarray(rosbag_dict['traversability'])[sync]
         # mu observability gate (1 -> fully observable when absent, e.g. CSV path)
-                    mu_obs = np.asarray(rosbag_dict['mu_observability'])[sync]
-                # Swap columns w, x, y, z => x, y, z, w
+        mu_obs = np.asarray(rosbag_dict['mu_observability'])[sync]
+        # Swap columns w, x, y, z => x, y, z, w
         quaternion = quaternion[:, [1,2,3,0]]
 
         # Get current position and rotation
@@ -559,7 +564,10 @@ class Dataset(DataLoader.Dataset):
         # Smooth out the distribution using a Gaussian kernel
         values = gaussian_filter1d(values, sigma=1.0, axis=0, mode='constant')
 
-        return 1/values, bins
+        # Inverse-density LDS, tempered by exponent alpha to soften the rare bins.
+        weights = (1.0/values) ** self.lds_alpha
+
+        return weights, bins
     
     def sample_transformation(self):
         """

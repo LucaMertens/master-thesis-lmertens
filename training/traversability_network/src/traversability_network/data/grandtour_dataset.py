@@ -81,6 +81,10 @@ class GrandTourDataset(Dataset):
         self.label_columns = list(configs.MODEL.LABEL_COLUMNS)
         self.time_tolerance = configs.DATASET.TIME_TOLERANCE
         self.max_time_gap = configs.DATASET.MAX_TIME_GAP
+        self.OVERSAMPLE_FRACTION = configs.DATASET.OVERSAMPLE_FRACTION
+        self.os_mu_max = configs.DATASET.OVERSAMPLE_MU_MAX
+        self.os_obs_min = configs.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH
+        self.lds_alpha = configs.DATASET.LDS_ALPHA
 
         self.rosbags = []
         self.bag_sizes = [0]
@@ -106,7 +110,44 @@ class GrandTourDataset(Dataset):
             self.weights = weights
             self.bins = np.linspace(0, 1, int(1 / self.bin_width) + 1)
 
+        if self.train:
+            self.indices = self._oversampled_indices()
+        else:
+            self.indices = list(range(self.bag_sizes[-1]))
+
         print("GrandTour dataset initialized!")
+
+    def _flagged_windows(self):
+        """Boolean per window (in global index order): do the first 300 horizon steps
+        contain any cell with mu <= OS_MU_MAX and observability >= OS_OBS_MIN."""
+        n_flag = min(self.horizon, 300)  # only count low-mu cells in the near horizon
+        flags = []
+        for bag in self.rosbags:
+            n_windows = len(bag["image_timestamp"]) - self.n_frames + 1
+            st = np.asarray(bag["states_timestamp"])
+            mu = np.asarray(bag["traversability"])[:, 0]
+            obs = np.asarray(bag["mu_observability"])
+            qualifying = (mu <= self.os_mu_max) & (obs >= self.os_obs_min)
+            prefix = np.concatenate(([0], np.cumsum(qualifying)))
+            img_ts = np.asarray(bag["image_timestamp"])[:n_windows]
+            lo = np.searchsorted(st, img_ts, "left")
+            hi = np.searchsorted(st, img_ts + n_flag * self.dt, "left")
+            flags.append((prefix[hi] - prefix[lo]) > 0)
+        return np.concatenate(flags)
+
+    def _oversampled_indices(self):
+        """Replicate flagged-window indices until they reach OVERSAMPLE_FRACTION of the
+        index list. Deterministic, so every DDP rank builds the identical list."""
+        flags = self._flagged_windows()
+        all_idx = np.arange(len(flags))
+        flagged, kept = all_idx[flags], all_idx[~flags]
+        p = self.OVERSAMPLE_FRACTION
+        # target flagged count N so that N / (len(kept) + N) == p
+        n_target = int(round(p * len(kept) / (1 - p))) if p < 1 else len(flagged)
+        if len(flagged) == 0 or n_target <= len(flagged):
+            return all_idx.tolist()
+        replicated = np.resize(flagged, n_target)  # cycles deterministically
+        return np.concatenate((kept, replicated)).tolist()
 
     def _finite_diff_action(self, x, y, theta, timestamp):
         """(v, omega) via finite differences. v is signed forward speed."""
