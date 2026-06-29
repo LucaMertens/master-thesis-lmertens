@@ -6,10 +6,11 @@ OPTIMIZER:
 
 TRAINING:
     BATCHSIZE: 4
-    WORKERS: 63
+    WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
+    DEVICES: -1         # -1 = all GPUs; set e.g. 2 to run on half the machine
     EPOCHS: 20
     VERBOSE: False
-    GAMMA: 1.0
+    GAMMA: 0.998
     DEPTH_WEIGHT: 0.1
     HORIZON: 500        # 50 s at 10 Hz
     DT: 0.1             # matches RHE timestep
@@ -50,5 +51,5 @@ DATASET:
 AUGMENTATIONS:
     HORIZ_FLIP: 0.5
     PCLOUD_DROPOUT: 0.3
-    MAX_TRANSLATION: 0.0
-    MAX_ROTATION: 0.0
+    MAX_TRANSLATION: 0.5 #m
+    MAX_ROTATION: 0.2 #rad
