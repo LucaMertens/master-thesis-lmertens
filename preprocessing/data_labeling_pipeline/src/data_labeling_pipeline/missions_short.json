@@ -1,0 +1,1142 @@
+[
+    {
+        "name": "ETH - Polyterasse",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking from Polybahn to Polyterasse."
+            },
+            {
+                "type": "Location",
+                "value": "Zurich Polybahn"
+            }
+        ],
+        "labels": [
+            "Outdoor",
+            "Pavement",
+            "Cars",
+            "People",
+            "Rain",
+            "Cloudy"
+        ],
+        "short_name": "ETH-1",
+        "split": "Train",
+        "notes": "VLP-16 ANYmal-D LiDAR and lower_front and lower_rear RealSense camera not present. HDR timestamps imprecise: uses GMSL2 arrival time instead of hardware timestamp (ETH-1, ETH-2, ETH-3)."
+    },
+    {
+        "name": "ETH - Mainbuilding Indoor",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "ETH Zurich Main Building"
+            },
+            {
+                "type": "Description",
+                "value": "Walking from the Polyterasse entry into the main hall. Walking a circle around the main hall. Loseing track multiple times. Multiple people around."
+            }
+        ],
+        "labels": [
+            "Indoor",
+            "People"
+        ],
+        "short_name": "ETH-2",
+        "split": "Train",
+        "notes": "VLP-16 ANYmal-D LiDAR and lower_front and lower_rear RealSense camera not present. HDR timestamps imprecise: uses GMSL2 arrival time instead of hardware timestamp (ETH-1, ETH-2, ETH-3)."
+    },
+    {
+        "name": "ETH - Mainbuilding Outdoor",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Front Entry Main Building ETH Zurich"
+            },
+            {
+                "type": "Description",
+                "value": "Walking from the tram station in front of ETH Zurich Main building toward the entry. Light rain."
+            }
+        ],
+        "labels": [
+            "Urban",
+            "Outdoor",
+            "Pavement",
+            "Crosswalk",
+            "Cars",
+            "People",
+            "Rain",
+            "Cloudy"
+        ],
+        "short_name": "ETH-3",
+        "split": "Train",
+        "notes": "VLP-16 ANYmal-D LiDAR and lower_front and lower_rear RealSense camera not present. HDR timestamps imprecise: uses GMSL2 arrival time instead of hardware timestamp (ETH-1, ETH-2, ETH-3)."
+    },
+    {
+        "name": "Jungfraujoch - Sphinx 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Jungfraujoch Sphinx"
+            },
+            {
+                "type": "Description",
+                "value": "Sphinx walk out of station down the stairs with a few people around. In the first mission we had a jump in the total station tracking switching from one prism to the other easy to detect."
+            }
+        ],
+        "labels": [
+            "Industrial",
+            "Outdoor",
+            "Metall",
+            "Stairs",
+            "People",
+            "Dawn"
+        ],
+        "short_name": "SPX-1",
+        "split": "Train"
+    },
+    {
+        "name": "Jungfraujoch - Sphinx 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Jungfraujoch Sphinx"
+            },
+            {
+                "type": "Description",
+                "value": "Error Message Totalstation not leveled. Less people and we walked from the exit of the sphinx down all stairs."
+            }
+        ],
+        "labels": [
+            "Industrial",
+            "Outdoor",
+            "Metall",
+            "Stairs",
+            "People",
+            "Dawn"
+        ],
+        "short_name": "SPX-2",
+        "split": "Test"
+    },
+    {
+        "name": "Jungfraujoch - Sphinx 3",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Total station on the roof - We walk in very limited radius on sphinx"
+            },
+            {
+                "type": "Location",
+                "value": "Jungfraujoch Sphinx"
+            }
+        ],
+        "labels": [
+            "Industrial",
+            "Outdoor",
+            "Metall",
+            "People",
+            "Night"
+        ],
+        "short_name": "SPX-3",
+        "split": "Train"
+    },
+    {
+        "name": "Jungfraujoch - Ice Palace",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking in ice palace - super slipery - we had to hold the robot and only do tiny steps - We then froze the drives and pushed around the robot"
+            },
+            {
+                "type": "Location",
+                "value": "Jungfraujoch - Ice Palace"
+            }
+        ],
+        "labels": [],
+        "short_name": "ICE-1",
+        "split": "Train",
+        "notes": "At the start we did tiny steps and hold the robot before pushing the robot over the slippery ice without walking. Leg odometry is certainly not usefull in this dataset."
+    },
+    {
+        "name": "Jungfraujoch - Snow 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Simple walking on ice. Maybe total station unleveled itself."
+            },
+            {
+                "type": "Location",
+                "value": "Jungfraujoch - Moenchsjoch Fenced"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Mountain",
+            "Outdoor",
+            "Snow",
+            "Sunlight"
+        ],
+        "short_name": "SNOW-1",
+        "split": "Train"
+    },
+    {
+        "name": "Jungfraujoch - Snow 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Jungfraujoch - Moenchsjoch Fenced"
+            },
+            {
+                "type": "Description",
+                "value": "Maybe Totalstation unleveled itself"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Mountain",
+            "Outdoor",
+            "Snow",
+            "Sunlight"
+        ],
+        "short_name": "SNOW-2",
+        "split": "Test"
+    },
+    {
+        "name": "Jungfraujoch - Snow 3",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Jungfraujoch - Moenchsjoch Outside"
+            },
+            {
+                "type": "Description",
+                "value": "Error lost total station past 66s due to active bag not handled sucessfully in box_auto. Maybe total station unleveled itself - robot most likely crashes."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Mountain",
+            "Outdoor",
+            "Snow",
+            "Sunlight"
+        ],
+        "short_name": "SNOW-3",
+        "split": "Train"
+    },
+    {
+        "name": "Jungfraujoch - Eigergletscher Down",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Hiking down a challenging route. Everything working."
+            },
+            {
+                "type": "Location",
+                "value": "Jungfraujoch Eigergletscher"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Mountain",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Pavement",
+            "Metall",
+            "Stairs",
+            "People",
+            "Tracks",
+            "Sunlight"
+        ],
+        "short_name": "EIG-1",
+        "split": "Test"
+    },
+    {
+        "name": "Jungfraujoch - Eigergletscher Up",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Hiking up challenging path"
+            },
+            {
+                "type": "Location",
+                "value": "Junfraujoch Eigergletscher"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Mountain",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Pavement",
+            "Metall",
+            "Stairs",
+            "People",
+            "Tracks",
+            "Sunlight"
+        ],
+        "short_name": "EIG-2",
+        "split": "Train"
+    },
+    {
+        "name": "Grindelwald - Village 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Grindelwald Bergwelten"
+            },
+            {
+                "type": "Description",
+                "value": "Run in center of Grindelwald. Walking between some old tradtitional buildings. All worked."
+            }
+        ],
+        "labels": [
+            "Urban",
+            "Outdoor",
+            "Grass",
+            "Pavement",
+            "Stairs",
+            "Cars",
+            "People",
+            "Sunlight"
+        ],
+        "short_name": "GRI-1",
+        "split": "Train"
+    },
+    {
+        "name": "Grindelwald - Canyon 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking up hiking trail. Total station got unleveled the last 60s before locking in final pose. Way up was good."
+            },
+            {
+                "type": "Location",
+                "value": "Grindelwald Glacier Canyon"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Forest",
+            "Mountain",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Pavement",
+            "Sunlight"
+        ],
+        "short_name": "CYN-1",
+        "split": "Train"
+    },
+    {
+        "name": "Grindelwald - Canyon 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Grindelwald Glacier Canyon"
+            },
+            {
+                "type": "Description",
+                "value": "Walking up hiking trail."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Forest",
+            "Mountain",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Pavement",
+            "Sunlight"
+        ],
+        "short_name": "CYN-2",
+        "split": "Train"
+    },
+    {
+        "name": "Grindelwald - Burglauenen 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking in forest and on a grassland up a hill. The time seems to be wrong in the dataset for all ZED2i data."
+            },
+            {
+                "type": "Location",
+                "value": "Burglauenen"
+            }
+        ],
+        "labels": [],
+        "short_name": "HIL-1",
+        "split": "Train"
+    },
+    {
+        "name": "Grindelwald - River 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking towards river side - the robot manages to go down alone on the way up it struggles to walk over a branch - we freeze it and lift it over it. The time seems to be wrong in the dataset for all ZED2i data."
+            },
+            {
+                "type": "Location",
+                "value": "Schwarze Luetschine River"
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Water",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Sand",
+            "Trial",
+            "Cars",
+            "Sunlight"
+        ],
+        "short_name": "RIV-1",
+        "split": "Train"
+    },
+    {
+        "name": "Pilatus - Hike 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Pilatus Kulm"
+            },
+            {
+                "type": "Description",
+                "value": "Walking up stairs towards the top and then same way down - a lot of people around."
+            }
+        ],
+        "labels": [
+            "Mountain",
+            "Outdoor",
+            "Pavement",
+            "Cobblestone",
+            "Stairs",
+            "People",
+            "Sunlight"
+        ],
+        "short_name": "PIL-1",
+        "split": "Train"
+    },
+    {
+        "name": "Pilatus - Hike 2",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Hike down and up a trail. When walking up last steps of hiking trail invalid joint torque and crash. No total station verification measurement was done."
+            },
+            {
+                "type": "Location",
+                "value": "Pilatus Kulm"
+            }
+        ],
+        "labels": [
+            "Mountain",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Stairs",
+            "People",
+            "Sunlight"
+        ],
+        "short_name": "PIL-2",
+        "split": "Train"
+    },
+    {
+        "name": "Pilatus - Fraekmuentegg Forest 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Pilatus Fraekmuentegg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking up and down forest trail."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Forest",
+            "Mountain",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Sunlight"
+        ],
+        "short_name": "ROOT-1",
+        "split": "Train"
+    },
+    {
+        "name": "Verkehrshaus - Museum 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Verkehrshaus"
+            },
+            {
+                "type": "Description",
+                "value": "Walking inside Roadtraffice building. Taking a look at all cars on a single floor. Everything worked."
+            }
+        ],
+        "labels": [
+            "Indoor",
+            "Pavement",
+            "Cars",
+            "People"
+        ],
+        "short_name": "HAUS-1",
+        "split": "Train"
+    },
+    {
+        "name": "Hoenggerberg - Forest 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking a loop with total station placed in the middle. After this deployment the robot fall while sitting down - calibration should be good."
+            },
+            {
+                "type": "Location",
+                "value": "Hoenggerberg Forest"
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "HOEB-1",
+        "split": "Train"
+    },
+    {
+        "name": "Hoenggerberg - Forest 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Forest Hoenggerberg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking the survey pattern used for forest monitoring. Robot fall before therefore have new calibration. Use the new calibration created starting from here."
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "HOEB-2",
+        "split": "Train"
+    },
+    {
+        "name": "Heap Testsite 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "HEAP Testsite Hoenggerberg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking a loop while HEAP is running"
+            }
+        ],
+        "labels": [
+            "Water",
+            "Industrial",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Grass",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "HEAP-1",
+        "split": "Val"
+    },
+    {
+        "name": "Kaeferberg - Forest 1 ",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Starting to walk tight corridor, walk over grassland, over into terrain with blauberren and entaglement. Failed to traverse one and then returned."
+            },
+            {
+                "type": "Location",
+                "value": "Forest Kaeferberg"
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Grass",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "KAEB-1",
+        "split": "Train"
+    },
+    {
+        "name": "Kaeferberg - Forest 2 ",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Forest Kaeferberg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking simple loop - walking into forest walking other side ut on gravel road. Walking back into forest. on the way back big branch between the feet."
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "KAEB-2",
+        "split": "Train"
+    },
+    {
+        "name": "Kaeferberg - Forest 3",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Forest Kaeferberg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking up stairs with a lot of leaves. On the way walking up a lot of foot slippage. Walking a real big loop which requires loop closure."
+            }
+        ],
+        "labels": [
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Pavement",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "KAEB-3",
+        "split": "Train"
+    },
+    {
+        "name": "Triemli - Biketrail 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Uetliberg, Triemli Biketrail"
+            },
+            {
+                "type": "Description",
+                "value": "Walking up a bike trail."
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "TRIM-1",
+        "split": "Train"
+    },
+    {
+        "name": "Albisguetli - Forest 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Uetliberg, Albisguetli"
+            },
+            {
+                "type": "Description",
+                "value": "Walking in and out without clear path in forest."
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "ALB-1",
+        "split": "Train"
+    },
+    {
+        "name": "Albisguetli - Forest 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Uetliberg, Albisguetli"
+            },
+            {
+                "type": "Description",
+                "value": "Walking inside forest. Entanglements my branches and blackberry bushes. Turining then around and walking out.  While walking out the robot gets stuck on a big branch and really struggles to overcome this."
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Mud",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "ALB-2",
+        "split": "Train"
+    },
+    {
+        "name": "Albisguetli - Forest 3",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walking up slippery slope. Start with very steep slope. Then less steep slope. Robot successfully overcomes less steep slope and walks a loop."
+            },
+            {
+                "type": "Location",
+                "value": "Uetliberg, Albisguetli"
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Mud",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "ALB-3",
+        "split": "Train"
+    },
+    {
+        "name": "Leinbach - Forest 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "First walking up canyon, while walking up robot fails to overcome stairs and gets manually push it up.  When walking up the other side I also got closer to te robot but no help was needed. "
+            },
+            {
+                "type": "Location",
+                "value": "Uetliberg, Leimbach"
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "LMB-1",
+        "split": "Train"
+    },
+    {
+        "name": "Leinbach - Forest 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Uetliberg, Leimbach"
+            },
+            {
+                "type": "Description",
+                "value": "Walking in simple forest. Due to joint over torque robot falls. No total station in the end however we can use total station of the next run as an end."
+            }
+        ],
+        "labels": [
+            "Forest",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Trial",
+            "Cloudy"
+        ],
+        "short_name": "LMB-2",
+        "split": "Train",
+        "notes": "Robot falls toward the end of the run. No total station measurement at the end of the run. However, we can use the total station measurement of the next run as an end."
+    },
+    {
+        "name": "ETH - LEE 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "LEE Garage"
+            },
+            {
+                "type": "Description",
+                "value": "Circle in LEE Garage. Starting outside and walking in and then out again."
+            }
+        ],
+        "labels": [
+            "Underground",
+            "Industrial",
+            "Indoor",
+            "Outdoor",
+            "Pavement",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "LEE-1",
+        "split": "Train",
+        "notes": "GNSS is only available in the beginning and end of the run."
+    },
+    {
+        "name": "ARCHE - Industrial",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Walk around industrial sight. Walk into S7 building. While walking up manual help to with the stairs and foot got entangled in the stairs. Walking down operator got close to the robot but did not help."
+            },
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Industrial",
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Pavement",
+            "Cobblestone",
+            "Metall",
+            "Stairs",
+            "Cloudy"
+        ],
+        "short_name": "ARC-1",
+        "split": "Train"
+    },
+    {
+        "name": "ARCHE - Demolished",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            },
+            {
+                "type": "Description",
+                "value": "Broken building (S10) with some water in font of the building. I got very close while walking up the stairs. In the end GPS antenna got very lose, however data should be generally fine."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Water",
+            "Industrial",
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Pavement",
+            "Stairs",
+            "Cloudy"
+        ],
+        "short_name": "ARC-2",
+        "split": "Test"
+    },
+    {
+        "name": "ARCHE - Multi-Floor",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Broken building S10 multi-floor. The run starts around the building robot nearly falls down stairs when entering. Walk up two floors. total station got track on each floor and at start and end of trajectory."
+            },
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Industrial",
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Grass",
+            "Pavement",
+            "Stairs",
+            "Cloudy"
+        ],
+        "short_name": "ARC-3",
+        "split": "Val"
+    },
+    {
+        "name": "ARCHE - Train",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Start close to the SBB train. Walk inside building S12 with confined corridors and spaces. Walking back out to the train in the end. "
+            },
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Industrial",
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Grass",
+            "Pavement",
+            "Stairs",
+            "Cloudy"
+        ],
+        "short_name": "ARC-4",
+        "split": "Train"
+    },
+    {
+        "name": "ARCHE - Panic Loop",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            },
+            {
+                "type": "Description",
+                "value": "Walk inside and outside of Basement of S7 - leaving one door and coming back at the other door, while total station remains inside building."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Industrial",
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Grass",
+            "Pavement",
+            "Cobblestone",
+            "Dawn"
+        ],
+        "short_name": "ARC-5",
+        "split": "Train"
+    },
+    {
+        "name": "ARCHE - Panic Smoke 1",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            },
+            {
+                "type": "Description",
+                "value": "Basement of S7 - Turned on smoke and stayed at bottom floor. Not a lot of smoke accumulated in the basement."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Industrial",
+            "Indoor",
+            "Smoke",
+            "Pavement"
+        ],
+        "short_name": "ARC-6",
+        "split": "Train"
+    },
+    {
+        "name": "ARCHE - Panic Smoke 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Wangen / ARCHE"
+            },
+            {
+                "type": "Description",
+                "value": "Top floor of S7 - Totalstation complained about leveling. Started recording inside bottom floor. Walked up using outside stairs. While walking a few times the same loop the smoke level increased."
+            }
+        ],
+        "labels": [
+            "Search & Rescue",
+            "Industrial",
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Smoke",
+            "Pavement",
+            "Metall",
+            "Stairs",
+            "Night"
+        ],
+        "short_name": "ARC-7",
+        "split": "Test"
+    },
+    {
+        "name": "Leica - Reception",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "Leica Geosystems Heerbrugg"
+            },
+            {
+                "type": "Description",
+                "value": "Walk from Leica Building Inside Reception and Outside"
+            }
+        ],
+        "labels": [
+            "Urban",
+            "Indoor",
+            "Outdoor",
+            "Pavement",
+            "Cars",
+            "People",
+            "Sunlight"
+        ],
+        "short_name": "LEICA-1",
+        "split": "Train"
+    },
+    {
+        "name": "Leica - Warehouse",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Leica Warehouse - Ground Floor - Walking with dynamic gate."
+            },
+            {
+                "type": "Location",
+                "value": "Leica Geosystems Heerbrugg"
+            }
+        ],
+        "labels": [],
+        "short_name": "LEICA-2",
+        "split": "Train"
+    },
+    {
+        "name": "SBB - Train Tracks",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "SBB Lowenberg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking on train tracks. Constant tracking with total station."
+            }
+        ],
+        "labels": [
+            "Industrial",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Tracks",
+            "Sunlight"
+        ],
+        "short_name": "SBB-1",
+        "split": "Train"
+    },
+    {
+        "name": "SBB - Train Depot",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "SBB Lowenberg"
+            },
+            {
+                "type": "Description",
+                "value": "Walking on train tracks. Start walking behind a parked train in maintanence depot."
+            }
+        ],
+        "labels": [
+            "Industrial",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Tracks",
+            "Sunlight"
+        ],
+        "short_name": "SBB-2",
+        "split": "Train"
+    },
+    {
+        "name": "Construction Halter - Corridor 1",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Construction Sight - Walking inside a supermarket under construction. Starting at the outside with GNSS available. Walking inside into dark corrdior. Walking outside and coming back to starting location. Prism was not verified."
+            },
+            {
+                "type": "Location",
+                "value": "AuPark - Zurichsee"
+            }
+        ],
+        "labels": [
+            "Water",
+            "Construction",
+            "Indoor",
+            "Outdoor",
+            "Gravel / Dirt",
+            "Woodplancks",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "CON-1",
+        "split": "Train"
+    },
+    {
+        "name": "Construction Halter - Corridor 2",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "AuPark - Zurichsee"
+            },
+            {
+                "type": "Description",
+                "value": "Repeated Mission of 2024-12-09-09-34-43 - Prism was not verified."
+            }
+        ],
+        "labels": [
+            "Water",
+            "Construction",
+            "Indoor",
+            "Outdoor",
+            "Gravel / Dirt",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "CON-2",
+        "split": "Train"
+    },
+    {
+        "name": "Construction Halter - Apartment",
+        "tags": [
+            {
+                "type": "Location",
+                "value": "AuPark - Zurichsee"
+            },
+            {
+                "type": "Description",
+                "value": "Construction Sight - Walking into familiy apartment under construction. When walking in feet got trapped in stairs. Exploring all rooms on first and second floor. Walking outside again at end. Prism was not verified."
+            }
+        ],
+        "labels": [
+            "Construction",
+            "Indoor",
+            "Outdoor",
+            "Stairs",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "CON-3",
+        "split": "Train"
+    },
+    {
+        "name": "Construction Halter - Outdoor",
+        "tags": [
+            {
+                "type": "Description",
+                "value": "Construction Sight - Walking lare outdoor loop. While walking down hill robot was assisted by the human - however robot assisted the human - robot got a bit trapped when walking onto a bridge and operator helped it to walk out. Prism was not verified."
+            },
+            {
+                "type": "Location",
+                "value": "AuPark - Zurichsee"
+            }
+        ],
+        "labels": [
+            "Construction",
+            "Outdoor",
+            "Mud",
+            "Stairs",
+            "People",
+            "Cloudy"
+        ],
+        "short_name": "CON-4",
+        "split": "Test"
+    }
+]
