@@ -26,7 +26,12 @@
     "runArgs": [
         "--gpus",
         "all",
-        "--shm-size=32gb"
+        "--shm-size=32gb",
+        "--dns=134.245.10.7",
+        "--dns=134.245.1.2",
+        "--dns=134.245.1.36",
+        "--dns-search=ins.informatik.uni-kiel.de",
+        "--dns-search=informatik.uni-kiel.de"
     ],
     "mounts": [
         // SSH agent socket — forwards the agent from local machine via SSH ForwardAgent.
