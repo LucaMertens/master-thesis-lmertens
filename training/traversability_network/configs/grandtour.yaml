@@ -35,12 +35,17 @@ DATASET:
     LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5
-    # Only ETH-1 currently has extracted images/depth on disk. This is a
-    # development split (with leakage) for smoke testing. The production split
-    # must be terrain-aware (Q6): missions sharing an environment prefix
-    # (ETH-*, SBB-*, ALB-*, SNOW-*, ...) must not straddle train and valid.
-    TRAIN_MISSIONS: ['ETH-1']
-    VALID_MISSIONS: ['ETH-1']
+    # OOD-detection split (see documentation/ood_split.md and notebooks/choose_split.ipynb).
+    # ID = forest only (natural off-road); a forest-only ID keeps built/snow envs genuinely far.
+    # train+val merged; VALID == TEST is the held-out ID set (checkpoint monitor + OOD negative class).
+    # KAEB straddles intentionally: KAEB-2/3 in ID (normal Kaeferberg forest), KAEB-1 near-OOD (same forest + entanglement).
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'HOEB-1', 'LMB-1', 'RIV-1', 'TRIM-1', 'HIL-1', 'KAEB-2', 'KAEB-3']
+    VALID_MISSIONS: ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    TEST_MISSIONS:  ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    # near-OOD, two tiers: forest shifts (KAEB-1 vegetation, ROOT-1 geometry) + gravel-surfaced mountain (EIG, PIL-2)
+    NEAR_OOD_MISSIONS: ['KAEB-1', 'ROOT-1', 'EIG-1', 'EIG-2', 'PIL-2']
+    # far-OOD: two contrasting extremes - SNOW (natural/surface) + ARC-1..4 (built/industrial, day runs).
+    FAR_OOD_MISSIONS: ['SNOW-1', 'SNOW-2', 'SNOW-3', 'ARC-1', 'ARC-2', 'ARC-3', 'ARC-4']
 
 AUGMENTATIONS:
     HORIZ_FLIP: 0.5
