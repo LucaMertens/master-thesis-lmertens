@@ -1,7 +1,10 @@
-"""Render a per-mission video: front_center RGB next to RHE traversability and command graphs.
+"""Render a per-mission video: front_center RGB (with depth overlay) next to RHE
+traversability and command graphs.
 
-Graphs show the full timeline with a moving cursor; the value at the cursor is
-printed on each axis. Output: OUTPUT_ROOT/label_videos/<mission>_v<version>.mp4
+mu and nu live on separate axes and are only drawn where their observability is
+nonzero. Commands share one axis and break across large timestamp gaps. Graphs
+show the full timeline with a moving cursor; the value at the cursor is printed
+on each axis. Output: OUTPUT_ROOT/label_videos/<mission>_v<version>.mp4
 The version is in the filename so bumping LABEL_VIDEO_VERSION re-renders all missions.
 """
 
@@ -20,18 +23,25 @@ import numpy as np
 from config.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT
 from data_labeling_pipeline.pipeline_step import log_step
 
-LABEL_VIDEO_VERSION = 1
+LABEL_VIDEO_VERSION = 2
 
 CAMERA = "front_center"
 PANEL_W = 900  # graph panel width in px
 HEIGHT = 600  # frame height in px; source image is downscaled to this
 DPI = 100
 
+OBS_EPS = 1e-6  # observability at/below this counts as zero (curve hidden)
+CMD_MAX_GAP = 1.0  # break command curves across gaps longer than this [s]
+DEPTH_ALPHA = 0.35
+DEPTH_MAX = 20.0  # colorbar range [m]
+
 
 def _load_rhe(rhe_dir: pathlib.Path):
     t = np.load(rhe_dir / "rhe_timestamp.npy")
     labels = np.load(rhe_dir / "rhe_trav_labels.npy")  # mu, nu, delta_theta
-    return t, labels[:, 0], labels[:, 1]
+    mu_obs = np.load(rhe_dir / "rhe_mu_observability.npy")
+    nu_obs = np.load(rhe_dir / "rhe_nu_observability.npy")
+    return t, labels[:, 0], labels[:, 1], mu_obs, nu_obs
 
 
 def _load_command(extracted_dir: pathlib.Path):
@@ -43,21 +53,42 @@ def _load_command(extracted_dir: pathlib.Path):
 
 
 def _curves(extracted_dir: pathlib.Path, rhe_dir: pathlib.Path):
-    """Per-axis (label, color, t, y) curves, all on one time origin."""
-    t_rhe, mu, nu = _load_rhe(rhe_dir)
+    """(t0, axes); each axis is (ylabel, legend, [curve dicts]) on one time origin."""
+    t_rhe, mu, nu, mu_obs, nu_obs = _load_rhe(rhe_dir)
     t0 = t_rhe[0]
+    tr = t_rhe - t0
     axes = [
-        (
-            "traversability",
-            [("mu", "tab:blue", t_rhe - t0, mu), ("nu", "tab:orange", t_rhe - t0, nu)],
-        ),
+        ("mu", False, [dict(label="mu", color="tab:blue", t=tr, y=mu, obs=mu_obs)]),
+        ("nu", False, [dict(label="nu", color="tab:orange", t=tr, y=nu, obs=nu_obs)]),
     ]
     cmd = _load_command(extracted_dir)
     if cmd is not None:
         t_cmd, vx, wz = cmd
-        axes.append(("linear cmd [m/s]", [("vx", "tab:green", t_cmd - t0, vx)]))
-        axes.append(("angular cmd [rad/s]", [("wz", "tab:red", t_cmd - t0, wz)]))
+        tc = t_cmd - t0
+        axes.append(
+            (
+                "command",
+                True,
+                [
+                    dict(label="vx [m/s]", color="tab:green", t=tc, y=vx, gap=CMD_MAX_GAP),
+                    dict(label="wz [rad/s]", color="tab:red", t=tc, y=wz, gap=CMD_MAX_GAP),
+                ],
+            )
+        )
     return t0, axes
+
+
+def _plot_xy(curve):
+    """t, y for the line: hidden where obs is zero, broken across timestamp gaps."""
+    t, y = curve["t"].copy(), curve["y"].copy()
+    if curve.get("obs") is not None:
+        y[curve["obs"] <= OBS_EPS] = np.nan
+    gap = curve.get("gap")
+    if gap is not None:
+        breaks = np.where(np.diff(t) > gap)[0] + 1
+        t = np.insert(t, breaks, np.nan)
+        y = np.insert(y, breaks, np.nan)
+    return t, y
 
 
 def _render_panel(axes_spec, height: int):
@@ -68,11 +99,13 @@ def _render_panel(axes_spec, height: int):
     )
     if n == 1:
         mpl_axes = [mpl_axes]
-    for ax, (title, curves) in zip(mpl_axes, axes_spec):
-        for label, color, t, y in curves:
-            ax.plot(t, y, color=color, lw=1.0, label=label)
-        ax.set_ylabel(title, fontsize=8)
-        ax.legend(loc="upper right", fontsize=7)
+    for ax, (ylabel, legend, curves) in zip(mpl_axes, axes_spec):
+        for c in curves:
+            t, y = _plot_xy(c)
+            ax.plot(t, y, color=c["color"], lw=1.0, label=c["label"])
+        ax.set_ylabel(ylabel, fontsize=8)
+        if legend:
+            ax.legend(loc="upper right", fontsize=7)
         ax.grid(alpha=0.3)
         ax.tick_params(labelsize=7)
     mpl_axes[-1].set_xlabel("t [s]", fontsize=8)
@@ -96,38 +129,92 @@ def _render_panel(axes_spec, height: int):
     y_top = int(H - mpl_axes[0].get_window_extent().y1)
     y_bot = int(H - mpl_axes[-1].get_window_extent().y0)
 
-    rows = []  # (label, bgr, ts, ys, slope, intercept): py = slope * val + intercept
-    for ax, (_, curves) in zip(mpl_axes, axes_spec):
+    rows = []  # cursor markers: py = slope * val + intercept, skipped where hidden
+    for ax, (_, _, curves) in zip(mpl_axes, axes_spec):
         bb, ylim = ax.get_window_extent(), ax.get_ylim()
         ysl = (bb.y1 - bb.y0) / (ylim[1] - ylim[0])
         intercept = H - bb.y0 + ylim[0] * ysl
-        for label, color, t, y in curves:
-            bgr = tuple(int(255 * c) for c in matplotlib.colors.to_rgb(color))[::-1]
-            rows.append((label, bgr, t, y, -ysl, intercept))
+        text_x, text_bot = int(bb.x0) + 6, int(H - bb.y0) - 6
+        for k, c in enumerate(curves):
+            bgr = tuple(int(255 * v) for v in matplotlib.colors.to_rgb(c["color"]))[::-1]
+            rows.append(
+                dict(
+                    label=c["label"],
+                    bgr=bgr,
+                    t=c["t"],
+                    y=c["y"],
+                    obs=c.get("obs"),
+                    gap=c.get("gap"),
+                    slope=-ysl,
+                    intercept=intercept,
+                    text_xy=(text_x, text_bot - 16 * (len(curves) - 1 - k)),
+                )
+            )
 
     plt.close(fig)
     return panel, x_at, y_top, y_bot, rows
+
+
+def _visible(row, t) -> bool:
+    """Whether this curve has a value to show at cursor time t."""
+    if row["obs"] is not None and np.interp(t, row["t"], row["obs"]) <= OBS_EPS:
+        return False
+    if row["gap"] is not None:
+        i = np.searchsorted(row["t"], t)
+        i = min(max(i, 1), len(row["t"]) - 1)
+        if min(abs(t - row["t"][i - 1]), abs(row["t"][i] - t)) > row["gap"]:
+            return False
+    return True
 
 
 def _draw_frame(panel, x_at, y_top, y_bot, rows, t):
     frame = panel.copy()
     x = x_at(t)
     cv2.line(frame, (x, y_top), (x, y_bot), (60, 60, 60), 1)
-    for label, bgr, ts, ys, slope, intercept in rows:
-        val = float(np.interp(t, ts, ys))
-        py = int(slope * val + intercept)
-        cv2.circle(frame, (x, py), 4, bgr, -1)
+    for row in rows:
+        if not _visible(row, t):
+            continue
+        val = float(np.interp(t, row["t"], row["y"]))
+        py = int(row["slope"] * val + row["intercept"])
+        cv2.circle(frame, (x, py), 4, row["bgr"], -1)
         cv2.putText(
             frame,
-            f"{label}={val:+.3f}",
-            (x + 6, py - 6),
+            f"{row['label']}={val:+.3f}",
+            row["text_xy"],
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
-            bgr,
+            row["bgr"],
             1,
             cv2.LINE_AA,
         )
     return frame
+
+
+def _overlay_depth(img_bgr, depth_path: pathlib.Path):
+    """Alpha-blend a turbo-colorized depth map (mm->m) over the RGB frame."""
+    dp = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
+    if dp is None:
+        return img_bgr
+    h, w = img_bgr.shape[:2]
+    if dp.shape[:2] != (h, w):
+        dp = cv2.resize(dp, (w, h), interpolation=cv2.INTER_NEAREST)
+    depth_m = dp.astype(np.float32) / 1000.0
+    valid = depth_m > 0
+    norm = np.clip(depth_m / DEPTH_MAX, 0, 1)
+    color = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+    out = img_bgr.copy()
+    out[valid] = cv2.addWeighted(img_bgr, 1 - DEPTH_ALPHA, color, DEPTH_ALPHA, 0)[valid]
+
+    bar_h = int(0.4 * h)
+    grad = np.linspace(255, 0, bar_h, dtype=np.uint8)[:, None].repeat(14, axis=1)
+    bar = cv2.applyColorMap(grad, cv2.COLORMAP_TURBO)
+    y0 = 10
+    out[y0 : y0 + bar_h, w - 24 : w - 10] = bar
+    cv2.putText(out, f"{DEPTH_MAX:.0f}m", (w - 60, y0 + 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(out, "0m", (w - 60, y0 + bar_h),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    return out
 
 
 def make_video(
@@ -136,8 +223,11 @@ def make_video(
     out_path: pathlib.Path,
     fps: float | None = None,
     stride: int = 1,
+    max_frames: int | None = None,
+    depth: bool = True,
 ) -> None:
     img_dir = extracted_dir / "images" / CAMERA
+    depth_dir = extracted_dir / "depth"
     all_pngs = sorted(img_dir.glob("*.png"))
     if not all_pngs:
         raise FileNotFoundError(f"No {CAMERA} images in {img_dir}")
@@ -149,6 +239,8 @@ def make_video(
 
     pngs = all_pngs[::stride]
     t_img = all_t[::stride]
+    if max_frames is not None:
+        pngs, t_img = pngs[:max_frames], t_img[:max_frames]
     t0, axes_spec = _curves(extracted_dir, rhe_dir)
     t_rel = t_img - t0
 
@@ -173,6 +265,10 @@ def make_video(
         tqdm(zip(pngs, t_rel), total=total, desc="label_video", disable=None)
     ):
         img = cv2.resize(cv2.imread(str(png)), (img_w, panel_h))
+        if depth:
+            dpath = depth_dir / png.name
+            if dpath.exists():
+                img = _overlay_depth(img, dpath)
         graph = _draw_frame(panel, x_at, y_top, y_bot, rows, tr)
         writer.append_data(cv2.cvtColor(cv2.hconcat([img, graph]), cv2.COLOR_BGR2RGB))
         if i % 50 == 0:
@@ -235,9 +331,24 @@ def main() -> None:
     p.add_argument("mission")
     p.add_argument("--fps", type=float, default=None)
     p.add_argument("--stride", type=int, default=1, help="Use every Nth frame.")
+    p.add_argument("--max-frames", type=int, default=None, help="Cap frame count.")
+    p.add_argument("--no-depth", action="store_true", help="Disable depth overlay.")
+    p.add_argument("--out", type=pathlib.Path, default=None)
     p.add_argument("--force", action="store_true")
     args = p.parse_args()
-    extract(args.mission, fps=args.fps, stride=args.stride, force=args.force)
+    if args.out is None and args.max_frames is None:
+        extract(args.mission, fps=args.fps, stride=args.stride, force=args.force)
+        return
+    out = args.out or video_path(args.mission)
+    make_video(
+        EXTRACTED_ROOT / args.mission,
+        LABELS_ROOT / args.mission / "rhe",
+        out,
+        fps=args.fps,
+        stride=args.stride,
+        max_frames=args.max_frames,
+        depth=not args.no_depth,
+    )
 
 
 if __name__ == "__main__":
