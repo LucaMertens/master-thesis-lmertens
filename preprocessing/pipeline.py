@@ -22,6 +22,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from config.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT, ROS1_ROOT
 from data_labeling_pipeline import labeling_pipeline, run_labels
 from grandtour_extraction import (
+    correct_tint,
     extract_alphasense,
     extract_commands,
     extract_dlio,
@@ -60,6 +61,7 @@ def _current_versions() -> dict[str, int]:
     return {
         "extrinsics": extract_alphasense.EXTRINSICS_VERSION,
         "images": extract_alphasense.IMAGES_VERSION,
+        "tint_correction": correct_tint.VERSION,
         "dlio": extract_dlio.DLIO_VERSION,
         "command": extract_commands.COMMAND_VERSION,
         "rhe_labels": labeling_pipeline.LABELS_VERSION,
@@ -221,6 +223,13 @@ def run_pipeline(
         )
 
     step_errors: dict[str, str] = {}
+    if images:
+        log(f"== {mission}: tint_correction ==")
+        try:
+            correct_tint.correct(output_dir, threshold=1.5, local_window=5.0, force=force)
+        except Exception as e:
+            log(f"!! {mission}: tint_correction failed: {e}")
+            step_errors["tint_correction"] = str(e)
     if extrinsics:
         log(f"== {mission}: dlio ==")
         try:
