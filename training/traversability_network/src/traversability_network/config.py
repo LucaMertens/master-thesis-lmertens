@@ -19,6 +19,10 @@ _C.TRAINING = EasyDict()
 _C.TRAINING.EPOCHS = 50
 _C.TRAINING.BATCHSIZE = 4
 _C.TRAINING.WORKERS = 8
+_C.TRAINING.DEVICES = (
+    -1
+)  # GPUs for the Trainer; -1 = all visible, or an int/list to limit
+_C.TRAINING.COMPILE = True  # torch.compile the model; set False to debug in eager
 # Ampere bf16: fp16 speed/memory, fp32 range (no overflow / loss scaling)
 _C.TRAINING.PRECISION = "bf16-mixed"
 _C.TRAINING.DT = 0.1  # time step in seconds
@@ -58,8 +62,16 @@ _C.DATASET.DATA_ROOT = str(EXTRACTED_ROOT)
 _C.DATASET.LABELS_ROOT = str(LABELS_ROOT)
 _C.DATASET.TRAIN_MISSIONS = []
 _C.DATASET.VALID_MISSIONS = []
+# Held-out ID test set and OOD-detection benchmark sets (consumed by eval, not training).
+_C.DATASET.TEST_MISSIONS = []
+_C.DATASET.NEAR_OOD_MISSIONS = []
+_C.DATASET.FAR_OOD_MISSIONS = []
 _C.DATASET.TIME_TOLERANCE = 0.05  # s, max camera<->RHE/depth timestamp mismatch
 _C.DATASET.MAX_TIME_GAP = 0.5  # s, skip image sequences crossing a larger gap
+# Trim leading/trailing stationary frames whose whole label horizon has no motion.
+_C.DATASET.TRIM_STATIONARY = True
+_C.DATASET.MOTION_MIN_SPEED = 0.01  # m/s, |v| above this counts as moving
+_C.DATASET.MOTION_MIN_OMEGA = 0.01  # rad/s, |omega| above this counts as moving
 # Low-mu oversampling: replicate loss horizons with any cell (mu <= MAX & observability >= MIN)
 # until they reach OVERSAMPLE_FRACTION of the (train) index list.
 _C.DATASET.OVERSAMPLE_FRACTION = 0.40

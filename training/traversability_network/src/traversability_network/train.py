@@ -27,6 +27,8 @@ def parse_config():
 
 def main():
     torch.set_float32_matmul_precision("high")
+    # Fixed input shapes (drop_last) -> let cudnn autotune the conv algorithms.
+    torch.backends.cudnn.benchmark = True
     torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
     configs = parse_config()
     print("configs:\n", configs)
@@ -46,22 +48,22 @@ def main():
         configs, configs.DATASET.VALID_MISSIONS, weights=train_dataset.weights
     )
 
-    train_loader = DataLoader(
-        train_dataset,
+    # forkserver workers are forked from a single-threaded server started before
+    # any CUDA use, so they sidestep the fork-after-CUDA deadlock that plain fork
+    # hits once sanity validation has initialised CUDA. persistent_workers keeps
+    # them alive across epochs so the cold start (re-import + dataset unpickle) is
+    # paid once, not every epoch.
+    workers = configs.TRAINING.WORKERS
+    loader_kwargs = dict(
         batch_size=configs.TRAINING.BATCHSIZE,
-        num_workers=configs.TRAINING.WORKERS,
-        shuffle=True,
+        num_workers=workers,
         drop_last=True,
         pin_memory=True,
+        persistent_workers=workers > 0,
+        multiprocessing_context='forkserver' if workers > 0 else None,
     )
-    valid_loader = DataLoader(
-        valid_dataset,
-        batch_size=configs.TRAINING.BATCHSIZE,
-        shuffle=False,
-        num_workers=configs.TRAINING.WORKERS,
-        drop_last=True,
-        pin_memory=True,
-    )
+    train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
+    valid_loader = DataLoader(valid_dataset, shuffle=False, **loader_kwargs)
 
     model = TrainingModule(configs)
 
@@ -70,7 +72,7 @@ def main():
         pretrained_dict = torch.load(configs.MODEL.LOAD_NETWORK, map_location="cpu")["state_dict"]
         model.load_state_dict(pretrained_dict)
 
-    wandb_logger = WandbLogger(project="WayFASTER-GrandTour", log_model="all")
+    wandb_logger = WandbLogger(project="WayFASTER-GrandTour", log_model=False)
 
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints",
@@ -83,7 +85,7 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
 
     trainer = pl.Trainer(
-        devices=-1,
+        devices=configs.TRAINING.DEVICES,
         num_nodes=1,
         gradient_clip_val=10,
         sync_batchnorm=True,
@@ -92,6 +94,7 @@ def main():
         logger=wandb_logger,
         default_root_dir="checkpoints",
         max_epochs=configs.TRAINING.EPOCHS,
+        check_val_every_n_epoch=2,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
         callbacks=[checkpoint_callback, lr_monitor],

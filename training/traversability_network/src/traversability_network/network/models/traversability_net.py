@@ -136,7 +136,8 @@ class TravNet(nn.Module):
         points = points.expand(B, -1, -1, -1, -1, -1, -1)
         # Voxels to camera frame
         points = points - translation.view(B, N, 1, 1, 1, 3, 1)
-        combined_transformation = intrinsics.matmul(torch.inverse(rotation))
+        # rotation is orthonormal (rigid extrinsics), so its inverse is its transpose
+        combined_transformation = intrinsics.matmul(rotation.transpose(-1, -2))
         points = combined_transformation.view(B, N, 1, 1, 1, 3, 3).matmul(points).squeeze(-1)
 
         points = torch.cat((points[..., :2] / (points[..., 2:3] + self.eps), points[..., 2:3]), -1)
@@ -171,15 +172,55 @@ class TravNet(nn.Module):
         x = F.grid_sample(x, grid, align_corners=False)
         x = x.view(batch, T, *x.shape[1:])
         return x
-        
-    def forward(self, color_img, pcloud, intrinsics, extrinsics, depth_img=None):
+
+    @torch.compiler.disable
+    def voxelize(self, depth, intrinsics, extrinsics):
+        """Back-project depth into the (Z, X, Y) occupancy grid on the GPU.
+
+        Vectorized port of the CPU read_pcloud in network/dataloader.py. depth is
+        metric (m) of shape (BT, H, W), intrinsics the matching full-res K (BT, 3, 3),
+        extrinsics the cam2base poses (BT, 4, 4).
+        """
+        BT, H, W = depth.shape
+        dev = depth.device
+        with torch.autocast(device_type=dev.type, enabled=False):
+            depth = depth.float()
+            vs, us = torch.meshgrid(
+                torch.arange(H, device=dev, dtype=torch.float),
+                torch.arange(W, device=dev, dtype=torch.float), indexing='ij')
+            d = depth.reshape(BT, -1)                       # (BT, N)
+            u, v = us.reshape(-1), vs.reshape(-1)           # (N,)
+            pts = torch.stack((u * d, v * d, d), dim=1)     # (BT, 3, N)
+            rotation, translation = extrinsics[:, :3, :3].float(), extrinsics[:, :3, 3:4].float()
+            pts = rotation.matmul(torch.inverse(intrinsics.float())).matmul(pts) + translation
+            pts = pts.transpose(1, 2)                       # (BT, N, 3)
+
+            cx = torch.tensor(
+                [round(b[1] / b[2] - 0.5) for b in
+                 (self.grid_bounds['xbound'], self.grid_bounds['ybound'], self.grid_bounds['zbound'])],
+                device=dev, dtype=torch.float)
+            idx = torch.round(cx - pts / self.dx - 0.5).long()   # (BT, N, 3)
+            nx = self.nx
+            valid = d > 0
+            for a in range(3):
+                valid = valid & (idx[..., a] >= 0) & (idx[..., a] < nx[a])
+
+            grid = torch.zeros(BT, int(nx[0] * nx[1] * nx[2]), device=dev)
+            flat = idx[..., 0] * (nx[1] * nx[2]) + idx[..., 1] * nx[2] + idx[..., 2]
+            b_idx = torch.arange(BT, device=dev).view(BT, 1).expand_as(flat)
+            grid[b_idx[valid], flat[valid]] = 1.0
+            # (BT, X, Y, Z) -> (BT, Z, X, Y)
+            return grid.view(BT, nx[0], nx[1], nx[2]).permute(0, 3, 1, 2)
+
+    def forward(self, color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, depth_img=None):
         """
         Forward pass of the TravNet model.
 
         Args:
             color_img (torch.Tensor): Color image tensor of shape (B, T, C, H, W).
-            pcloud (torch.Tensor): Point cloud tensor of shape (B, T, Z, Y, X).
-            intrinsics (torch.Tensor): Intrinsics matrix tensor of shape (B, T, 3, 3).
+            depth_voxel (torch.Tensor): Full-res metric depth (mm) of shape (B, T, H, W), voxelized on the GPU.
+            intrinsics_full (torch.Tensor): Full-res intrinsics matching depth_voxel, shape (B, T, 3, 3).
+            intrinsics (torch.Tensor): Input-size intrinsics tensor of shape (B, T, 3, 3).
             extrinsics (torch.Tensor): Extrinsics matrix tensor of shape (B, T, 4, 4).
             depth_img (torch.Tensor, optional): Depth image tensor. Defaults to None.
 
@@ -216,12 +257,15 @@ class TravNet(nn.Module):
 
         # X is B x T x C x Z x X x Y ->  B*T x C*Z x X x Y
         x = x.view(B*T, -1, *x.shape[4:])
-        pcloud = pcloud.view(B*T, *pcloud.shape[2:])
         debug = x
 
         if self.fuse_pcloud:
-            # Concatenate with pointcloud
-            x = torch.cat([x, pcloud], dim=1)
+            # Build the occupancy grid on the GPU and concatenate with the frustum features
+            pcloud = self.voxelize(
+                depth_voxel.view(B*T, *depth_voxel.shape[2:]) * 1e-3,
+                intrinsics_full.view(B*T, 3, 3),
+                extrinsics.view(B*T, 4, 4))
+            x = torch.cat([x, pcloud.to(x.dtype)], dim=1)
         
         # And compress X to B x T x C x X x Y
         x = self.bev_compressor(x)

@@ -81,6 +81,9 @@ class GrandTourDataset(Dataset):
         self.label_columns = list(configs.MODEL.LABEL_COLUMNS)
         self.time_tolerance = configs.DATASET.TIME_TOLERANCE
         self.max_time_gap = configs.DATASET.MAX_TIME_GAP
+        self.trim_stationary = configs.DATASET.TRIM_STATIONARY
+        self.motion_min_speed = configs.DATASET.MOTION_MIN_SPEED
+        self.motion_min_omega = configs.DATASET.MOTION_MIN_OMEGA
         self.OVERSAMPLE_FRACTION = configs.DATASET.OVERSAMPLE_FRACTION
         self.os_mu_max = configs.DATASET.OVERSAMPLE_MU_MAX
         self.os_obs_min = configs.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH
@@ -149,6 +152,26 @@ class GrandTourDataset(Dataset):
         replicated = np.resize(flagged, n_target)  # cycles deterministically
         return np.concatenate((kept, replicated)).tolist()
 
+    def _active_image_mask(self, img_ts, states_ts, action):
+        """Keep the contiguous span of images whose forward label horizon overlaps
+        motion, trimming the stationary lead-in/run-out where |v| and |omega| are
+        both ~0. The horizon of a window starting at image time t runs
+        [t, t + HORIZON*dt] (dataloader.get_states), so windows are informative only
+        while motion falls inside that span."""
+        moving = (np.abs(action[:, 0]) > self.motion_min_speed) | (
+            np.abs(action[:, 1]) > self.motion_min_omega
+        )
+        if not moving.any():
+            return np.zeros(len(img_ts), dtype=bool)
+        moving_ts = states_ts[moving]
+        t_first = (
+            moving_ts[0] - self.horizon * self.dt
+        )  # earliest window reaching motion
+        t_last = (
+            moving_ts[-1] + self.n_frames * self.dt
+        )  # last window's trailing frames
+        return (img_ts >= t_first) & (img_ts <= t_last)
+
     def _finite_diff_action(self, x, y, theta, timestamp):
         """(v, omega) via finite differences. v is signed forward speed."""
         vx = np.gradient(x, timestamp)
@@ -180,24 +203,30 @@ class GrandTourDataset(Dataset):
         return position, quaternion
 
     def read_pcloud(self, depth_image_list, cam_intrinsics_list, cam_extrinsics_list):
-        """Clean depth before voxelising.
+        """Clean full-res depth for GPU voxelisation (no CPU grid, no downsampling).
 
         Zeroes the top ``BORDER_CROP`` rows (the rectification black border and
         InputPadder top edge emit spurious near-depth -> phantom obstacles right
-        in front of the robot) and clips to the dbound range (drops the rest of
-        the sub-0.3 m halo and >8 m sky that falls outside the grid anyway).
+        in front of the robot) and clips to the dbound range (drops the sub-0.3 m
+        halo and >8 m sky that falls outside the grid anyway). The grid itself is
+        built on the GPU from this full-res depth (see TravNet.voxelize), so the
+        full 1440x1080 resolution is kept for 100% voxel coverage.
+
+        Returns the cleaned depth (T, H, W) in mm and the matching full-res
+        intrinsics (T, 3, 3); the extrinsics are consumed GPU-side.
         """
         dmin, dmax = (
             self.grid_bounds["dbound"][0] * 1000,
             self.grid_bounds["dbound"][1] * 1000,
         )
-        cleaned = []
-        for depth in depth_image_list:
+        cleaned, full_K = [], []
+        for depth, K in zip(depth_image_list, cam_intrinsics_list):
             depth = depth.copy()
             depth[:BORDER_CROP] = 0
             depth[(depth < dmin) | (depth > dmax)] = 0
-            cleaned.append(depth)
-        return super().read_pcloud(cleaned, cam_intrinsics_list, cam_extrinsics_list)
+            cleaned.append(depth.astype(np.int16))
+            full_K.append(K.copy())
+        return np.stack(cleaned), np.stack(full_K)
 
     def read_mission(self, mission_dir, rhe_dir):
         timestamp = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy")).astype(
@@ -235,6 +264,10 @@ class GrandTourDataset(Dataset):
 
         # keep only frames inside the RHE state range with a future horizon
         keep = (img_ts >= timestamp[0]) & (img_ts < timestamp[-1])
+        if self.trim_stationary:
+            keep &= self._active_image_mask(img_ts, timestamp, action)
+        if self.verbose:
+            print(f"  kept {int(keep.sum())}/{len(img_ts)} frames after trimming")
         img_ts = img_ts[keep]
         img_paths = [p for p, k in zip(img_paths, keep) if k]
 

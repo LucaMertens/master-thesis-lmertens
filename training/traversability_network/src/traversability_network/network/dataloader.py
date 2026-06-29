@@ -188,12 +188,10 @@ class Dataset(DataLoader.Dataset):
         extrinsics_list = self.get_extrinsics(
             rosbag_dict, image_timestamp_list, cam2base_list, horizontal_flip
         )
-        # Get pointcloud from depth
-        pcloud_data = self.read_pcloud(depth_img_list, intrinsics_list, extrinsics_list)
-
-        # Augment with pointcloud droput
-        if self.train and random.random() < self.pcloud_droput:
-            pcloud_data = np.zeros_like(pcloud_data)
+        # Clean full-res depth + intrinsics for GPU voxelization (grid built in the model)
+        depth_voxel, intrinsics_full = self.read_pcloud(
+            depth_img_list, intrinsics_list, extrinsics_list
+        )
 
         depth_target_list = []
         depth_mask_list = []
@@ -310,7 +308,8 @@ class Dataset(DataLoader.Dataset):
 
         # Attribute data type
         color_img = color_img.type(self.dtype)
-        pcloud_data = torch.from_numpy(pcloud_data).type(self.dtype)
+        depth_voxel = torch.from_numpy(depth_voxel)  # int16 mm, voxelized on the GPU
+        intrinsics_full = torch.from_numpy(intrinsics_full).type(self.dtype)
         intrinsics = torch.from_numpy(intrinsics).type(self.dtype)
         extrinsics = torch.from_numpy(extrinsics).type(self.dtype)
         states = torch.from_numpy(states).type(self.dtype)
@@ -321,7 +320,8 @@ class Dataset(DataLoader.Dataset):
 
         return (
             color_img,
-            pcloud_data,
+            depth_voxel,
+            intrinsics_full,
             intrinsics,
             extrinsics,
             states,
