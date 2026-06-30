@@ -24,6 +24,7 @@ MODEL:
     PREDICT_DEPTH: True
     TRAIN_DEPTH: True
     FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1  # nearest-subsample depth for voxelize (1 = full res)
     LABEL_COLUMNS: [0, 1]    # (mu, nu) columns of rhe_trav_labels.npy
     GRID_BOUNDS: {
         'xbound': [-2.0, 8.0, 0.1],
@@ -36,6 +37,8 @@ DATASET:
     LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5
+    LDS_ALPHA: 1.0           # full inverse-density weighting (was 0.75)
+
     # OOD-detection split (see documentation/ood_split.md and notebooks/choose_split.ipynb).
     # ID = forest only (natural off-road); a forest-only ID keeps built/snow envs genuinely far.
     # train+val merged; VALID == TEST is the held-out ID set (checkpoint monitor + OOD negative class).

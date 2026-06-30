@@ -22,7 +22,7 @@ class TravNet(nn.Module):
     def __init__(
             self, grid_bounds, input_size, downsample=8,
             image_dim=64, temporal_length=3, predict_depth=True,
-            fuse_pcloud=True
+            fuse_pcloud=True, voxel_downsample=1
         ):
         super(TravNet, self).__init__()
 
@@ -32,13 +32,14 @@ class TravNet(nn.Module):
         self.downsample     = downsample     # Due to the encoder
         self.predict_depth  = predict_depth
         self.fuse_pcloud    = fuse_pcloud
+        self.voxel_downsample = voxel_downsample  # nearest-subsample depth before voxelizing
         self.eps            = 1e-6
         
         dx = torch.Tensor([row[2] for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
         bx = torch.Tensor([row[0] + row[2]/2.0 for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
         nx = torch.LongTensor([(row[1] - row[0]) / row[2] for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
 
-        self.int_nx = nx.cpu().detach().numpy()
+        self.int_nx = [int(x) for x in nx.cpu().detach().tolist()]
 
         self.dx = nn.Parameter(dx, requires_grad=False)
         self.bx = nn.Parameter(bx, requires_grad=False)
@@ -80,7 +81,7 @@ class TravNet(nn.Module):
         self.temporal_model = TemporalModel(
             channels=self.camC,
             temporal_length=temporal_length,
-            input_shape=(nx[0], nx[1]))
+            input_shape=(self.int_nx[0], self.int_nx[1]))
 
         # Bird's eye view decoder
         self.decoder = Decoder(in_channels=self.latent_dim)
@@ -174,17 +175,29 @@ class TravNet(nn.Module):
         return x
 
     @torch.compiler.disable
-    def voxelize(self, depth, intrinsics, extrinsics):
+    def voxelize(self, depth, intrinsics, extrinsics, downsample=None):
         """Back-project depth into the (Z, X, Y) occupancy grid on the GPU.
 
         Vectorized port of the CPU read_pcloud in network/dataloader.py. depth is
         metric (m) of shape (BT, H, W), intrinsics the matching full-res K (BT, 3, 3),
         extrinsics the cam2base poses (BT, 4, 4).
+
+        ``downsample`` nearest-subsamples depth by that factor (scaling K to match)
+        before back-projection: ~factor^2 fewer points, but thins far-field occupancy
+        (precision stays exact, recall drops with range, see check_voxel_downscale.py).
         """
-        BT, H, W = depth.shape
+        if downsample is None:
+            downsample = self.voxel_downsample
         dev = depth.device
         with torch.autocast(device_type=dev.type, enabled=False):
             depth = depth.float()
+            if downsample > 1:
+                # strided subsample keeps occupied voxels a strict subset (no phantoms);
+                # u = s*u' so K's first two rows scale by 1/s to reproduce the same rays.
+                depth = depth[:, ::downsample, ::downsample]
+                intrinsics = intrinsics.clone()
+                intrinsics[:, :2, :] = intrinsics[:, :2, :] / downsample
+            BT, H, W = depth.shape
             vs, us = torch.meshgrid(
                 torch.arange(H, device=dev, dtype=torch.float),
                 torch.arange(W, device=dev, dtype=torch.float), indexing='ij')

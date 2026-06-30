@@ -1,0 +1,58 @@
+TAG: 'grandtour'
+
+OPTIMIZER:
+    LR: 0.0001
+    WEIGHT_DECAY: 0.0001
+
+TRAINING:
+    BATCHSIZE: 4
+    WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
+    DEVICES: -1         # -1 = all GPUs; set e.g. 2 to run on half the machine
+    EPOCHS: 20
+    VERBOSE: False
+    GAMMA: 0.998
+    DEPTH_WEIGHT: 0.1
+    HORIZON: 500        # 50 s at 10 Hz
+    DT: 0.1             # matches RHE timestep
+    VIS_INTERVAL: 500
+
+MODEL:
+    TIME_LENGTH: 4
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]   # Alphasense native 1440x1080 (4:3), /3 -> 480x360, /8 divisible
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 2  # nearest-subsample depth for voxelize (1 = full res)
+    LABEL_COLUMNS: [0, 1]    # (mu, nu) columns of rhe_trav_labels.npy
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],   # ANYmal is lower, uneven terrain
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    LDS_ALPHA: 1.0           # full inverse-density weighting (was 0.75)
+
+    # OOD-detection split (see documentation/ood_split.md and notebooks/choose_split.ipynb).
+    # ID = forest only (natural off-road); a forest-only ID keeps built/snow envs genuinely far.
+    # train+val merged; VALID == TEST is the held-out ID set (checkpoint monitor + OOD negative class).
+    # KAEB straddles intentionally: KAEB-2/3 in ID (normal Kaeferberg forest), KAEB-1 near-OOD (same forest + entanglement).
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'HOEB-1', 'LMB-1', 'RIV-1', 'TRIM-1', 'HIL-1', 'KAEB-2', 'KAEB-3']
+    VALID_MISSIONS: ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    TEST_MISSIONS:  ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    # near-OOD, two tiers: forest shifts (KAEB-1 vegetation, ROOT-1 geometry) + gravel-surfaced mountain (EIG, PIL-2)
+    NEAR_OOD_MISSIONS: ['KAEB-1', 'ROOT-1', 'EIG-1', 'EIG-2', 'PIL-2']
+    # far-OOD: two contrasting extremes - SNOW (natural/surface) + ARC-1..4 (built/industrial, day runs).
+    FAR_OOD_MISSIONS: ['SNOW-1', 'SNOW-2', 'SNOW-3', 'ARC-1', 'ARC-2', 'ARC-3', 'ARC-4']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.5 #m
+    MAX_ROTATION: 0.2 #rad
