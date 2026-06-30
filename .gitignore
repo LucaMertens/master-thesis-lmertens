@@ -200,5 +200,6 @@ preprocessing/data_labeling_pipeline/tests/benchmark_results
 preprocessing/depth_generation/FoundationStereo/
 preprocessing/depth_generation/pretrained_models/
 
-training/traversability_network/wandb/
 *.ckpt
+
+**/wandb
