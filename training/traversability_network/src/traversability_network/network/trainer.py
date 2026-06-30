@@ -48,12 +48,26 @@ class TrainingModule(pl.LightningModule):
             image_dim=configs.MODEL.LATENT_DIM,
             temporal_length=configs.MODEL.TIME_LENGTH,
             predict_depth=configs.MODEL.PREDICT_DEPTH,
-            fuse_pcloud=configs.MODEL.FUSE_PCLOUD
+            fuse_pcloud=configs.MODEL.FUSE_PCLOUD,
+            voxel_downsample=configs.MODEL.VOXEL_DEPTH_DOWNSAMPLE
         )
+
+        # Convert to channels_last to avoid DDP bucket stride mismatch warnings
+        # when torch.compile enables cuDNN channels-last optimizations.
+        # We only apply this to specific submodules to avoid RuntimeError on 3D convolutions.
+        for m in self.model.modules():
+            if isinstance(m, (nn.Conv2d, nn.BatchNorm2d)):
+                m.to(memory_format=torch.channels_last)
+            elif isinstance(m, (nn.Conv3d, nn.BatchNorm3d)):
+                m.to(memory_format=torch.channels_last_3d)
 
         # Compile the network (fixed shapes -> big fused-kernel win). voxelize() is
         # @torch.compiler.disable'd so its data-dependent scatter stays in eager.
         if configs.TRAINING.COMPILE:
+            import torch._dynamo as _dynamo
+            # Increase recompile limit because BasicBlock is reused many times (encoder + decoder)
+            # with different input shapes/strides, and across train/val (grad enabled/disabled).
+            _dynamo.config.recompile_limit = 64
             self.model = torch.compile(self.model)
 
         # Set grid bounds
@@ -191,6 +205,9 @@ class TrainingModule(pl.LightningModule):
         mask = mask.bool()
         pred_mu = pred[..., 0][mask]
         true_mu = target_trav[..., 0][mask]
+        # expose this batch's valid cells for the CalibrationSlope callback
+        self._cal_pred_mu = pred_mu.detach()
+        self._cal_true_mu = true_mu.detach()
         for b in range(self.n_mu_bins):
             lo = b * self.mu_bin_width
             sel = (true_mu >= lo) & (true_mu < lo + self.mu_bin_width)
@@ -212,8 +229,8 @@ class TrainingModule(pl.LightningModule):
             # empty bins compute() to NaN (same on every rank, so logging stays consistent)
             seen = not torch.isnan(calib)
             if seen:
-                self.log(f"val/mae_mu_{name}", mae, sync_dist=False)
-                self.log(f"val/calib_mu_{name}", calib, sync_dist=False)
+                self.log(f"val/mae_mu_{name}", mae, sync_dist=True)
+                self.log(f"val/calib_mu_{name}", calib, sync_dist=True)
             centers.append(lo + self.mu_bin_width / 2)
             means.append(float(calib) if seen else None)
         self._log_calibration_curve(centers, means)
@@ -222,16 +239,20 @@ class TrainingModule(pl.LightningModule):
         if not self.trainer.is_global_zero or not isinstance(self.logger, WandbLogger):
             return
         import wandb
-        table = wandb.Table(
-            data=[[c, m] for c, m in zip(centers, means) if m is not None],
-            columns=["true_mu_bin", "mean_pred_mu"],
+        rows = [[c, m] for c, m in zip(centers, means) if m is not None]
+        if not rows:
+            return
+        table = wandb.Table(data=rows, columns=["true_mu_bin", "mean_pred_mu"])
+        self.logger.experiment.log(
+            {
+                "val/calibration_table": table,
+                "val/calibration_mu": wandb.plot.line(
+                    table, "true_mu_bin", "mean_pred_mu",
+                    title="Calibration: mean predicted mu vs true mu bin",
+                ),
+            },
+            step=self.trainer.global_step,
         )
-        self.logger.experiment.log({
-            "val/calibration_mu": wandb.plot.line(
-                table, "true_mu_bin", "mean_pred_mu",
-                title="Calibration: mean predicted mu vs true mu bin",
-            )
-        })
 
     def configure_optimizers(self):
         """
