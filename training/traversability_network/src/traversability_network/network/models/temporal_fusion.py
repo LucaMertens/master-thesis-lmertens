@@ -15,22 +15,51 @@ class SpatioTemporalPooling(nn.Module):
         """
         super().__init__()
         self.features = []
+        self.pool_size = pool_size  # (temporal, H, W); spatial dims span the full map
 
-        stride = (1, *pool_size[1:])
-        padding = (pool_size[0]-1, 0, 0)
+        # --- original (kept for reference) ---
+        # stride = (1, *pool_size[1:])
+        # padding = (pool_size[0]-1, 0, 0)
+        # self.feature = nn.Sequential(
+        #     torch.nn.AvgPool3d(kernel_size=pool_size, stride=stride, padding=padding, count_include_pad=False),
+        #     nn.Conv3d(in_channels, reduction_channels, kernel_size=1, bias=False),
+        #     nn.BatchNorm3d(reduction_channels),
+        #     nn.ReLU(inplace=True))
+
+        # The AvgPool3d is folded into forward (see below): with a full-map window it is
+        # just a global spatial mean + temporal avg-pool, so only conv/bn/relu remain here.
         self.feature = nn.Sequential(
-            torch.nn.AvgPool3d(kernel_size=pool_size, stride=stride, padding=padding, count_include_pad=False),
             nn.Conv3d(in_channels, reduction_channels, kernel_size=1, bias=False),
             nn.BatchNorm3d(reduction_channels),
             nn.ReLU(inplace=True))
 
     def forward(self, x):
         b, _, t, h, w = x.shape
-        x_pool = self.feature(x)[:, :, :-1].contiguous()
+
+        # --- original (kept for reference) ---
+        # x_pool = self.feature(x)[:, :, :-1].contiguous()
+        # c = x_pool.shape[1]
+        # x_pool = F.interpolate(x_pool.view(b * t, c, *x_pool.shape[-2:]), (h, w), mode='bilinear', align_corners=False)
+        # x_pool = x_pool.view(b, c, t, h, w)
+        # return x_pool
+
+        # The pool window covers the whole HxW map, so AvgPool3d == global spatial mean
+        # then a temporal avg-pool, and the 1x1->HxW bilinear upsample == a broadcast.
+        # Identical to the original to fp precision (see check_pool_equiv.py) but avoids the
+        # costly avg_pool3d / upsample_bilinear2d backward kernels.
+        assert self.pool_size[1] == h and self.pool_size[2] == w, \
+            "SpatioTemporalPooling rewrite assumes the pool window covers the full map"
+        s = x.mean(dim=(-1, -2))                                  # (b, C, t) spatial mean
+        s = F.avg_pool1d(s, self.pool_size[0], stride=1,
+                         padding=self.pool_size[0] - 1, count_include_pad=False)  # (b, C, t+1)
+        s = s.unsqueeze(-1).unsqueeze(-1)                        # (b, C, t+1, 1, 1)
+        x_pool = self.feature(s)[:, :, :-1].contiguous()         # conv/bn/relu, drop last frame
         c = x_pool.shape[1]
-        x_pool = F.interpolate(x_pool.view(b * t, c, *x_pool.shape[-2:]), (h, w), mode='bilinear', align_corners=False)
-        x_pool = x_pool.view(b, c, t, h, w)
-        return x_pool
+        # 1x1 -> HxW nearest upsample == broadcast (the original's bilinear-from-1x1). nearest
+        # keeps the output contiguous (an expand()'s stride-0 view breaks torch.compile's
+        # backward tangent coercion) and its backward is a cheap gather, not the bilinear kernel.
+        x_pool = F.interpolate(x_pool.view(b * t, c, 1, 1), (h, w), mode='nearest')
+        return x_pool.view(b, c, t, h, w)
 
 class TemporalBlock(nn.Module):
     def __init__(self, channels, pool_size):
