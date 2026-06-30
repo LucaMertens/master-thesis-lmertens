@@ -57,6 +57,9 @@
     "remoteEnv": {
         "SSH_AUTH_SOCK": "/ssh-agent"
     },
+    "containerEnv": {
+        "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}"
+    },
     "customizations": {
         "vscode": {
             "extensions": [
