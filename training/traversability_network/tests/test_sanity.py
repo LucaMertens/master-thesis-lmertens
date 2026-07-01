@@ -142,12 +142,12 @@ def test_heading_consistency():
 
     # Replicate GrandTourDataset orientation slerp
     t_odom = odom[:, 0]
-    quat_wxyz = odom[:, 4:8]
+    quat_xyzw = odom[:, 4:8]  # dlio_odom.npy stores qx,qy,qz,qw (see extract_dlio.py)
     order = np.argsort(t_odom)
-    t_odom, quat_wxyz = t_odom[order], quat_wxyz[order]
+    t_odom, quat_xyzw = t_odom[order], quat_xyzw[order]
     t_odom, uniq = np.unique(t_odom, return_index=True)
-    quat_wxyz = quat_wxyz[uniq]
-    rot = R.from_quat(quat_wxyz[:, [1, 2, 3, 0]])  # wxyz -> xyzw for scipy
+    quat_xyzw = quat_xyzw[uniq]
+    rot = R.from_quat(quat_xyzw)
     slerp = Slerp(t_odom, rot)
     clamped = np.clip(timestamp, t_odom[0], t_odom[-1])
     yaw_odom = slerp(clamped).as_euler("zyx")[:, 0]

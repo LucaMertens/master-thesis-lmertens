@@ -1,5 +1,7 @@
 # Taken from wayfaster repository (https://github.com/matval/wayfaster)
 # Modifications: fixed import of TravNet for local package layout.
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,8 +9,12 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from torchmetrics import MeanMetric
 
-from .utils import path_to_map
 from .models.traversability_net import TravNet
+
+# Path overlay colors (RGB): red line, green start (robot, t=0), white end (horizon).
+PATH_LINE = (255, 0, 0)
+PATH_START = (0, 255, 0)
+PATH_END = (255, 255, 255)
 
 class TrainingModule(pl.LightningModule):
     """
@@ -121,9 +127,6 @@ class TrainingModule(pl.LightningModule):
         # Forward pass
         trav_map, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
 
-        # Project path to map
-        executed_path = path_to_map(path.unsqueeze(1), torch.ones_like(path[...,0,0]).unsqueeze(1), self.map_size, self.map_resolution, self.map_origin)
-
         # Calculate traversability loss
         trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights)
 
@@ -140,12 +143,14 @@ class TrainingModule(pl.LightningModule):
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, executed_path, prefix='train')
+            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, prefix='train')
 
-        # Logging to TensorBoard by default
-        self.log("train_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("train_trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("train_depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
+        if batch_idx % 1000 == 0:
+            self.print(f"[epoch {self.current_epoch} step {batch_idx}] loss={loss.item():.4f} trav={trav_loss.item():.4f} depth={depth_loss.item():.4f}")
+
+        self.log("train_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train_trav_loss", trav_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train_depth_loss", depth_loss, on_step=True, on_epoch=True, sync_dist=True)
 
         return loss
 
@@ -166,9 +171,6 @@ class TrainingModule(pl.LightningModule):
         # Forward pass
         trav_map, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
 
-        # Project path to map
-        executed_path = path_to_map(path.unsqueeze(1), torch.ones_like(path[...,0,0]).unsqueeze(1), self.map_size, self.map_resolution, self.map_origin)
-
         # Calculate traversability loss
         trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights)
 
@@ -188,7 +190,7 @@ class TrainingModule(pl.LightningModule):
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, executed_path, prefix='valid')
+            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, prefix='valid')
 
         # Logging to TensorBoard by default
         self.log("valid_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
@@ -305,7 +307,7 @@ class TrainingModule(pl.LightningModule):
 
         # Calculate loss
         gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
-        error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.1)
+        error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.5)
         loss = error * target_weights * gamma
         loss = torch.mean(loss[mask,:])
 
@@ -354,7 +356,67 @@ class TrainingModule(pl.LightningModule):
             extrinsics.view(B * T, 4, 4))
         return pcloud.view(B, T, *pcloud.shape[1:])
 
-    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, executed_path, prefix='train'):
+    @torch.no_grad()
+    def _draw_bev_path(self, rgb, path):
+        """Draw the base-frame path (H, >=2) onto a BEV RGB image (in place)."""
+        p = path[torch.isfinite(path[:, 0])].cpu().numpy()
+        if len(p) == 0:
+            return
+        u = np.round(self.map_origin[0] - p[:, 0] / self.map_resolution[0]).astype(np.int32)
+        v = np.round(self.map_origin[1] - p[:, 1] / self.map_resolution[1]).astype(np.int32)
+        pts = np.stack([v, u], -1).reshape(-1, 1, 2)
+        cv2.polylines(rgb, [pts], False, PATH_LINE, 1, cv2.LINE_AA)
+        cv2.circle(rgb, (int(v[0]), int(u[0])), 2, PATH_START, -1)
+        cv2.circle(rgb, (int(v[-1]), int(u[-1])), 2, PATH_END, -1)
+
+    @torch.no_grad()
+    def _bev_overlays(self, bev, path, normalize=False):
+        """Grayscale BEV maps (N,1,X,Y) -> N RGB uint8 tensors with the path drawn on top.
+        The per-sample path (B,H,>=2) is repeated to cover temporal stacks (N = B*T)."""
+        bev = bev[:, 0].detach().float().cpu().numpy()
+        reps = max(1, bev.shape[0] // path.shape[0])
+        overlays = []
+        for n in range(bev.shape[0]):
+            m = bev[n]
+            if normalize:
+                m = (m - m.min()) / (m.max() - m.min() + 1e-6)
+            else:
+                m = np.clip(m, 0, 1)
+            rgb = np.repeat((m * 255).astype(np.uint8)[..., None], 3, 2).copy()
+            self._draw_bev_path(rgb, path[n // reps])
+            overlays.append(torch.from_numpy(rgb))
+        return overlays
+
+    @torch.no_grad()
+    def _project_path_to_cam(self, path, K, extrinsics):
+        """Base-frame path (H,>=2) -> anchor-camera pixels (inverse of read_pcloud)."""
+        p = path[torch.isfinite(path[:, 0])]
+        pts = torch.stack([p[:, 0], p[:, 1], torch.zeros_like(p[:, 0])], 1)
+        cam = (pts - extrinsics[:3, 3]) @ extrinsics[:3, :3]
+        cam = cam[cam[:, 2] > 1e-3]
+        pix = cam @ K.T
+        return (pix[:, :2] / pix[:, 2:3]).cpu().numpy()
+
+    @torch.no_grad()
+    def _cam_overlays(self, image, path, K, extrinsics):
+        """Anchor RGB frame per batch element with the future path projected on top."""
+        overlays = []
+        for b in range(image.shape[0]):
+            img = image[b, -1].detach().float().cpu().clamp(0, 1).numpy()
+            img = (img.transpose(1, 2, 0) * 255).astype(np.uint8).copy()
+            uv = self._project_path_to_cam(path[b], K[b, -1], extrinsics[b, -1])
+            h, w = img.shape[:2]
+            inside = (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
+            uv = uv[inside]
+            if len(uv):
+                pts = uv.round().astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(img, [pts], False, PATH_LINE, 2, cv2.LINE_AA)
+                cv2.circle(img, tuple(pts[0, 0]), 4, PATH_START, -1)
+                cv2.circle(img, tuple(pts[-1, 0]), 4, PATH_END, -1)
+            overlays.append(torch.from_numpy(img))
+        return overlays
+
+    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, prefix='train'):
         """
         Visualize the training/validation results.
 
@@ -366,47 +428,38 @@ class TrainingModule(pl.LightningModule):
             depth_target (torch.Tensor): Tensor containing the target depth.
             depth_mask (torch.Tensor): Tensor containing the depth mask.
             debug (torch.Tensor): Tensor containing the debug information.
-            executed_path (torch.Tensor): Tensor containing the executed path.
+            path (torch.Tensor): Tensor containing the path states (B, H, >=2).
+            intrinsics (torch.Tensor): Input-size camera K (B, T, 3, 3).
+            extrinsics (torch.Tensor): Cam-to-base per frame (B, T, 4, 4).
             prefix (str): Prefix for the log keys.
         """
         def _imgs(t):
             return list(t.float().cpu())
 
-        # Visualize the camera inputs
+        # Camera input (anchor frame) with the future path projected on top
         self.logger.log_image(
             key=prefix + "_images",
-            images=_imgs(image.view(-1, *image.shape[2:])),
+            images=self._cam_overlays(image, path, intrinsics, extrinsics),
         )
 
-        # Visualize the input point cloud
-        pcloud = torch.mean(pcloud, dim=2, keepdim=True)
-        pcloud = pcloud.view(-1, *pcloud.shape[2:])
-        self.logger.log_image(key=prefix + "_pcloud", images=_imgs(pcloud))
+        # BEV maps with the same path drawn on top (mu/nu in [0,1], rest normalized)
+        pcloud = torch.mean(pcloud, dim=2).view(-1, 1, *pcloud.shape[3:])
+        self.logger.log_image(key=prefix + "_pcloud", images=self._bev_overlays(pcloud, path, normalize=True))
+        self.logger.log_image(key=prefix + "_mu", images=self._bev_overlays(trav_map[:, :1], path))
+        self.logger.log_image(key=prefix + "_nu", images=self._bev_overlays(trav_map[:, 1:], path))
 
-        # Visualize the traversability map
-        self.logger.log_image(key=prefix + "_mu", images=_imgs(trav_map[:, :1]))
-        self.logger.log_image(key=prefix + "_nu", images=_imgs(trav_map[:, 1:]))
+        temp = torch.sum(debug, dim=1, keepdim=True)
+        self.logger.log_image(key=prefix + "_debug", images=self._bev_overlays(temp, path, normalize=True))
 
-        # Visualize the depth prediction
+        # Depth (camera frame, no BEV path)
         n_d = (self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0])/self.grid_bounds['dbound'][2]
         depth_pred = torch.argmax(pred_depth, dim=1, keepdim=True)/(n_d-1)
         self.logger.log_image(key=prefix + "_depth_pred", images=_imgs(depth_pred))
 
-        # Visualize the depth target
         if self.predict_depth:
             depth_target = depth_target.unsqueeze(1)/(n_d-1)
         else:
             depth_target = depth_target.argmax(1).unsqueeze(1)/(n_d-1)
         self.logger.log_image(key=prefix + "_depth_target", images=_imgs(depth_target))
 
-        # Visualize the depth mask
         self.logger.log_image(key=prefix + "_depth_mask", images=_imgs(depth_mask.unsqueeze(1)))
-
-        # Visualize the debug output
-        temp = torch.sum(debug, dim=1, keepdim=True)
-        temp = (temp - torch.min(temp)) / (torch.max(temp) - torch.min(temp))
-        self.logger.log_image(key=prefix + "_debug", images=_imgs(temp))
-
-        # Visualize the executed path
-        executed_path = executed_path/(torch.amax(executed_path, (1,2,3), keepdim=True)+self.eps)
-        self.logger.log_image(key=prefix + "_path", images=_imgs(executed_path))

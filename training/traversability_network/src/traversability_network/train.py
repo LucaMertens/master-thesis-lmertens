@@ -8,19 +8,22 @@ import argparse
 import pytorch_lightning as pl
 import torch
 import torchvision.transforms as transforms
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, RichProgressBar
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 
 from .config import get_cfg
 from .data.grandtour_dataset import GrandTourDataset
+from .network.callbacks import CalibrationSlope
 from .network.trainer import TrainingModule
 
 
 def parse_config():
     parser = argparse.ArgumentParser(description="arg parser")
-    parser.add_argument("--cfg_file", type=str, default=None, help="path to config yaml")
+    parser.add_argument(
+        "--cfg_file", type=str, default=None, help="path to config yaml"
+    )
     args = parser.parse_args()
     return get_cfg(args.cfg_file)
 
@@ -60,7 +63,7 @@ def main():
         drop_last=True,
         pin_memory=True,
         persistent_workers=workers > 0,
-        multiprocessing_context='forkserver' if workers > 0 else None,
+        multiprocessing_context="forkserver" if workers > 0 else None,
     )
     train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
     valid_loader = DataLoader(valid_dataset, shuffle=False, **loader_kwargs)
@@ -69,10 +72,12 @@ def main():
 
     if configs.MODEL.LOAD_NETWORK is not None:
         print("Loading saved network from {}".format(configs.MODEL.LOAD_NETWORK))
-        pretrained_dict = torch.load(configs.MODEL.LOAD_NETWORK, map_location="cpu")["state_dict"]
+        pretrained_dict = torch.load(configs.MODEL.LOAD_NETWORK, map_location="cpu")[
+            "state_dict"
+        ]
         model.load_state_dict(pretrained_dict)
 
-    wandb_logger = WandbLogger(project="WayFASTER-GrandTour", log_model=False)
+    wandb_logger = WandbLogger(project="master-thesis-lmertens", log_model=False)
 
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints",
@@ -82,7 +87,8 @@ def main():
         save_last=True,
         save_top_k=1,
     )
-    lr_monitor = LearningRateMonitor(logging_interval="epoch")
+    lr_monitor = LearningRateMonitor(logging_interval="step")
+    calib_slope = CalibrationSlope()
 
     trainer = pl.Trainer(
         devices=configs.TRAINING.DEVICES,
@@ -94,10 +100,10 @@ def main():
         logger=wandb_logger,
         default_root_dir="checkpoints",
         max_epochs=configs.TRAINING.EPOCHS,
-        check_val_every_n_epoch=2,
+        check_val_every_n_epoch=1,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
-        callbacks=[checkpoint_callback, lr_monitor],
+        callbacks=[checkpoint_callback, lr_monitor, calib_slope, RichProgressBar(leave=True)],
     )
 
     trainer.fit(model, train_loader, valid_loader)

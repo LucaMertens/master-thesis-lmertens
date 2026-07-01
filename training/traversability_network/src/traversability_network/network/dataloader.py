@@ -48,7 +48,7 @@ class Dataset(DataLoader.Dataset):
         self.max_rotation_aug = configs.AUGMENTATIONS.MAX_ROTATION
         self.lds_alpha = configs.DATASET.LDS_ALPHA
 
-        self.bin_width = 0.2
+        self.bin_width = 0.1
         self.dtype = torch.float32
 
         self.map_size = (
@@ -675,8 +675,10 @@ class Dataset(DataLoader.Dataset):
             label[:, 1], bins=int(1 / self.bin_width), range=(0, 1), density=True
         )
 
-        # Smooth out the distribution using a Gaussian kernel
-        values = gaussian_filter1d(values, sigma=1.0, axis=0, mode="constant")
+        # Smooth out the distribution using a Gaussian kernel. ~0.075 mu span: finer
+        # than the old 0.2 (keeps low-mu resolution) but wide enough that a lone rare
+        # bin does not blow up its 1/density weight.
+        values = gaussian_filter1d(values, sigma=0.075 / self.bin_width, axis=0, mode="constant")
 
         # Inverse-density LDS, tempered by exponent alpha to soften the rare bins.
         weights = (1.0 / values) ** self.lds_alpha

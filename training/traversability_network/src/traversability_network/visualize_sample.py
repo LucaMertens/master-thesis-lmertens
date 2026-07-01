@@ -25,6 +25,7 @@ import numpy as np
 
 from .config import get_cfg
 from .data.grandtour_dataset import GrandTourDataset
+from .network.dataloader import Dataset
 
 CFG = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "grandtour.yaml")
 
@@ -67,7 +68,9 @@ def _occupancy(ds, depths, K_list, extr, scale):
             K2[:2] *= scale
             ds_K.append(K2)
         depths, K_list = ds_depths, ds_K
-    grid = ds.read_pcloud(depths, K_list, extr)  # (n_frames, Z, X, Y)
+    # GrandTourDataset.read_pcloud now builds the grid GPU-side (see TravNet.voxelize)
+    # and returns (depth, K) instead; use the base class's CPU grid for this sanity view.
+    grid = Dataset.read_pcloud(ds, depths, K_list, extr)  # (n_frames, Z, X, Y)
     return grid.max(axis=0)  # (Z, X, Y)
 
 

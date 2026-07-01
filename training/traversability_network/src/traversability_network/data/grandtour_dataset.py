@@ -10,7 +10,7 @@ sees the exact same sample tuple as upstream WayFASTER.
 Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
     cam2base.npy         (4, 4)  front_center, from extract_alphasense.py
     intrinsics.npy       (3, 3)  front_center K, from extract_alphasense.py
-    dlio_odom.npy        (M, 8)  t, x, y, z, qw, qx, qy, qz (base in dlio_map, ground-truth pose), from extract_dlio.py
+    dlio_odom.npy        (M, 8)  t, x, y, z, qx, qy, qz, qw (base in dlio_map, ground-truth pose), from extract_dlio.py
     image_manifest.npz   front_center structured array {ts_ns, path}
     depth_manifest.npz   structured array {ts_ns, path} (FoundationStereo output)
 
@@ -59,7 +59,7 @@ class GrandTourDataset(Dataset):
         self.max_translation_aug = configs.AUGMENTATIONS.MAX_TRANSLATION
         self.max_rotation_aug = configs.AUGMENTATIONS.MAX_ROTATION
 
-        self.bin_width = 0.2
+        self.bin_width = 0.05   # 20 LDS bins: resolve the low-mu tail (was 0.2 / 5 bins)
         import torch
 
         self.dtype = torch.float32
@@ -181,7 +181,7 @@ class GrandTourDataset(Dataset):
         return np.column_stack((v, omega))
 
     def _interp_odom(self, odom, query_t):
-        """Interpolate dlio ground-truth pose (M,8: t,x,y,z,qw,qx,qy,qz) onto query_t.
+        """Interpolate dlio ground-truth pose (M,8: t,x,y,z,qx,qy,qz,qw) onto query_t.
 
         Linear interp for position, slerp for orientation, both clamped to the
         odom time range. Returns (position (N,3), quaternion (N,4) in w,x,y,z order).
@@ -190,14 +190,14 @@ class GrandTourDataset(Dataset):
         order = np.argsort(t)
         t = t[order]
         pos = odom[order, 1:4]
-        quat_wxyz = odom[order, 4:8]
+        quat_xyzw = odom[order, 4:8]
         # de-duplicate timestamps (Slerp requires strictly increasing)
         t, uniq = np.unique(t, return_index=True)
         pos = pos[uniq]
-        quat_wxyz = quat_wxyz[uniq]
+        quat_xyzw = quat_xyzw[uniq]
         clamped = np.clip(query_t, t[0], t[-1])
         position = np.column_stack([np.interp(clamped, t, pos[:, i]) for i in range(3)])
-        rot = R.from_quat(quat_wxyz[:, [1, 2, 3, 0]])  # wxyz -> xyzw
+        rot = R.from_quat(quat_xyzw)
         out_xyzw = Slerp(t, rot)(clamped).as_quat()
         quaternion = out_xyzw[:, [3, 0, 1, 2]]  # xyzw -> wxyz
         return position, quaternion
