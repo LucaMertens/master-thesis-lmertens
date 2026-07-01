@@ -15,7 +15,6 @@ from torch.utils.data import DataLoader
 
 from .config import get_cfg
 from .data.grandtour_dataset import GrandTourDataset
-from .network.callbacks import CalibrationSlope
 from .network.trainer import TrainingModule
 
 
@@ -81,14 +80,13 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints",
-        filename="checkpoint_{epoch}-{valid_loss:.4f}",
-        monitor="valid_loss",
+        filename="checkpoint_{epoch}-{step}",
+        monitor="valid/loss",
         save_weights_only=True,
         save_last=True,
         save_top_k=1,
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
-    calib_slope = CalibrationSlope()
 
     trainer = pl.Trainer(
         devices=configs.TRAINING.DEVICES,
@@ -103,7 +101,7 @@ def main():
         check_val_every_n_epoch=1,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
-        callbacks=[checkpoint_callback, lr_monitor, calib_slope, RichProgressBar(leave=True)],
+        callbacks=[checkpoint_callback, lr_monitor, RichProgressBar(leave=True)],
     )
 
     trainer.fit(model, train_loader, valid_loader)

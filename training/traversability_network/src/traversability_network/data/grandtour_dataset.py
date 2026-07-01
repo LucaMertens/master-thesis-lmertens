@@ -24,7 +24,7 @@ estimate, an optimization byproduct).
 
 Mapping to WayFASTER's rosbag_dict:
     position       <- dlio (x, y, 0) interpolated to RHE timestamps
-    quaternion     <- dlio orientation slerped to RHE timestamps (w, x, y, z)
+    quaternion     <- dlio orientation slerped to RHE timestamps (x, y, z, w)
     action         <- finite-difference (v, omega) from dlio position and yaw
     traversability <- trav_labels[:, LABEL_COLUMNS]
 """
@@ -184,7 +184,7 @@ class GrandTourDataset(Dataset):
         """Interpolate dlio ground-truth pose (M,8: t,x,y,z,qx,qy,qz,qw) onto query_t.
 
         Linear interp for position, slerp for orientation, both clamped to the
-        odom time range. Returns (position (N,3), quaternion (N,4) in w,x,y,z order).
+        odom time range. Returns (position (N,3), quaternion (N,4) in x,y,z,w order).
         """
         t = odom[:, 0]
         order = np.argsort(t)
@@ -198,8 +198,7 @@ class GrandTourDataset(Dataset):
         clamped = np.clip(query_t, t[0], t[-1])
         position = np.column_stack([np.interp(clamped, t, pos[:, i]) for i in range(3)])
         rot = R.from_quat(quat_xyzw)
-        out_xyzw = Slerp(t, rot)(clamped).as_quat()
-        quaternion = out_xyzw[:, [3, 0, 1, 2]]  # xyzw -> wxyz
+        quaternion = Slerp(t, rot)(clamped).as_quat()  # x, y, z, w
         return position, quaternion
 
     def read_pcloud(self, depth_image_list, cam_intrinsics_list, cam_extrinsics_list):
@@ -248,7 +247,7 @@ class GrandTourDataset(Dataset):
         # Ground-truth pose from dlio odometry (not the RHE estimate).
         odom_pos, quaternion = self._interp_odom(odom, timestamp)
         x, y = odom_pos[:, 0], odom_pos[:, 1]
-        theta = R.from_quat(quaternion[:, [1, 2, 3, 0]]).as_euler("zyx")[:, 0]
+        theta = R.from_quat(quaternion).as_euler("zyx")[:, 0]
         position = np.column_stack((x, y, np.zeros_like(x)))
         action = self._finite_diff_action(x, y, theta, timestamp)
         traversability = trav[:, self.label_columns]

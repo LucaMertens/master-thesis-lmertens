@@ -51,7 +51,7 @@ class _Curve(pl.Callback):
         self.history = []
 
     def on_train_epoch_end(self, trainer, pl_module):
-        value = trainer.callback_metrics.get("train_trav_loss")
+        value = trainer.callback_metrics.get("train/trav_loss")
         if value is not None:
             self.history.append(float(value))
 

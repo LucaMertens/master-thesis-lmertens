@@ -388,7 +388,7 @@ class Dataset(DataLoader.Dataset):
             # Read linear control action
             position = position[1:-1].split()
             position = map_float(position)
-            # Read linear control action
+            # Read orientation quaternion (x, y, z, w; used as-is by get_states/get_extrinsics)
             quaternion = quaternion[1:-1].split()
             quaternion = map_float(quaternion)
             # Read control action
@@ -463,8 +463,6 @@ class Dataset(DataLoader.Dataset):
         # mu/nu observability gates (1 -> fully observable when absent, e.g. CSV path)
         mu_observability = np.asarray(rosbag_dict["mu_observability"])[sync]
         nu_observability = np.asarray(rosbag_dict["nu_observability"])[sync]
-        # Swap columns w, x, y, z => x, y, z, w
-        quaternion = quaternion[:, [1, 2, 3, 0]]
 
         # Get current position and rotation
         curr_idx = bisect.bisect_left(
@@ -472,7 +470,6 @@ class Dataset(DataLoader.Dataset):
         )
         curr_position = np.asarray(rosbag_dict["position"])[curr_idx]
         curr_quaternion = np.asarray(rosbag_dict["quaternion"])[curr_idx]
-        curr_quaternion = curr_quaternion[[1, 2, 3, 0]]
         curr_rotation = R.from_quat(curr_quaternion)
         curr_euler_angle = curr_rotation.as_euler("zyx")
 
@@ -525,8 +522,6 @@ class Dataset(DataLoader.Dataset):
         ]
         position = np.asarray(rosbag_dict["position"])[sync]
         quaternion = np.asarray(rosbag_dict["quaternion"])[sync]
-        # Swap columns w, x, y, z => x, y, z, w
-        quaternion = quaternion[:, [1, 2, 3, 0]]
 
         # Get rotations from quaternions
         rotation = R.from_quat(quaternion)

@@ -148,9 +148,9 @@ class TrainingModule(pl.LightningModule):
         if batch_idx % 1000 == 0:
             self.print(f"[epoch {self.current_epoch} step {batch_idx}] loss={loss.item():.4f} trav={trav_loss.item():.4f} depth={depth_loss.item():.4f}")
 
-        self.log("train_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
-        self.log("train_trav_loss", trav_loss, on_step=True, on_epoch=True, sync_dist=True)
-        self.log("train_depth_loss", depth_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train/loss", loss, on_step=True, on_epoch=False, sync_dist=True)
+        self.log("train/trav_loss", trav_loss, on_step=True, on_epoch=False, sync_dist=True)
+        self.log("train/depth_loss", depth_loss, on_step=True, on_epoch=False, sync_dist=True)
 
         return loss
 
@@ -192,11 +192,10 @@ class TrainingModule(pl.LightningModule):
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
             self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, prefix='valid')
 
-        # Logging to TensorBoard by default
-        self.log("valid_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid_trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid_trav_error", trav_error, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid_depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/loss", loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/trav_error", trav_error, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
 
         return loss
 
@@ -207,9 +206,6 @@ class TrainingModule(pl.LightningModule):
         mask = mask.bool()
         pred_mu = pred[..., 0][mask]
         true_mu = target_trav[..., 0][mask]
-        # expose this batch's valid cells for the CalibrationSlope callback
-        self._cal_pred_mu = pred_mu.detach()
-        self._cal_true_mu = true_mu.detach()
         for b in range(self.n_mu_bins):
             lo = b * self.mu_bin_width
             sel = (true_mu >= lo) & (true_mu < lo + self.mu_bin_width)
@@ -231,8 +227,8 @@ class TrainingModule(pl.LightningModule):
             # empty bins compute() to NaN (same on every rank, so logging stays consistent)
             seen = not torch.isnan(calib)
             if seen:
-                self.log(f"val/mae_mu_{name}", mae, sync_dist=True)
-                self.log(f"val/calib_mu_{name}", calib, sync_dist=True)
+                self.log(f"calib/mae_mu_{name}", mae, sync_dist=True)
+                self.log(f"calib/mu_{name}", calib, sync_dist=True)
             centers.append(lo + self.mu_bin_width / 2)
             means.append(float(calib) if seen else None)
         self._log_calibration_curve(centers, means)
@@ -247,8 +243,8 @@ class TrainingModule(pl.LightningModule):
         table = wandb.Table(data=rows, columns=["true_mu_bin", "mean_pred_mu"])
         self.logger.experiment.log(
             {
-                "val/calibration_table": table,
-                "val/calibration_mu": wandb.plot.line(
+                "calib/table": table,
+                "calib/curve": wandb.plot.line(
                     table, "true_mu_bin", "mean_pred_mu",
                     title="Calibration: mean predicted mu vs true mu bin",
                 ),
@@ -395,7 +391,27 @@ class TrainingModule(pl.LightningModule):
         cam = (pts - extrinsics[:3, 3]) @ extrinsics[:3, :3]
         cam = cam[cam[:, 2] > 1e-3]
         pix = cam @ K.T
-        return (pix[:, :2] / pix[:, 2:3]).cpu().numpy()
+        return (pix[:, :2] / pix[:, 2:3]).float().cpu().numpy()
+
+    @staticmethod
+    def _gray_to_rgb(img):
+        """(1,H,W) float in [0,1] -> (H,W,3) uint8, for combining with BEV/cam overlays."""
+        arr = (img.squeeze(0).clamp(0, 1) * 255).to(torch.uint8)
+        return arr.unsqueeze(-1).expand(-1, -1, 3).contiguous()
+
+    @staticmethod
+    def _hstack(*overlay_lists, sep=4):
+        """Concatenate matching (H,W,3) uint8 tensors from each list side by side."""
+        combined = []
+        for imgs in zip(*overlay_lists):
+            h = max(im.shape[0] for im in imgs)
+            padded = [F.pad(im, (0, 0, 0, 0, 0, h - im.shape[0])) if im.shape[0] != h else im for im in imgs]
+            separator = torch.zeros(h, sep, 3, dtype=padded[0].dtype)
+            row = padded[0]
+            for im in padded[1:]:
+                row = torch.cat([row, separator, im], dim=1)
+            combined.append(row)
+        return combined
 
     @torch.no_grad()
     def _cam_overlays(self, image, path, K, extrinsics):
@@ -433,33 +449,33 @@ class TrainingModule(pl.LightningModule):
             extrinsics (torch.Tensor): Cam-to-base per frame (B, T, 4, 4).
             prefix (str): Prefix for the log keys.
         """
-        def _imgs(t):
-            return list(t.float().cpu())
-
         # Camera input (anchor frame) with the future path projected on top
         self.logger.log_image(
-            key=prefix + "_images",
-            images=self._cam_overlays(image, path, intrinsics, extrinsics),
+            key=prefix + "/images",
+            images=[im.numpy() for im in self._cam_overlays(image, path, intrinsics, extrinsics)],
         )
 
-        # BEV maps with the same path drawn on top (mu/nu in [0,1], rest normalized)
+        # BEV inputs: point-cloud occupancy density | lift-splat feature density (both sanity checks)
         pcloud = torch.mean(pcloud, dim=2).view(-1, 1, *pcloud.shape[3:])
-        self.logger.log_image(key=prefix + "_pcloud", images=self._bev_overlays(pcloud, path, normalize=True))
-        self.logger.log_image(key=prefix + "_mu", images=self._bev_overlays(trav_map[:, :1], path))
-        self.logger.log_image(key=prefix + "_nu", images=self._bev_overlays(trav_map[:, 1:], path))
+        pcloud_overlays = self._bev_overlays(pcloud, path, normalize=True)
+        debug_overlays = self._bev_overlays(torch.sum(debug, dim=1, keepdim=True), path, normalize=True)
+        self.logger.log_image(key=prefix + "/bev_inputs", images=[im.numpy() for im in self._hstack(pcloud_overlays, debug_overlays)])
 
-        temp = torch.sum(debug, dim=1, keepdim=True)
-        self.logger.log_image(key=prefix + "_debug", images=self._bev_overlays(temp, path, normalize=True))
+        # BEV outputs: predicted mu | nu, side by side
+        mu_overlays = self._bev_overlays(trav_map[:, :1], path)
+        nu_overlays = self._bev_overlays(trav_map[:, 1:], path)
+        self.logger.log_image(key=prefix + "/bev_outputs", images=[im.numpy() for im in self._hstack(mu_overlays, nu_overlays)])
 
-        # Depth (camera frame, no BEV path)
+        # Depth (camera frame, no BEV path): predicted | target | validity mask
         n_d = (self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0])/self.grid_bounds['dbound'][2]
         depth_pred = torch.argmax(pred_depth, dim=1, keepdim=True)/(n_d-1)
-        self.logger.log_image(key=prefix + "_depth_pred", images=_imgs(depth_pred))
 
         if self.predict_depth:
             depth_target = depth_target.unsqueeze(1)/(n_d-1)
         else:
             depth_target = depth_target.argmax(1).unsqueeze(1)/(n_d-1)
-        self.logger.log_image(key=prefix + "_depth_target", images=_imgs(depth_target))
 
-        self.logger.log_image(key=prefix + "_depth_mask", images=_imgs(depth_mask.unsqueeze(1)))
+        pred_overlays = [self._gray_to_rgb(t) for t in depth_pred.float().cpu()]
+        target_overlays = [self._gray_to_rgb(t) for t in depth_target.float().cpu()]
+        mask_overlays = [self._gray_to_rgb(t) for t in depth_mask.unsqueeze(1).float().cpu()]
+        self.logger.log_image(key=prefix + "/depth", images=[im.numpy() for im in self._hstack(pred_overlays, target_overlays, mask_overlays)])
