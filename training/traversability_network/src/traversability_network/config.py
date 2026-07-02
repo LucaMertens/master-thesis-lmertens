@@ -35,6 +35,7 @@ _C.TRAINING.VERBOSE = True
 # model parameters
 _C.MODEL = EasyDict()
 _C.MODEL.LOAD_NETWORK = None
+_C.MODEL.RESUME_CHECKPOINT = None  # full trainer state (weights+optimizer+epoch), for resuming an interrupted run
 _C.MODEL.DOWNSAMPLE = 8
 _C.MODEL.LATENT_DIM = 64
 _C.MODEL.TIME_LENGTH = 6
@@ -56,6 +57,8 @@ _C.MODEL.GRID_BOUNDS = {
 # optimizer parameters
 _C.OPTIMIZER = EasyDict()
 _C.OPTIMIZER.LR = 1e-4
+# Effective batch (BATCHSIZE * num GPUs) that LR was tuned at; LR is sqrt-scaled from here.
+_C.OPTIMIZER.LR_REF_BATCHSIZE = 12
 _C.OPTIMIZER.WEIGHT_DECAY = 1e-4
 
 _C.DATASET = EasyDict()

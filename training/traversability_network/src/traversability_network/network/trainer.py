@@ -39,6 +39,8 @@ class TrainingModule(pl.LightningModule):
         gamma = torch.tensor([configs.TRAINING.GAMMA**i for i in range(configs.TRAINING.HORIZON)])
         self.gamma = nn.Parameter(gamma, requires_grad=False)
         self.learning_rate = configs.OPTIMIZER.LR
+        self.lr_ref_batchsize = configs.OPTIMIZER.LR_REF_BATCHSIZE
+        self.batchsize = configs.TRAINING.BATCHSIZE
         self.weight_decay = configs.OPTIMIZER.WEIGHT_DECAY
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
         self.epochs = configs.TRAINING.EPOCHS
@@ -182,11 +184,28 @@ class TrainingModule(pl.LightningModule):
         if batch_idx % 1000 == 0:
             self.print(f"[epoch {self.current_epoch} step {batch_idx}] loss={loss.item():.4f} trav={trav_loss.item():.4f} depth={depth_loss.item():.4f}")
 
-        self.log("train/loss", loss, on_step=True, on_epoch=False, sync_dist=True)
-        self.log("train/trav_loss", trav_loss, on_step=True, on_epoch=False, sync_dist=True)
-        self.log("train/depth_loss", depth_loss, on_step=True, on_epoch=False, sync_dist=True)
+        # rank-local values: sync_dist would add three all-reduces every step
+        self.log("train/loss", loss, on_step=True, on_epoch=False)
+        self.log("train/trav_loss", trav_loss, on_step=True, on_epoch=False)
+        self.log("train/depth_loss", depth_loss, on_step=True, on_epoch=False)
 
         return loss
+
+    def on_train_batch_start(self, batch, batch_idx):
+        self._batch_start_time = time.time()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        if hasattr(self, '_batch_start_time'):
+            step_time = time.time() - self._batch_start_time
+            self.log("perf/time_per_step", step_time, on_step=True, on_epoch=False)
+
+    def on_train_epoch_start(self):
+        self._epoch_start_time = time.time()
+
+    def on_train_epoch_end(self):
+        if hasattr(self, '_epoch_start_time'):
+            epoch_time = time.time() - self._epoch_start_time
+            self.log("perf/time_per_epoch", epoch_time, on_step=False, on_epoch=True, sync_dist=True)
 
     def validation_step(self, batch, batch_idx):
         """
@@ -293,12 +312,15 @@ class TrainingModule(pl.LightningModule):
         Returns:
             list: List containing the optimizer and the scheduler.
         """
-        model_params = self.model.parameters()
-        optimizer = torch.optim.AdamW(model_params, lr=self.learning_rate, weight_decay=self.weight_decay)
-        
+        # Sqrt LR scaling for AdamW: scale with effective batch relative to the tuning reference.
+        lr_scale = (self.batchsize * self.trainer.world_size / self.lr_ref_batchsize) ** 0.5
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(), lr=self.learning_rate * lr_scale, weight_decay=self.weight_decay
+        )
+
         # Learning rate scheduler: one full cosine decay over the whole run (T_max must
         # match EPOCHS, else the LR rises back toward its max in the second half).
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-5)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-5 * lr_scale)
         
         return [optimizer], [scheduler]
 
@@ -306,8 +328,12 @@ class TrainingModule(pl.LightningModule):
         # bf16-mixed has no GradScaler, so a single batch with non-finite gradients
         # would permanently corrupt the weights and silently stall training (global_step
         # stops advancing). Skip such updates, like fp16's GradScaler does for free.
-        finite = all(
-            p.grad is None or torch.isfinite(p.grad).all() for p in self.parameters()
+        # Fused norms + one .item(): a per-parameter isfinite loop costs a GPU sync
+        # per parameter (~15 ms/step for 209 params vs ~1 ms for this).
+        grads = [p.grad for p in self.parameters() if p.grad is not None]
+        finite = (
+            len(grads) == 0
+            or torch.isfinite(torch.stack(torch._foreach_norm(grads))).all().item()
         )
         if not finite:
             self._nonfinite_skips = getattr(self, "_nonfinite_skips", 0) + 1

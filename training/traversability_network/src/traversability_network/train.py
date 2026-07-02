@@ -4,6 +4,7 @@
 #   - Train/valid sets built from configs.DATASET.TRAIN_MISSIONS / VALID_MISSIONS.
 #   - TrainingModule (trainer.py) is reused unchanged.
 import argparse
+import pathlib
 
 import pytorch_lightning as pl
 import torch
@@ -27,6 +28,9 @@ def parse_config():
     return get_cfg(args.cfg_file)
 
 
+
+
+
 def main():
     torch.set_float32_matmul_precision("high")
     # Fixed input shapes (drop_last) -> let cudnn autotune the conv algorithms.
@@ -34,6 +38,8 @@ def main():
     torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
     configs = parse_config()
     print("configs:\n", configs)
+
+
 
     pl.seed_everything(configs.SEED, workers=True)
 
@@ -79,10 +85,9 @@ def main():
     wandb_logger = WandbLogger(project="master-thesis-lmertens", log_model=False)
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath="checkpoints",
+        dirpath=f"checkpoints/{wandb_logger.experiment.id}",
         filename="checkpoint_{epoch}-{step}",
         monitor="valid/loss",
-        save_weights_only=True,
         save_last=True,
         save_top_k=1,
     )
@@ -104,7 +109,9 @@ def main():
         callbacks=[checkpoint_callback, lr_monitor, RichProgressBar(leave=True)],
     )
 
-    trainer.fit(model, train_loader, valid_loader)
+    trainer.fit(
+        model, train_loader, valid_loader, ckpt_path=configs.MODEL.RESUME_CHECKPOINT
+    )
 
 
 if __name__ == "__main__":

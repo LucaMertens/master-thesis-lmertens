@@ -10,6 +10,20 @@ curve:
 """
 
 import os
+import subprocess
+
+def _get_free_gpu():
+    try:
+        smi_out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,nounits,noheader"],
+            encoding="utf-8"
+        )
+        memory_used = [int(x) for x in smi_out.strip().split("\n")]
+        return memory_used.index(min(memory_used))
+    except Exception:
+        return 0
+
+os.environ["CUDA_VISIBLE_DEVICES"] = str(_get_free_gpu())
 
 import pytest
 import pytorch_lightning as pl
@@ -58,7 +72,7 @@ class _Curve(pl.Callback):
 
 def _smoke_cfg():
     cfg = get_cfg(CFG)
-    cfg.TRAINING.BATCHSIZE = 4
+    cfg.TRAINING.BATCHSIZE = 1
     cfg.TRAINING.WORKERS = 63
     cfg.TRAINING.PRECISION = 32
     cfg.TRAINING.EPOCHS = EPOCHS
@@ -66,6 +80,8 @@ def _smoke_cfg():
     cfg.AUGMENTATIONS.PCLOUD_DROPOUT = 0.0
     cfg.AUGMENTATIONS.MAX_TRANSLATION = 0.0
     cfg.AUGMENTATIONS.MAX_ROTATION = 0.0
+    cfg.DATASET.TRAIN_MISSIONS = [MISSION]
+    cfg.DATASET.VALID_MISSIONS = []
     return cfg
 
 
@@ -76,8 +92,8 @@ def _mean_trav_error(model, loader, device):
     total, n = 0.0, 0
     for batch in loader:
         batch = [x.to(device) for x in batch]
-        color, pcloud, K, ext, path, target, weights, depth_t, _ = batch
-        trav_map, _, _ = model.model(color, pcloud, K, ext, depth_t)
+        color, pcloud, K_full, K, ext, path, target, weights, depth_t, depth_m = batch
+        trav_map, _, _ = model.model(color, pcloud, K_full, K, ext, depth_t)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)
         n += 1
@@ -110,6 +126,7 @@ def _run(progress_bar=True):
     cfg, loader, eval_loader = _build()
     device = torch.device("cuda")
     model = _SilentModule(cfg).to(device)
+    model.prepare_data()
 
     before = _mean_trav_error(model, eval_loader, device)
     model.train()

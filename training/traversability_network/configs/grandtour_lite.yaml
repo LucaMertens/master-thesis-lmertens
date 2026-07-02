@@ -2,12 +2,13 @@ TAG: 'grandtour'
 
 OPTIMIZER:
     LR: 0.0001
+    LR_REF_BATCHSIZE: 12   # effective batch (BATCHSIZE * GPUs) LR was tuned at; sqrt-scaled from here
     WEIGHT_DECAY: 0.0001
 
 TRAINING:
-    BATCHSIZE: 4
+    BATCHSIZE: 16
     WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
-    DEVICES: -1         # -1 = all GPUs; set e.g. 2 to run on half the machine
+    DEVICES: [1, 2, 3]  # -1 = all GPUs; set e.g. 2 to use N GPUs, or a list like this to pin specific ones
     EPOCHS: 20
     VERBOSE: False
     GAMMA: 0.998
