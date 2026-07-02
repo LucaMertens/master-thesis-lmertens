@@ -90,6 +90,7 @@ def main():
         monitor="valid/loss",
         save_last=True,
         save_top_k=1,
+        every_n_epochs=5,
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
