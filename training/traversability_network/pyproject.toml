@@ -18,6 +18,7 @@ dependencies = [
     "matplotlib",
     "wandb",
     "data_labeling_pipeline",
+    "grandtour_extraction",
     "config",
 ]
 
@@ -30,6 +31,7 @@ packages = ["src/traversability_network"]
 
 [tool.uv.sources]
 data_labeling_pipeline = { workspace = true }
+grandtour_extraction = { workspace = true }
 config = { workspace = true }
 
 [tool.pytest.ini_options]

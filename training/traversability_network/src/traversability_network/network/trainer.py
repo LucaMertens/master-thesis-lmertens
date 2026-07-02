@@ -1,5 +1,8 @@
 # Taken from wayfaster repository (https://github.com/matval/wayfaster)
 # Modifications: fixed import of TravNet for local package layout.
+import os
+import pathlib
+import time
 import cv2
 import numpy as np
 import torch
@@ -102,6 +105,37 @@ class TrainingModule(pl.LightningModule):
         self.mu_bin_width = 0.1
         self.val_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
         self.val_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+
+    def prepare_data(self):
+        """Called exactly once per node by PyTorch Lightning to prepare data."""
+        configs = self.hparams.configs if hasattr(self.hparams, "configs") else getattr(self, "configs", None)
+        if not configs:
+            return
+
+        missions = list(dict.fromkeys(
+            configs.DATASET.TRAIN_MISSIONS + 
+            configs.DATASET.VALID_MISSIONS + 
+            getattr(configs.DATASET, "TEST_MISSIONS", [])
+        ))
+
+        if configs.DATASET.RESIZED_ROOT:
+            from grandtour_extraction.resize_images import resize_mission
+            width, height = configs.MODEL.INPUT_SIZE
+            for mission in missions:
+                resize_mission(
+                    pathlib.Path(configs.DATASET.DATA_ROOT) / mission,
+                    pathlib.Path(configs.DATASET.RESIZED_ROOT),
+                    width, height, n_workers=os.cpu_count(), png_compression=1, force=False,
+                )
+
+        if getattr(configs.DATASET, "DEPTH_CACHE_ROOT", None):
+            from grandtour_extraction.cache_depth import cache_mission
+            for mission in missions:
+                cache_mission(
+                    pathlib.Path(configs.DATASET.DATA_ROOT) / mission,
+                    pathlib.Path(configs.DATASET.DEPTH_CACHE_ROOT),
+                    n_workers=os.cpu_count(), force=False,
+                )
 
     def training_step(self, batch, batch_idx):
         """

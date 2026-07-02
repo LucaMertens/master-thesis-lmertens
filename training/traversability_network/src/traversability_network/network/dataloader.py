@@ -31,6 +31,7 @@ class Dataset(DataLoader.Dataset):
             train (bool, optional): Whether the dataset is for training. Defaults to False.
         """
         print("Initializing dataset...")
+        self.configs = configs
         self.transform = transform
         self.train = train
         self.dt = configs.TRAINING.DT
@@ -366,8 +367,15 @@ class Dataset(DataLoader.Dataset):
             cam2base = images_data["cam2base"].iloc[i]
 
             # pcloud_fname = os.path.join(curr_dir, pcloud_fname)
-            color_fname = os.path.join(curr_dir, color_fname)
-            depth_fname = os.path.join(curr_dir, depth_fname)
+            img_root = curr_dir
+            if getattr(self.configs.DATASET, "RESIZED_ROOT", None):
+                img_root = os.path.join(self.configs.DATASET.RESIZED_ROOT, os.path.basename(curr_dir))
+            color_fname = os.path.join(img_root, color_fname)
+
+            depth_root = curr_dir
+            if getattr(self.configs.DATASET, "DEPTH_CACHE_ROOT", None):
+                depth_root = os.path.join(self.configs.DATASET.DEPTH_CACHE_ROOT, os.path.basename(curr_dir))
+            depth_fname = os.path.join(depth_root, depth_fname)
 
             # Read intrinsics matrix
             intrinsics = intrinsics.replace("[", " ").replace("]", " ").split()

@@ -78,6 +78,8 @@ class GrandTourDataset(Dataset):
         # GrandTour-specific knobs
         self.data_root = configs.DATASET.DATA_ROOT
         self.labels_root = configs.DATASET.LABELS_ROOT
+        self.resized_root = configs.DATASET.RESIZED_ROOT
+        self.depth_cache_root = getattr(configs.DATASET, "DEPTH_CACHE_ROOT", None)
         self.label_columns = list(configs.MODEL.LABEL_COLUMNS)
         self.time_tolerance = configs.DATASET.TIME_TOLERANCE
         self.max_time_gap = configs.DATASET.MAX_TIME_GAP
@@ -256,7 +258,11 @@ class GrandTourDataset(Dataset):
         manifest = np.load(os.path.join(mission_dir, "image_manifest.npz"))
         fc = manifest["front_center"]
         img_ts = fc["ts_ns"].astype(np.float64) / 1e9
-        img_paths = [os.path.join(mission_dir, p) for p in fc["path"]]
+        # Prefer the local pre-resized copy (same relative paths as the manifest)
+        img_root = mission_dir
+        if self.resized_root:
+            img_root = os.path.join(self.resized_root, os.path.basename(mission_dir))
+        img_paths = [os.path.join(img_root, p) for p in fc["path"]]
         img_order = np.argsort(img_ts)
         img_ts = img_ts[img_order]
         img_paths = [img_paths[i] for i in img_order]
@@ -305,7 +311,12 @@ class GrandTourDataset(Dataset):
         # depth manifest stores a single structured array under key 'depth'
         depth = dm["depth"]
         d_ts = depth["ts_ns"].astype(np.float64) / 1e9
-        d_paths = [os.path.join(mission_dir, p) for p in depth["path"]]
+        
+        depth_root = mission_dir
+        if self.depth_cache_root:
+            depth_root = os.path.join(self.depth_cache_root, os.path.basename(mission_dir))
+        
+        d_paths = [os.path.join(depth_root, p) for p in depth["path"]]
         d_order = np.argsort(d_ts)
         d_ts = d_ts[d_order]
         d_paths = [d_paths[i] for i in d_order]

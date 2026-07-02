@@ -8,7 +8,7 @@ import copy
 import sys
 
 import yaml
-from config.paths import EXTRACTED_ROOT, LABELS_ROOT
+from config.paths import DATALOCAL_ROOT, EXTRACTED_ROOT, LABELS_ROOT
 from easydict import EasyDict
 
 _C = EasyDict()
@@ -63,6 +63,11 @@ _C.DATASET = EasyDict()
 _C.DATASET.DATA_ROOT = str(EXTRACTED_ROOT)
 # Directory holding one sub-directory per mission with rhe/ and simple/ label outputs.
 _C.DATASET.LABELS_ROOT = str(LABELS_ROOT)
+# Local-SSD root with pre-resized (INPUT_SIZE) color images; produced by
+# preprocessing/grandtour_extraction's resize_images.py (see its --width/--height).
+# None = read native-res images from DATA_ROOT (slow over NFS).
+_C.DATASET.RESIZED_ROOT = str(DATALOCAL_ROOT / "grand_tour_dataset_resized")
+_C.DATASET.DEPTH_CACHE_ROOT = str(DATALOCAL_ROOT / "grand_tour_dataset_depth")
 _C.DATASET.TRAIN_MISSIONS = []
 _C.DATASET.VALID_MISSIONS = []
 # Held-out ID test set and OOD-detection benchmark sets (consumed by eval, not training).

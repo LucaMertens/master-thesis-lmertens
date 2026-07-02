@@ -42,6 +42,8 @@
         "source=${localEnv:HOME}/git-repos,target=/home/${localEnv:USER}/git-repos,type=bind,consistency=cached",
         // Data home — read/write
         "source=/datahome/lmertens,target=/datahome/lmertens,type=bind",
+        // Local data mount
+        "source=/datalocal/lmertens,target=/datalocal/lmertens,type=bind,consistency=cached",
         // Shadow the host .venv with a container-local Docker volume — prevents
         // Python interpreter mismatches between the host and container environments.
         "source=master-thesis-lmertens-venv,target=/workspaces/master-thesis-lmertens/.venv,type=volume",

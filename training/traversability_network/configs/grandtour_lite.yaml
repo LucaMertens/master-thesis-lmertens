@@ -35,6 +35,9 @@ MODEL:
 DATASET:
     DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
     LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    # local-SSD copy of INPUT_SIZE color images (grandtour_extraction's resize_images.py);
+    # avoids the NFS bottleneck. /datalocal persists across container rebuilds, unlike /home.
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5
     LDS_ALPHA: 1.0           # full inverse-density weighting (was 0.75)
