@@ -373,12 +373,16 @@ class Dataset(DataLoader.Dataset):
             # pcloud_fname = os.path.join(curr_dir, pcloud_fname)
             img_root = curr_dir
             if getattr(self.configs.DATASET, "RESIZED_ROOT", None):
-                img_root = os.path.join(self.configs.DATASET.RESIZED_ROOT, os.path.basename(curr_dir))
+                img_root = os.path.join(
+                    self.configs.DATASET.RESIZED_ROOT, os.path.basename(curr_dir)
+                )
             color_fname = os.path.join(img_root, color_fname)
 
             depth_root = curr_dir
             if getattr(self.configs.DATASET, "DEPTH_CACHE_ROOT", None):
-                depth_root = os.path.join(self.configs.DATASET.DEPTH_CACHE_ROOT, os.path.basename(curr_dir))
+                depth_root = os.path.join(
+                    self.configs.DATASET.DEPTH_CACHE_ROOT, os.path.basename(curr_dir)
+                )
             depth_fname = os.path.join(depth_root, depth_fname)
 
             # Read intrinsics matrix
@@ -665,13 +669,14 @@ class Dataset(DataLoader.Dataset):
         Returns:
             tuple: Weights and bins for the dataset.
         """
-        label = []
-        for data in self.rosbags:
-            traversability = data["traversability"]
-            label.extend(traversability)
-
-        # Flatten the entire list of numpy arrays
-        label = np.asarray(label)
+        # Missions are split into segments at larger time gaps.
+        # Each segment of a mission uses the same traversability object (duplicated by reference).
+        # It is indexed at access time by timestamps.
+        # We only want to count each object once so missions split into many segments don't dominate the density estimate.
+        arrays = {
+            id(data["traversability"]): data["traversability"] for data in self.rosbags
+        }
+        label = np.concatenate([np.asarray(a) for a in arrays.values()])
 
         # Calculate histogram
         values = np.zeros((int(1 / self.bin_width), 2))
@@ -685,7 +690,15 @@ class Dataset(DataLoader.Dataset):
         # Smooth out the distribution using a Gaussian kernel. ~0.075 mu span: finer
         # than the old 0.2 (keeps low-mu resolution) but wide enough that a lone rare
         # bin does not blow up its 1/density weight.
-        values = gaussian_filter1d(values, sigma=0.075 / self.bin_width, axis=0, mode="constant")
+        values = gaussian_filter1d(
+            values, sigma=0.2 / self.bin_width, axis=0, mode="constant"
+        )
+
+        zero_count = (values <= 0).sum()
+        if zero_count > 0:
+            print(
+                f"Warning: {zero_count} bins have zero density, which will lead to infinite weights."
+            )
 
         # Inverse-density LDS, tempered by exponent alpha to soften the rare bins.
         weights = (1.0 / values) ** self.lds_alpha

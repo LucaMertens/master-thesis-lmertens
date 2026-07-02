@@ -40,11 +40,25 @@ def _resize_one(src: pathlib.Path, dst: pathlib.Path, size: tuple[int, int], png
     os.replace(tmp, dst)
 
 
-def _up_to_date(out_dir: pathlib.Path, width: int, height: int) -> bool:
+def _source_fingerprint(mission_dir: pathlib.Path) -> dict:
+    """Metadata of the upstream steps that produce or mutate the source images.
+    correct_tint overwrites PNGs in place, so its state must be part of the cache key."""
+    fp = {}
+    for step in ("images", "tint_correction"):
+        meta = mission_dir / f"{step}_metadata.json"
+        fp[step] = json.loads(meta.read_text()) if meta.exists() else None
+    return fp
+
+
+def _up_to_date(out_dir: pathlib.Path, width: int, height: int, source: dict) -> bool:
     if not is_step_done(out_dir, "resize_images", VERSION):
         return False
     meta = json.loads((out_dir / "resize_images_metadata.json").read_text())
-    return meta.get("width") == width and meta.get("height") == height
+    return (
+        meta.get("width") == width
+        and meta.get("height") == height
+        and meta.get("source") == source
+    )
 
 
 def resize_mission(
@@ -60,7 +74,8 @@ def resize_mission(
         ensure_datalocal_root()
 
     out_dir = resized_root / mission_dir.name
-    if not force and _up_to_date(out_dir, width, height):
+    source = _source_fingerprint(mission_dir)
+    if not force and _up_to_date(out_dir, width, height, source):
         print(f"Skipping resize_images (up to date): {out_dir}")
         return
 
@@ -77,7 +92,7 @@ def resize_mission(
                     _resize_one, mission_dir / rel, dst, (width, height), png_compression))
             for f in tqdm(futures, desc=mission_dir.name):
                 f.result()
-        write_step_done(out_dir, "resize_images", VERSION, count=len(rel_paths), width=width, height=height)
+        write_step_done(out_dir, "resize_images", VERSION, count=len(rel_paths), width=width, height=height, source=source)
 
 
 def main() -> None:
