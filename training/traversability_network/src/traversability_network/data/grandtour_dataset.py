@@ -123,21 +123,51 @@ class GrandTourDataset(Dataset):
         print("GrandTour dataset initialized!")
 
     def _flagged_windows(self):
-        """Boolean per window (in global index order): do the first 300 horizon steps
-        contain any cell with mu <= OS_MU_MAX and observability >= OS_OBS_MIN."""
+        """Boolean per window (in global index order): does the near horizon contain a
+        cell with mu <= OS_MU_MAX and observability >= OS_OBS_MIN that also falls
+        inside the BEV grid, i.e. one _sample_path would actually score. A cell can be
+        within the time horizon yet outside the xbound/ybound footprint (grid is only
+        10m x 10m), in which case grid_sample masks it out and oversampling it is
+        wasted. The time-based check below is only a cheap upper-bound prefilter."""
         n_flag = min(self.horizon, 300)  # only count low-mu cells in the near horizon
+        xb, yb = self.grid_bounds["xbound"], self.grid_bounds["ybound"]
         flags = []
         for bag in self.rosbags:
             n_windows = len(bag["image_timestamp"]) - self.n_frames + 1
             st = np.asarray(bag["states_timestamp"])
             mu = np.asarray(bag["traversability"])[:, 0]
             observability = np.asarray(bag["mu_observability"])
-            qualifying = (mu <= self.os_mu_max) & (observability >= self.os_obs_min)
-            prefix = np.concatenate(([0], np.cumsum(qualifying)))
-            img_ts = np.asarray(bag["image_timestamp"])[:n_windows]
-            lo = np.searchsorted(st, img_ts, "left")
-            hi = np.searchsorted(st, img_ts + n_flag * self.dt, "left")
-            flags.append((prefix[hi] - prefix[lo]) > 0)
+            position = np.asarray(bag["position"])
+            yaw = R.from_quat(bag["quaternion"]).as_euler("zyx")[:, 0]
+            qualifying = np.flatnonzero(
+                (mu <= self.os_mu_max) & (observability >= self.os_obs_min)
+            )
+
+            bag_flags = np.zeros(n_windows, dtype=bool)
+            if len(qualifying):
+                img_ts = np.asarray(bag["image_timestamp"])[:n_windows]
+                lo = np.searchsorted(st, img_ts, "left")
+                hi = np.searchsorted(st, img_ts + n_flag * self.dt, "left")
+                # anchor per window = last input frame's synced state (same reference
+                # frame get_states/get_extrinsics use for the BEV-frame transform)
+                anchor_ts = np.asarray(bag["image_timestamp"])[
+                    self.n_frames - 1 : self.n_frames - 1 + n_windows
+                ]
+                anchor_idx = np.searchsorted(st, anchor_ts, "left")
+
+                q_lo = np.searchsorted(qualifying, lo)
+                q_hi = np.searchsorted(qualifying, hi)
+                for w in np.flatnonzero(q_hi > q_lo):
+                    idxs = qualifying[q_lo[w] : q_hi[w]]
+                    a = anchor_idx[w]
+                    heading = R.from_euler("zyx", [yaw[a], 0, 0])
+                    rel = (heading.inv().as_matrix() @ (position[idxs] - position[a]).T).T
+                    inside = (
+                        (rel[:, 0] >= xb[0]) & (rel[:, 0] < xb[1])
+                        & (rel[:, 1] >= yb[0]) & (rel[:, 1] < yb[1])
+                    )
+                    bag_flags[w] = inside.any()
+            flags.append(bag_flags)
         return np.concatenate(flags)
 
     def _oversampled_indices(self):

@@ -160,9 +160,6 @@ class Dataset(DataLoader.Dataset):
             intrinsics = rosbag_dict["intrinsics"][data_idx + t].copy()
             cam2base = rosbag_dict["cam2base"][data_idx + t].copy()
 
-            # Apply augmentation
-            cam2base = aug_transformation @ cam2base
-
             # Read RGB data
             color_img = cv2.imread(color_fname, -1)
             color_img = cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB)
@@ -173,8 +170,8 @@ class Dataset(DataLoader.Dataset):
             if horizontal_flip:
                 color_img = np.fliplr(color_img).copy()
                 depth_img = np.fliplr(depth_img).copy()
-                # horizontal flip in the intrinsics matrix
-                intrinsics[0, 2] = color_img.shape[1] - intrinsics[0, 2]
+                # K is native-res; depth stays native even when color is pre-resized
+                intrinsics[0, 2] = depth_img.shape[1] - intrinsics[0, 2]
 
             image_timestamp_list.append(image_timestamp)
             color_img_list.append(color_img)
@@ -189,6 +186,13 @@ class Dataset(DataLoader.Dataset):
         extrinsics_list = self.get_extrinsics(
             rosbag_dict, image_timestamp_list, cam2base_list, horizontal_flip
         )
+        # Apply augmentation as the outermost transform on the BEV-frame extrinsics,
+        # matching how get_states augments label positions (aug_R @ p_anchor + aug_t).
+        # Baking aug into cam2base instead (pre-get_extrinsics) would sandwich it
+        # between the body pitch/roll and yaw/position transforms, which only agrees
+        # with the label-side augmentation when those are identity/commuting -- false
+        # in general for a legged robot on uneven terrain.
+        extrinsics_list = [aug_transformation @ e for e in extrinsics_list]
         # Clean full-res depth + intrinsics for GPU voxelization (grid built in the model)
         depth_voxel, intrinsics_full = self.read_pcloud(
             depth_img_list, intrinsics_list, extrinsics_list
@@ -199,15 +203,15 @@ class Dataset(DataLoader.Dataset):
         for t in range(self.n_frames):
             color_img = color_img_list[t]
             depth_img = depth_img_list[t]
-            # Correct if using a different image resolution
-            if (self.image_size[0] != color_img.shape[1]) and (
-                self.image_size[1] != color_img.shape[0]
-            ):
-                intrinsics_list[t][:1] *= self.image_size[0] / color_img.shape[1]
-                intrinsics_list[t][1:2] *= self.image_size[1] / color_img.shape[0]
+            # Scale K from native to input resolution. Depth is always native-res
+            # (needed for the GPU voxelization), color may already be pre-resized.
+            intrinsics_list[t][:1] *= self.image_size[0] / depth_img.shape[1]
+            intrinsics_list[t][1:2] *= self.image_size[1] / depth_img.shape[0]
+            if (color_img.shape[1], color_img.shape[0]) != tuple(self.image_size):
                 color_img = cv2.resize(
                     color_img, self.image_size, interpolation=cv2.INTER_AREA
                 )
+            if (depth_img.shape[1], depth_img.shape[0]) != tuple(self.image_size):
                 depth_img = cv2.resize(
                     depth_img, self.image_size, interpolation=cv2.INTER_NEAREST
                 )

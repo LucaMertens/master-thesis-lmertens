@@ -364,8 +364,13 @@ class TrainingModule(pl.LightningModule):
         # Calculate loss
         gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
         error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.5)
-        loss = error * target_weights * gamma
-        loss = torch.mean(loss[mask,:])
+        weight = target_weights * gamma
+        # Weighted average, not weighted sum/count: keeps the loss scale (and its
+        # gradient norm) independent of how much low-mu weight mass a batch happens
+        # to contain, so gradient_clip_val doesn't disproportionately clip the rare
+        # high-weight batches back down to the common ones.
+        weighted_error = (error * weight)[mask, :]
+        loss = weighted_error.sum() / (weight[mask, :].sum() + self.eps)
 
         # Calculate error
         error = torch.mean(error[mask,:])
