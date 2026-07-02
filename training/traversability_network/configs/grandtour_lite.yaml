@@ -9,7 +9,7 @@ TRAINING:
     BATCHSIZE: 16
     WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
     DEVICES: [1, 2, 3]  # -1 = all GPUs; set e.g. 2 to use N GPUs, or a list like this to pin specific ones
-    EPOCHS: 20
+    EPOCHS: 50
     VERBOSE: False
     GAMMA: 0.998
     DEPTH_WEIGHT: 0.1
