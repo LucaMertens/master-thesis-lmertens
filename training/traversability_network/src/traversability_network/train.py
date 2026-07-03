@@ -4,12 +4,15 @@
 #   - Train/valid sets built from configs.DATASET.TRAIN_MISSIONS / VALID_MISSIONS.
 #   - TrainingModule (trainer.py) is reused unchanged.
 import argparse
-import pathlib
 
 import pytorch_lightning as pl
 import torch
 import torchvision.transforms as transforms
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, RichProgressBar
+from pytorch_lightning.callbacks import (
+    LearningRateMonitor,
+    ModelCheckpoint,
+    RichProgressBar,
+)
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
@@ -28,9 +31,6 @@ def parse_config():
     return get_cfg(args.cfg_file)
 
 
-
-
-
 def main():
     torch.set_float32_matmul_precision("high")
     # Fixed input shapes (drop_last) -> let cudnn autotune the conv algorithms.
@@ -38,8 +38,6 @@ def main():
     torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
     configs = parse_config()
     print("configs:\n", configs)
-
-
 
     pl.seed_everything(configs.SEED, workers=True)
 
@@ -89,8 +87,8 @@ def main():
         filename="checkpoint_{epoch}-{step}",
         monitor="valid/loss",
         save_last=True,
-        save_top_k=1,
-        every_n_epochs=5,
+        save_top_k=-1,  # Save every nth checkpoint, do not check for best.
+        every_n_epochs=5,  # Save every 5 epochs
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
