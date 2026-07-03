@@ -90,6 +90,7 @@ class GrandTourDataset(Dataset):
         self.os_mu_max = configs.DATASET.OVERSAMPLE_MU_MAX
         self.os_obs_min = configs.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH
         self.lds_alpha = configs.DATASET.LDS_ALPHA
+        self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
 
         self.rosbags = []
         self.bag_sizes = [0]
@@ -166,6 +167,11 @@ class GrandTourDataset(Dataset):
                         (rel[:, 0] >= xb[0]) & (rel[:, 0] < xb[1])
                         & (rel[:, 1] >= yb[0]) & (rel[:, 1] < yb[1])
                     )
+                    if getattr(self, "visibility_gate", False):
+                        # match the loss gate approximately: cells far outside the
+                        # anchor camera's ~107 deg forward FOV score zero weight, so
+                        # oversampling such windows would replicate dead supervision
+                        inside &= np.abs(np.arctan2(rel[:, 1], rel[:, 0])) < 0.9
                     bag_flags[w] = inside.any()
             flags.append(bag_flags)
         return np.concatenate(flags)

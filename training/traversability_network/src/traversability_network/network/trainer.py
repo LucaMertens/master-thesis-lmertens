@@ -40,6 +40,7 @@ class TrainingModule(pl.LightningModule):
         self.gamma = nn.Parameter(gamma, requires_grad=False)
         self.learning_rate = configs.OPTIMIZER.LR
         self.lr_ref_batchsize = configs.OPTIMIZER.LR_REF_BATCHSIZE
+        self.backbone_lr_factor = getattr(configs.OPTIMIZER, "BACKBONE_LR_FACTOR", 1.0)
         self.batchsize = configs.TRAINING.BATCHSIZE
         self.weight_decay = configs.OPTIMIZER.WEIGHT_DECAY
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
@@ -102,11 +103,15 @@ class TrainingModule(pl.LightningModule):
         self.vis_interval = configs.TRAINING.VIS_INTERVAL
 
         # Graded low-mu eval: per-0.1-bin MAE and mean-predicted-mu (calibration)
-        # over [0.0,0.1) ... [0.5,0.6). torchmetrics handles DDP reduction.
+        # over [0.0,0.1) ... [0.9,1.0). torchmetrics handles DDP reduction.
         self.n_mu_bins = 10
         self.mu_bin_width = 0.1
         self.val_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
         self.val_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+        # Same per-bin metrics on train batches: memorization (train sharp, valid
+        # flat) and global collapse (both flat) are different failures.
+        self.train_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+        self.train_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
 
     def prepare_data(self):
         """Called exactly once per node by PyTorch Lightning to prepare data."""
@@ -166,6 +171,9 @@ class TrainingModule(pl.LightningModule):
         # Calculate traversability loss
         trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights)
 
+        # Update graded low-mu metrics on train batches (logged at epoch end)
+        self._update_mu_metrics(path, trav_map, target_trav, self.train_mae, self.train_calib)
+
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
         depth_mask = depth_mask.view(-1, *depth_mask.shape[2:])
@@ -188,6 +196,8 @@ class TrainingModule(pl.LightningModule):
         self.log("train/loss", loss, on_step=True, on_epoch=False)
         self.log("train/trav_loss", trav_loss, on_step=True, on_epoch=False)
         self.log("train/depth_loss", depth_loss, on_step=True, on_epoch=False)
+        self.log("train/depth_mae", self._depth_mae(pred_depth, depth_target, depth_mask), on_step=True, on_epoch=False)
+        self.log("train/mu_spread", self._mu_spread(trav_map), on_step=True, on_epoch=False)
 
         return loss
 
@@ -206,6 +216,7 @@ class TrainingModule(pl.LightningModule):
         if hasattr(self, '_epoch_start_time'):
             epoch_time = time.time() - self._epoch_start_time
             self.log("perf/time_per_epoch", epoch_time, on_step=False, on_epoch=True, sync_dist=True)
+        self._log_mu_bins("calib_train", self.train_mae, self.train_calib)
 
     def validation_step(self, batch, batch_idx):
         """
@@ -228,7 +239,7 @@ class TrainingModule(pl.LightningModule):
         trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights)
 
         # Update graded low-mu metrics (per-0.1-bin MAE + calibration)
-        self._update_mu_metrics(path, trav_map, target_trav)
+        self._update_mu_metrics(path, trav_map, target_trav, self.val_mae, self.val_calib)
 
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
@@ -240,8 +251,8 @@ class TrainingModule(pl.LightningModule):
         else:
             loss = trav_loss
 
-        # Visualize results
-        if (batch_idx % self.vis_interval) == 0:
+        # Visualize a fixed set of batches spread across the whole shard
+        if batch_idx in self._val_vis_batches:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
             self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, prefix='valid')
 
@@ -249,11 +260,23 @@ class TrainingModule(pl.LightningModule):
         self.log("valid/trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("valid/trav_error", trav_error, on_step=False, on_epoch=True, sync_dist=True)
         self.log("valid/depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/depth_mae", self._depth_mae(pred_depth, depth_target, depth_mask), on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/mu_spread", self._mu_spread(trav_map), on_step=False, on_epoch=True, sync_dist=True)
 
         return loss
 
+    def on_validation_epoch_start(self):
+        # VIS_INTERVAL can exceed the shard's batch count; the old modulo check then
+        # only ever showed batch 0 (the first windows of the first mission). Spread a
+        # fixed handful of panels across the shard instead.
+        n = self.trainer.num_val_batches[0]
+        if isinstance(n, (int, float)) and np.isfinite(n) and n > 0:
+            self._val_vis_batches = {int(i) for i in np.linspace(0, int(n) - 1, min(4, int(n)))}
+        else:
+            self._val_vis_batches = {0}
+
     @torch.no_grad()
-    def _update_mu_metrics(self, states, trav_map, target_trav):
+    def _update_mu_metrics(self, states, trav_map, target_trav, mae_metrics, calib_metrics):
         """Accumulate per-true-mu-bin MAE and mean predicted mu over valid cells."""
         pred, mask = self._sample_path(states, trav_map)
         mask = mask.bool()
@@ -263,27 +286,32 @@ class TrainingModule(pl.LightningModule):
             lo = b * self.mu_bin_width
             sel = (true_mu >= lo) & (true_mu < lo + self.mu_bin_width)
             if sel.any():
-                self.val_mae[b].update((pred_mu[sel] - true_mu[sel]).abs())
-                self.val_calib[b].update(pred_mu[sel])
+                mae_metrics[b].update((pred_mu[sel] - true_mu[sel]).abs())
+                calib_metrics[b].update(pred_mu[sel])
 
-    def on_validation_epoch_end(self):
-        """Log per-sub-bin MAE, mean predicted mu, and a calibration curve."""
+    def _log_mu_bins(self, prefix, mae_metrics, calib_metrics):
+        """Log per-bin MAE and mean predicted mu; returns (centers, means) for curves."""
         centers, means = [], []
         for b in range(self.n_mu_bins):
             lo = b * self.mu_bin_width
             name = f"{lo:.1f}-{lo + self.mu_bin_width:.1f}"
             # compute() is collective: call for every bin on every rank
-            mae = self.val_mae[b].compute()
-            calib = self.val_calib[b].compute()
-            self.val_mae[b].reset()
-            self.val_calib[b].reset()
+            mae = mae_metrics[b].compute()
+            calib = calib_metrics[b].compute()
+            mae_metrics[b].reset()
+            calib_metrics[b].reset()
             # empty bins compute() to NaN (same on every rank, so logging stays consistent)
             seen = not torch.isnan(calib)
             if seen:
-                self.log(f"calib/mae_mu_{name}", mae, sync_dist=True)
-                self.log(f"calib/mu_{name}", calib, sync_dist=True)
+                self.log(f"{prefix}/mae_mu_{name}", mae, sync_dist=True)
+                self.log(f"{prefix}/mu_{name}", calib, sync_dist=True)
             centers.append(lo + self.mu_bin_width / 2)
             means.append(float(calib) if seen else None)
+        return centers, means
+
+    def on_validation_epoch_end(self):
+        """Log per-sub-bin MAE, mean predicted mu, and a calibration curve."""
+        centers, means = self._log_mu_bins("calib", self.val_mae, self.val_calib)
         self._log_calibration_curve(centers, means)
 
     def _log_calibration_curve(self, centers, means):
@@ -314,8 +342,21 @@ class TrainingModule(pl.LightningModule):
         """
         # Sqrt LR scaling for AdamW: scale with effective batch relative to the tuning reference.
         lr_scale = (self.batchsize * self.trainer.world_size / self.lr_ref_batchsize) ** 0.5
+        lr = self.learning_rate * lr_scale
+        # Pretrained ResNet stages (encoder.backbone / encoder.layer*) at a reduced LR;
+        # the freshly initialized heads and BEV stack at the full LR.
+        pretrained = [
+            p for n, p in self.model.named_parameters()
+            if "encoder.backbone" in n or "encoder.layer" in n
+        ]
+        pretrained_ids = {id(p) for p in pretrained}
+        rest = [p for p in self.model.parameters() if id(p) not in pretrained_ids]
         optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=self.learning_rate * lr_scale, weight_decay=self.weight_decay
+            [
+                {"params": rest, "lr": lr},
+                {"params": pretrained, "lr": lr * self.backbone_lr_factor},
+            ],
+            weight_decay=self.weight_decay,
         )
 
         # Learning rate scheduler: one full cosine decay over the whole run (T_max must
@@ -392,6 +433,25 @@ class TrainingModule(pl.LightningModule):
 
         return traversability, mask.squeeze(1)
     
+    @torch.no_grad()
+    def _depth_mae(self, pred_depth, depth_target, depth_mask):
+        """Masked MAE in metres between argmax-bin and target-bin depth. The depth CE
+        can rise from overconfidence alone; this says whether depth itself drifts."""
+        db = self.grid_bounds['dbound']
+        pred_m = pred_depth.argmax(1).float() * db[2] + db[0]
+        target_m = depth_target.float() * db[2] + db[0]
+        mask = depth_mask > 0
+        if not mask.any():
+            return torch.zeros((), device=pred_depth.device)
+        return (pred_m - target_m).abs()[mask].mean()
+
+    @torch.no_grad()
+    def _mu_spread(self, trav_map):
+        """Scalar measuring spatial variation of the predicted mu maps (B, 2, X, Y).
+        Collapse to a constant output shows up here as ~0, epochs before the per-bin
+        calibration metrics flatten."""
+        return trav_map[:, 0].std(dim=(1, 2)).mean()
+
     def depth_criterion(self, prediction, target, mask):
         """
         Calculate the depth classification loss.

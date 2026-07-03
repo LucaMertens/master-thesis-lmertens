@@ -60,6 +60,9 @@ _C.OPTIMIZER.LR = 1e-4
 # Effective batch (BATCHSIZE * num GPUs) that LR was tuned at; LR is sqrt-scaled from here.
 _C.OPTIMIZER.LR_REF_BATCHSIZE = 12
 _C.OPTIMIZER.WEIGHT_DECAY = 1e-4
+# LR multiplier for the ImageNet-pretrained encoder stages (1.0 = single LR).
+# Lower keeps the pretrained features general instead of memorizing the small dataset.
+_C.OPTIMIZER.BACKBONE_LR_FACTOR = 1.0
 
 _C.DATASET = EasyDict()
 # Directory holding one sub-directory per mission (images, depth, odom, intrinsics, ...).
@@ -90,12 +93,19 @@ _C.DATASET.OVERSAMPLE_MU_MAX = 0.6
 _C.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH = 0.6
 # LDS exponent for the mu loss weight: w = (1/density)^alpha. Higher = more low-mu loss mass.
 _C.DATASET.LDS_ALPHA = 0.75
+# Zero the loss weight of horizon cells not visible in any input frame's camera
+# frustum. Invisible cells are unpredictable from the input; supervising them only
+# pulls predictions toward the label mean (~45% of low-mu cells are invisible).
+_C.DATASET.VISIBILITY_GATE = False
 
 _C.AUGMENTATIONS = EasyDict()
 _C.AUGMENTATIONS.HORIZ_FLIP = 0.5
 _C.AUGMENTATIONS.PCLOUD_DROPOUT = 0.3
 _C.AUGMENTATIONS.MAX_TRANSLATION = 2.0
 _C.AUGMENTATIONS.MAX_ROTATION = 1.5708
+# ColorJitter (brightness, contrast, saturation, hue). Strong photometric jitter can
+# erase the subtle appearance cues (wetness, sheen) that correlate with low mu.
+_C.AUGMENTATIONS.COLOR_JITTER = [0.2, 0.2, 0.2, 0.1]
 
 _C.SEED = 42
 

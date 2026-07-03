@@ -48,6 +48,7 @@ class Dataset(DataLoader.Dataset):
         self.max_translation_aug = configs.AUGMENTATIONS.MAX_TRANSLATION
         self.max_rotation_aug = configs.AUGMENTATIONS.MAX_ROTATION
         self.lds_alpha = configs.DATASET.LDS_ALPHA
+        self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
 
         self.bin_width = 0.1
         self.dtype = torch.float32
@@ -292,6 +293,14 @@ class Dataset(DataLoader.Dataset):
         # general scalar reweighting.
         trav_weights[:, 0] *= mu_observability
         trav_weights[:, 1] *= nu_observability
+
+        # Visibility gate: zero the weight of horizon cells no input frame can see.
+        # They are unpredictable from the input, and their gradient only pulls the
+        # prediction toward the label mean.
+        if self.visibility_gate:
+            trav_weights *= self.visible_states(
+                states, intrinsics_list, extrinsics_list
+            )[:, None]
 
         # Because we have a single camera
         color_img = torch.stack(color_img_list)
@@ -574,6 +583,26 @@ class Dataset(DataLoader.Dataset):
             extrinsics_list.append(extrinsics)
 
         return extrinsics_list
+
+    def visible_states(self, states, intrinsics_list, extrinsics_list):
+        """1.0 per horizon state whose ground point falls inside at least one input
+        frame's frustum (within the dbound depth range), else 0.0. The intrinsics
+        must already be scaled to the input size."""
+        d0, d1 = self.grid_bounds["dbound"][0], self.grid_bounds["dbound"][1]
+        pts = np.column_stack((states[:, :2], np.zeros(len(states))))
+        visible = np.zeros(len(states), dtype=bool)
+        for K, ext in zip(intrinsics_list, extrinsics_list):
+            cam = (pts - ext[:3, 3]) @ ext[:3, :3]
+            z = cam[:, 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                u = K[0, 0] * cam[:, 0] / z + K[0, 2]
+                v = K[1, 1] * cam[:, 1] / z + K[1, 2]
+            visible |= (
+                (z > d0) & (z < d1)
+                & (u >= 0) & (u < self.image_size[0])
+                & (v >= 0) & (v < self.image_size[1])
+            )
+        return visible.astype(np.float64)
 
     def read_pcloud(self, depth_image_list, cam_intrinsics_list, cam_extrinsics_list):
         """

@@ -2,22 +2,24 @@ TAG: 'grandtour'
 
 OPTIMIZER:
     LR: 0.0001
+    LR_REF_BATCHSIZE: 12   # effective batch (BATCHSIZE * GPUs) LR was tuned at; sqrt-scaled from here
     WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 0.1  # pretrained ResNet stages learn 10x slower than the fresh heads
 
 TRAINING:
-    BATCHSIZE: 4
+    BATCHSIZE: 16
     WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
-    DEVICES: -1         # -1 = all GPUs; set e.g. 2 to run on half the machine
-    EPOCHS: 50
+    DEVICES: [1, 2, 3]  # -1 = all GPUs; set e.g. 2 to use N GPUs, or a list like this to pin specific ones
+    EPOCHS: 50          # early stopping (patience 10 on valid/trav_loss) usually ends the run sooner
     VERBOSE: False
     GAMMA: 0.998
-    DEPTH_WEIGHT: 0.1
-    HORIZON: 500        # 50 s at 10 Hz
+    DEPTH_WEIGHT: 0.05  # was 0.1: depth CE dominates the shared encoder gradient ~5x
+    HORIZON: 300        # 30 s at 10 Hz; for 50s, the  tail mostly supervises invisible cells
     DT: 0.1             # matches RHE timestep
     VIS_INTERVAL: 500
 
 MODEL:
-    TIME_LENGTH: 6
+    TIME_LENGTH: 4
     DOWNSAMPLE: 8
     LATENT_DIM: 64
     INPUT_SIZE: [480, 360]   # Alphasense native 1440x1080 (4:3), /3 -> 480x360, /8 divisible
@@ -35,9 +37,14 @@ MODEL:
 DATASET:
     DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
     LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    # local-SSD copy of INPUT_SIZE color images (grandtour_extraction's resize_images.py);
+    # avoids the NFS bottleneck. /datalocal persists across container rebuilds, unlike /home.
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5
-    LDS_ALPHA: 1.0           # full inverse-density weighting (was 0.75)
+    LDS_ALPHA: 0.75          # too high weighting of low-mu events invites memorization
+    VISIBILITY_GATE: True    # zero loss weight of horizon cells no input frame can see
+    OVERSAMPLE_FRACTION: 0.25  # was 0.4: fewer replicas of the same few low-mu events
 
     # OOD-detection split (see documentation/ood_split.md and notebooks/choose_split.ipynb).
     # ID = forest only (natural off-road); a forest-only ID keeps built/snow envs genuinely far.
@@ -56,3 +63,4 @@ AUGMENTATIONS:
     PCLOUD_DROPOUT: 0.3
     MAX_TRANSLATION: 0.5 #m
     MAX_ROTATION: 0.2 #rad
+    COLOR_JITTER: [0.1, 0.1, 0.05, 0.02]  # gentle: strong jitter can erase wetness/sheen cues

@@ -9,6 +9,7 @@ import pytorch_lightning as pl
 import torch
 import torchvision.transforms as transforms
 from pytorch_lightning.callbacks import (
+    EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
     RichProgressBar,
@@ -41,9 +42,10 @@ def main():
 
     pl.seed_everything(configs.SEED, workers=True)
 
+    brightness, contrast, saturation, hue = configs.AUGMENTATIONS.COLOR_JITTER
     transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue),
         transforms.ToTensor(),
     ])
 
@@ -90,6 +92,15 @@ def main():
         save_top_k=-1,  # Save every nth checkpoint, do not check for best.
         every_n_epochs=5,  # Save every 5 epochs
     )
+    # The best epoch can be early (mean-collapse sets in later); keep it separately.
+    best_callback = ModelCheckpoint(
+        dirpath=f"checkpoints/{wandb_logger.experiment.id}",
+        filename="best_{epoch}-{step}",
+        monitor="valid/trav_loss",
+        mode="min",
+        save_top_k=1,
+    )
+    early_stopping = EarlyStopping(monitor="valid/trav_loss", mode="min", patience=10)
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     trainer = pl.Trainer(
@@ -105,7 +116,7 @@ def main():
         check_val_every_n_epoch=1,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
-        callbacks=[checkpoint_callback, lr_monitor, RichProgressBar(leave=True)],
+        callbacks=[checkpoint_callback, best_callback, early_stopping, lr_monitor, RichProgressBar(leave=True)],
     )
 
     trainer.fit(
