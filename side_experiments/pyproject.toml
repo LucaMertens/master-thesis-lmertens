@@ -17,6 +17,7 @@ dependencies = [
     "opencv-python-headless>=4.13.0.92",
     "pandas>=3.0.2",
     "plotly",
+    "scikit-learn>=1.9.0",
 ]
 
 [tool.uv.sources]
