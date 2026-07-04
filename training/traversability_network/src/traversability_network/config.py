@@ -33,6 +33,9 @@ _C.TRAINING.DEPTH_WEIGHT = 0.1
 # slippery terrain traversable costlier than the reverse, pushing uncertain
 # predictions down instead of onto the high-mu mean.
 _C.TRAINING.TRAV_OVERPRED_WEIGHT = 1.0
+# Balanced MSE (BMC, Ren et al. 2022) on the mu term: initial noise sigma of the
+# learnable scale; 0 = off (plain smooth-L1). Changes the trav_loss scale.
+_C.TRAINING.BMC_SIGMA_INIT = 0.0
 _C.TRAINING.VIS_INTERVAL = 500
 _C.TRAINING.VERBOSE = True
 
@@ -100,6 +103,10 @@ _C.DATASET.OVERSAMPLE_MU_MAX = 0.6
 _C.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH = 0.6
 # LDS exponent for the mu loss weight: w = (1/density)^alpha. Higher = more low-mu loss mass.
 _C.DATASET.LDS_ALPHA = 0.75
+# Per train window, append up to this many extra low-mu states (same qualifying rule
+# as oversampling) from anywhere in the bag that fall inside the window's grid.
+# More views per rare low-mu cell; 0 = off.
+_C.DATASET.HARVEST_LOWMU_EXTRA = 0
 # Zero the loss weight of horizon cells not visible in any input frame's camera
 # frustum. Invisible cells are unpredictable from the input; supervising them only
 # pulls predictions toward the label mean (~45% of low-mu cells are invisible).

@@ -37,7 +37,16 @@ class TrainingModule(pl.LightningModule):
         # Get training params
         self.eps = 1e-6
         gamma = torch.tensor([configs.TRAINING.GAMMA**i for i in range(configs.TRAINING.HORIZON)])
+        # Harvested low-mu extras sit past the horizon slots; they are visible
+        # in-grid cells, so no temporal discount.
+        self.path_horizon = configs.TRAINING.HORIZON
+        harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
+        if harvest_extra:
+            gamma = torch.cat([gamma, torch.ones(harvest_extra)])
         self.gamma = nn.Parameter(gamma, requires_grad=False)
+        # Balanced MSE (BMC) noise scale, learnable; None = smooth-L1 mu term
+        bmc_init = getattr(configs.TRAINING, "BMC_SIGMA_INIT", 0.0)
+        self.bmc_sigma = nn.Parameter(torch.tensor(float(bmc_init))) if bmc_init > 0 else None
         self.learning_rate = configs.OPTIMIZER.LR
         self.lr_ref_batchsize = configs.OPTIMIZER.LR_REF_BATCHSIZE
         self.backbone_lr_factor = getattr(configs.OPTIMIZER, "BACKBONE_LR_FACTOR", 1.0)
@@ -365,13 +374,14 @@ class TrainingModule(pl.LightningModule):
         ]
         pretrained_ids = {id(p) for p in pretrained}
         rest = [p for p in self.model.parameters() if id(p) not in pretrained_ids]
-        optimizer = torch.optim.AdamW(
-            [
-                {"params": rest, "lr": lr},
-                {"params": pretrained, "lr": lr * self.backbone_lr_factor},
-            ],
-            weight_decay=self.weight_decay,
-        )
+        groups = [
+            {"params": rest, "lr": lr},
+            {"params": pretrained, "lr": lr * self.backbone_lr_factor},
+        ]
+        if self.bmc_sigma is not None:
+            # single scalar; the BMC reference implementation trains it at ~1e-2
+            groups.append({"params": [self.bmc_sigma], "lr": 1e-2, "weight_decay": 0.0})
+        optimizer = torch.optim.AdamW(groups, weight_decay=self.weight_decay)
 
         # Learning rate scheduler: one full cosine decay over the whole run (T_max must
         # match EPOCHS, else the LR rises back toward its max in the second half).
@@ -439,8 +449,17 @@ class TrainingModule(pl.LightningModule):
         # gradient norm) independent of how much low-mu weight mass a batch happens
         # to contain, so gradient_clip_val doesn't disproportionately clip the rare
         # high-weight batches back down to the common ones.
-        weighted_error = (train_error * weight)[mask, :]
-        loss = weighted_error.sum() / (weight[mask, :].sum() + self.eps)
+        if self.bmc_sigma is not None:
+            # Balanced MSE replaces the mu term; nu keeps its weighted smooth-L1
+            mu_loss = self._bmc_loss(
+                traversability[..., 0], target_trav[..., 0], weight[..., 0] * mask
+            )
+            nu_weight = weight[..., 1][mask]
+            nu_loss = (train_error[..., 1][mask] * nu_weight).sum() / (nu_weight.sum() + self.eps)
+            loss = mu_loss + nu_loss
+        else:
+            weighted_error = (train_error * weight)[mask, :]
+            loss = weighted_error.sum() / (weight[mask, :].sum() + self.eps)
 
         # Error stays smooth-L1 on (mu, nu) in both modes, comparable across runs
         error = torch.mean(error[mask,:])
@@ -459,6 +478,25 @@ class TrainingModule(pl.LightningModule):
         target.scatter_(-1, lo, 1 - frac)
         target.scatter_add_(-1, hi, frac)
         return target
+
+    def _bmc_loss(self, pred, target, weight):
+        """Balanced MSE, BMC variant (Ren et al. 2022): cross-entropy between each
+        prediction and all batch targets under a learnable Gaussian noise scale.
+        The batch targets serve as a Monte Carlo sample of the label distribution,
+        which corrects the mean-seeking bias of plain (smooth) L1/L2 without a
+        precomputed density."""
+        sel = weight > 0
+        pred, target, weight = pred[sel], target[sel], weight[sel]
+        if pred.numel() == 0:
+            return pred.sum()
+        noise_var = self.bmc_sigma.square().clamp_min(1e-4)
+        logits = -(pred[:, None] - target[None, :]).square() / (2 * noise_var)
+        ce = F.cross_entropy(
+            logits, torch.arange(len(pred), device=pred.device), reduction="none"
+        )
+        # detached 2*sigma^2 keeps the loss on the MSE scale as sigma adapts
+        ce = ce * (2 * noise_var).detach()
+        return (ce * weight).sum() / (weight.sum() + self.eps)
 
     def _sample_path(self, states, trav_map):
         """Sample the predicted traversability map along the path states.
@@ -521,7 +559,9 @@ class TrainingModule(pl.LightningModule):
 
     @torch.no_grad()
     def _draw_bev_path(self, rgb, path):
-        """Draw the base-frame path (H, >=2) onto a BEV RGB image (in place)."""
+        """Draw the base-frame path (H, >=2) onto a BEV RGB image (in place).
+        Harvested extras past the horizon slots are scattered points, not path."""
+        path = path[: self.path_horizon]
         p = path[torch.isfinite(path[:, 0])].cpu().numpy()
         if len(p) == 0:
             return

@@ -49,6 +49,7 @@ class Dataset(DataLoader.Dataset):
         self.max_rotation_aug = configs.AUGMENTATIONS.MAX_ROTATION
         self.lds_alpha = configs.DATASET.LDS_ALPHA
         self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
+        self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
 
         self.bin_width = 0.1
         self.dtype = torch.float32
@@ -310,14 +311,16 @@ class Dataset(DataLoader.Dataset):
         depth_mask = np.stack(depth_mask_list)
 
         # Pad states, traversability and weights in case they are short
-        pad = np.ones([self.horizon - states.shape[0], states.shape[1]]) * np.inf
+        # (total length includes the harvested low-mu slots, empty when unused)
+        total = self.horizon + self.harvest_extra
+        pad = np.ones([total - states.shape[0], states.shape[1]]) * np.inf
         states = np.concatenate((states, pad))
         pad = np.zeros([
-            self.horizon - traversability.shape[0],
+            total - traversability.shape[0],
             traversability.shape[1],
         ])
         traversability = np.concatenate((traversability, pad))
-        pad = np.zeros([self.horizon - trav_weights.shape[0], trav_weights.shape[1]])
+        pad = np.zeros([total - trav_weights.shape[0], trav_weights.shape[1]])
         trav_weights = np.concatenate((trav_weights, pad))
 
         # Attribute data type
@@ -517,12 +520,60 @@ class Dataset(DataLoader.Dataset):
 
         states = np.hstack((position[:, :2], euler_angle[:, 0:1], action))
 
+        # Harvest: extra low-mu states from anywhere in the bag that land inside
+        # this window's grid, so each rare low-mu cell is supervised from every
+        # window that can see it, not only along the 30s future path.
+        if self.train and self.harvest_extra and len(rosbag_dict.get("lowmu_idx", ())):
+            extra = self._harvest_lowmu(
+                rosbag_dict, timestamps, curr_position, heading_rot, aug_transformation
+            )
+            if extra is not None:
+                states = np.concatenate((states, extra[0]))
+                traversability = np.concatenate((traversability, extra[1]))
+                mu_observability = np.concatenate((mu_observability, extra[2]))
+                nu_observability = np.concatenate((nu_observability, extra[3]))
+
         if horizontal_flip:
             states[:, 1] = -states[:, 1]
             states[:, 2] = -states[:, 2]
             states[:, 4] = -states[:, 4]
 
         return states, traversability, mu_observability, nu_observability
+
+    def _harvest_lowmu(self, rosbag_dict, timestamps, curr_position, heading_rot, aug):
+        """Low-mu states of the bag outside this window's horizon, transformed to the
+        anchor frame and filtered to the grid. The visibility gate downstream still
+        decides whether an input frame actually sees them."""
+        st = np.asarray(rosbag_dict["states_timestamp"])
+        idx = rosbag_dict["lowmu_idx"]
+        on_path = (st[idx] >= timestamps[0]) & (st[idx] <= timestamps[-1])
+        idx = idx[~on_path]
+        if len(idx) == 0:
+            return None
+        position = np.asarray(rosbag_dict["position"])[idx]
+        position = (heading_rot.inv().as_matrix() @ (position - curr_position).T).T
+        position = (aug[:3, :3] @ position.T).T + aug[:3, 3]
+        xb, yb = self.grid_bounds["xbound"], self.grid_bounds["ybound"]
+        inside = (
+            (position[:, 0] >= xb[0]) & (position[:, 0] < xb[1])
+            & (position[:, 1] >= yb[0]) & (position[:, 1] < yb[1])
+        )
+        idx, position = idx[inside], position[inside]
+        if len(idx) == 0:
+            return None
+        if len(idx) > self.harvest_extra:
+            pick = np.random.choice(len(idx), self.harvest_extra, replace=False)
+            idx, position = idx[pick], position[pick]
+        yaw = R.from_quat(np.asarray(rosbag_dict["quaternion"])[idx]).as_euler("zyx")[:, :1]
+        yaw = yaw + np.arctan2(aug[1, 0], aug[0, 0])
+        action = np.asarray(rosbag_dict["action"])[idx]
+        states = np.hstack((position[:, :2], yaw, action))
+        return (
+            states,
+            np.asarray(rosbag_dict["traversability"])[idx],
+            np.asarray(rosbag_dict["mu_observability"])[idx],
+            np.asarray(rosbag_dict["nu_observability"])[idx],
+        )
 
     def get_extrinsics(
         self, rosbag_dict, image_timestamp, cam2base_list, horizontal_flip=False

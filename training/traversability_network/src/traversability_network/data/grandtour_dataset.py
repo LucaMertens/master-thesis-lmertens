@@ -91,6 +91,7 @@ class GrandTourDataset(Dataset):
         self.os_obs_min = configs.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH
         self.lds_alpha = configs.DATASET.LDS_ALPHA
         self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
+        self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
 
         self.rosbags = []
         self.bag_sizes = [0]
@@ -100,6 +101,11 @@ class GrandTourDataset(Dataset):
             rhe_dir = os.path.join(self.labels_root, mission, "rhe")
             for segment in self.read_mission(mission_dir, rhe_dir):
                 if len(segment["image_timestamp"]) >= self.n_frames:
+                    mu = np.asarray(segment["traversability"])[:, 0]
+                    obs = np.asarray(segment["mu_observability"])
+                    segment["lowmu_idx"] = np.flatnonzero(
+                        (mu <= self.os_mu_max) & (obs >= self.os_obs_min)
+                    )
                     self.rosbags.append(segment)
                     self.bag_sizes.append(
                         self.bag_sizes[-1]
