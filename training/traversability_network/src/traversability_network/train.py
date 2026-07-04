@@ -43,11 +43,16 @@ def main():
     pl.seed_everything(configs.SEED, workers=True)
 
     brightness, contrast, saturation, hue = configs.AUGMENTATIONS.COLOR_JITTER
-    transform = transforms.Compose([
+    steps = [
         transforms.ToPILImage(),
         transforms.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue),
         transforms.ToTensor(),
-    ])
+    ]
+    if configs.AUGMENTATIONS.BLUR_PROB > 0:
+        steps.insert(2, transforms.RandomApply(
+            [transforms.GaussianBlur(5, sigma=(0.1, 1.5))], p=configs.AUGMENTATIONS.BLUR_PROB
+        ))
+    transform = transforms.Compose(steps)
 
     train_dataset = GrandTourDataset(
         configs, configs.DATASET.TRAIN_MISSIONS, transform=transform, train=True
@@ -77,10 +82,14 @@ def main():
 
     if configs.MODEL.LOAD_NETWORK is not None:
         print("Loading saved network from {}".format(configs.MODEL.LOAD_NETWORK))
-        pretrained_dict = torch.load(configs.MODEL.LOAD_NETWORK, map_location="cpu")[
-            "state_dict"
-        ]
-        model.load_state_dict(pretrained_dict)
+        # weights_only=False: our own checkpoints carry EasyDict hparams.
+        # strict=False: older checkpoints lack newer metric buffers (e.g. val_*_vis).
+        pretrained_dict = torch.load(
+            configs.MODEL.LOAD_NETWORK, map_location="cpu", weights_only=False
+        )["state_dict"]
+        missing, unexpected = model.load_state_dict(pretrained_dict, strict=False)
+        if missing or unexpected:
+            print(f"  non-strict load: missing={missing} unexpected={unexpected}")
 
     wandb_logger = WandbLogger(project="master-thesis-lmertens", log_model=False)
 

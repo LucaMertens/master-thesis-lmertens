@@ -1,0 +1,65 @@
+# Short low-mu-focused fine-tune from the hxf3z45m best checkpoint (epoch 33).
+# vs grandtour.yaml: asymmetric trav loss (optimistic errors 2x), stronger geometric
+# aug + blur, more low-mu emphasis, low LR, near-frozen pretrained encoder stages.
+# Goal: pull visible low-mu predictions down from the ~0.83 constant (see calib_vis/*).
+TAG: 'grandtour'
+
+OPTIMIZER:
+    LR: 0.00003
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 0.02  # pretrained stages essentially frozen
+
+TRAINING:
+    BATCHSIZE: 16
+    WORKERS: 12
+    DEVICES: [1, 2, 3]
+    EPOCHS: 15
+    VERBOSE: False
+    GAMMA: 0.998
+    DEPTH_WEIGHT: 0.05
+    TRAV_OVERPRED_WEIGHT: 2.0  # calling slippery terrain traversable costs double
+    HORIZON: 300
+    DT: 0.1
+    VIS_INTERVAL: 500
+
+MODEL:
+    LOAD_NETWORK: 'checkpoints/hxf3z45m/best_epoch=33-step=32334.ckpt'
+    TIME_LENGTH: 4             # must match the loaded checkpoint
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    LDS_ALPHA: 0.75
+    VISIBILITY_GATE: True
+    OVERSAMPLE_FRACTION: 0.4   # more low-mu exposure than the base run's 0.25
+
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'HOEB-1', 'LMB-1', 'RIV-1', 'TRIM-1', 'HIL-1', 'KAEB-2', 'KAEB-3']
+    VALID_MISSIONS: ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    TEST_MISSIONS:  ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    NEAR_OOD_MISSIONS: ['KAEB-1', 'ROOT-1', 'EIG-1', 'EIG-2', 'PIL-2']
+    FAR_OOD_MISSIONS: ['SNOW-1', 'SNOW-2', 'SNOW-3', 'ARC-1', 'ARC-2', 'ARC-3', 'ARC-4']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 1.5 #m    (was 0.5: BEV decorrelation, gate keeps supervision honest)
+    MAX_ROTATION: 0.7 #rad     (was 0.2)
+    COLOR_JITTER: [0.1, 0.1, 0.05, 0.02]
+    BLUR_PROB: 0.3

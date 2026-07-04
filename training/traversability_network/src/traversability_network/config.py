@@ -29,6 +29,10 @@ _C.TRAINING.DT = 0.1  # time step in seconds
 _C.TRAINING.HORIZON = 300  # horizon in number of points
 _C.TRAINING.GAMMA = 0.998
 _C.TRAINING.DEPTH_WEIGHT = 0.1
+# Extra penalty on optimistic errors (predicted trav > label). >1 makes calling
+# slippery terrain traversable costlier than the reverse, pushing uncertain
+# predictions down instead of onto the high-mu mean.
+_C.TRAINING.TRAV_OVERPRED_WEIGHT = 1.0
 _C.TRAINING.VIS_INTERVAL = 500
 _C.TRAINING.VERBOSE = True
 
@@ -46,6 +50,9 @@ _C.MODEL.FUSE_PCLOUD = True
 # Higher = cheaper voxelize, but thins far-field occupancy (see check_voxel_downscale.py).
 _C.MODEL.VOXEL_DEPTH_DOWNSAMPLE = 1
 _C.MODEL.INPUT_SIZE = [480, 360]  # (W, H); Alphasense native is 1440x1080 (4:3)
+# Mu head: 0 = sigmoid regression (WayFASTER default); K > 0 = categorical
+# distribution over K mu bins trained with soft two-hot CE, expectation readout.
+_C.MODEL.MU_BINS = 0
 _C.MODEL.LABEL_COLUMNS = [0, 1]  # columns of rhe_trav_labels.npy used as (mu, nu)
 _C.MODEL.GRID_BOUNDS = {
     "xbound": [-2.0, 8.0, 0.1],
@@ -106,6 +113,8 @@ _C.AUGMENTATIONS.MAX_ROTATION = 1.5708
 # ColorJitter (brightness, contrast, saturation, hue). Strong photometric jitter can
 # erase the subtle appearance cues (wetness, sheen) that correlate with low mu.
 _C.AUGMENTATIONS.COLOR_JITTER = [0.2, 0.2, 0.2, 0.1]
+# Probability of Gaussian blur per frame (robustness to focus/motion blur).
+_C.AUGMENTATIONS.BLUR_PROB = 0.0
 
 _C.SEED = 42
 

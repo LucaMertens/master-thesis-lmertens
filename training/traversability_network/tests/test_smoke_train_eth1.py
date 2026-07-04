@@ -93,7 +93,7 @@ def _mean_trav_error(model, loader, device):
     for batch in loader:
         batch = [x.to(device) for x in batch]
         color, pcloud, K_full, K, ext, path, target, weights, depth_t, depth_m = batch
-        trav_map, _, _ = model.model(color, pcloud, K_full, K, ext, depth_t)
+        trav_map, _, _, _ = model.model(color, pcloud, K_full, K, ext, depth_t)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)
         n += 1

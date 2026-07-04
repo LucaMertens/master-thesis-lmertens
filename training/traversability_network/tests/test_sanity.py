@@ -59,7 +59,7 @@ def _mean_trav_error(model, loader, device):
     for batch in loader:
         batch = [x.to(device) for x in batch]
         color, pcloud, K, ext, path, target, weights, depth_t, _ = batch
-        trav_map, _, _ = model.model(color, pcloud, K, ext, depth_t)
+        trav_map, _, _, _ = model.model(color, pcloud, K, ext, depth_t)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)
         n += 1
@@ -249,7 +249,7 @@ def test_forward_backward_finite():
     color, pcloud, K, ext, path, target, weights, depth_t, depth_m = [
         x.to(device) for x in batch
     ]
-    trav_map, pred_depth, _ = model.model(color, pcloud, K, ext, depth_t)
+    trav_map, _, pred_depth, _ = model.model(color, pcloud, K, ext, depth_t)
     trav_loss, _ = model.trav_criterion(path, trav_map, target, weights)
     depth_loss = model.depth_criterion(
         pred_depth,

@@ -44,6 +44,8 @@ class TrainingModule(pl.LightningModule):
         self.batchsize = configs.TRAINING.BATCHSIZE
         self.weight_decay = configs.OPTIMIZER.WEIGHT_DECAY
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
+        self.overpred_weight = getattr(configs.TRAINING, "TRAV_OVERPRED_WEIGHT", 1.0)
+        self.mu_head_bins = getattr(configs.MODEL, "MU_BINS", 0)
         self.epochs = configs.TRAINING.EPOCHS
         
         # Depth training
@@ -61,7 +63,8 @@ class TrainingModule(pl.LightningModule):
             temporal_length=configs.MODEL.TIME_LENGTH,
             predict_depth=configs.MODEL.PREDICT_DEPTH,
             fuse_pcloud=configs.MODEL.FUSE_PCLOUD,
-            voxel_downsample=configs.MODEL.VOXEL_DEPTH_DOWNSAMPLE
+            voxel_downsample=configs.MODEL.VOXEL_DEPTH_DOWNSAMPLE,
+            mu_bins=self.mu_head_bins
         )
 
         # Convert to channels_last to avoid DDP bucket stride mismatch warnings
@@ -112,6 +115,11 @@ class TrainingModule(pl.LightningModule):
         # flat) and global collapse (both flat) are different failures.
         self.train_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
         self.train_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+        # calib/* counts every in-grid path cell, including ones no input frame can
+        # see; calib_vis/* restricts to cells with nonzero loss weight (visible and
+        # observable), i.e. the cells the network can actually be expected to predict.
+        self.val_mae_vis = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+        self.val_calib_vis = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
 
     def prepare_data(self):
         """Called exactly once per node by PyTorch Lightning to prepare data."""
@@ -166,10 +174,10 @@ class TrainingModule(pl.LightningModule):
                 depth_voxel[drop] = 0
 
         # Forward pass
-        trav_map, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
+        trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
 
         # Calculate traversability loss
-        trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights)
+        trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
 
         # Update graded low-mu metrics on train batches (logged at epoch end)
         self._update_mu_metrics(path, trav_map, target_trav, self.train_mae, self.train_calib)
@@ -233,13 +241,14 @@ class TrainingModule(pl.LightningModule):
         color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask = batch
 
         # Forward pass
-        trav_map, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
+        trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
 
         # Calculate traversability loss
-        trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights)
+        trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
 
         # Update graded low-mu metrics (per-0.1-bin MAE + calibration)
         self._update_mu_metrics(path, trav_map, target_trav, self.val_mae, self.val_calib)
+        self._update_mu_metrics(path, trav_map, target_trav, self.val_mae_vis, self.val_calib_vis, weights=trav_weights)
 
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
@@ -276,10 +285,14 @@ class TrainingModule(pl.LightningModule):
             self._val_vis_batches = {0}
 
     @torch.no_grad()
-    def _update_mu_metrics(self, states, trav_map, target_trav, mae_metrics, calib_metrics):
-        """Accumulate per-true-mu-bin MAE and mean predicted mu over valid cells."""
+    def _update_mu_metrics(self, states, trav_map, target_trav, mae_metrics, calib_metrics, weights=None):
+        """Accumulate per-true-mu-bin MAE and mean predicted mu over valid cells.
+        With ``weights``, only cells carrying loss weight count (visibility and
+        observability gates)."""
         pred, mask = self._sample_path(states, trav_map)
         mask = mask.bool()
+        if weights is not None:
+            mask = mask & (weights[..., 0] > 0)
         pred_mu = pred[..., 0][mask]
         true_mu = target_trav[..., 0][mask]
         for b in range(self.n_mu_bins):
@@ -312,6 +325,7 @@ class TrainingModule(pl.LightningModule):
     def on_validation_epoch_end(self):
         """Log per-sub-bin MAE, mean predicted mu, and a calibration curve."""
         centers, means = self._log_mu_bins("calib", self.val_mae, self.val_calib)
+        self._log_mu_bins("calib_vis", self.val_mae_vis, self.val_calib_vis)
         self._log_calibration_curve(centers, means)
 
     def _log_calibration_curve(self, centers, means):
@@ -386,7 +400,7 @@ class TrainingModule(pl.LightningModule):
                 )
             optimizer.zero_grad(set_to_none=True)
 
-    def trav_criterion(self, states, trav_map, target_trav, target_weights):
+    def trav_criterion(self, states, trav_map, target_trav, target_weights, mu_logits=None):
         """
         Calculate the traversability loss.
 
@@ -395,6 +409,8 @@ class TrainingModule(pl.LightningModule):
             trav_map (torch.Tensor): Tensor containing the traversability map.
             target_trav (torch.Tensor): Tensor containing the target traversability.
             target_weights (torch.Tensor): Tensor containing the target weights.
+            mu_logits (torch.Tensor, optional): Mu bin logits (B, K, X, Y); replaces
+                the mu regression term with a binned cross-entropy.
 
         Returns:
             tuple: Tuple containing the loss and the error.
@@ -405,18 +421,44 @@ class TrainingModule(pl.LightningModule):
         # Calculate loss
         gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
         error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.5)
+        # Binned mu head: cross-entropy against a soft two-hot target instead of
+        # regressing the expectation; nu keeps its smooth-L1 term.
+        train_error = error
+        if mu_logits is not None:
+            logits, _ = self._sample_path(states, mu_logits)
+            ce = -(self._mu_two_hot(target_trav[..., 0]) * logits.log_softmax(-1)).sum(-1)
+            train_error = torch.stack([ce, error[..., 1]], dim=-1)
+        # Asymmetric penalty: optimistic errors (predicting traversable where the
+        # label says slippery) cost overpred_weight times more. For the binned head
+        # the indicator uses the expected mu.
+        if self.overpred_weight != 1.0:
+            over = (traversability > target_trav).detach().to(error.dtype)
+            train_error = train_error * (1 + (self.overpred_weight - 1) * over)
         weight = target_weights * gamma
         # Weighted average, not weighted sum/count: keeps the loss scale (and its
         # gradient norm) independent of how much low-mu weight mass a batch happens
         # to contain, so gradient_clip_val doesn't disproportionately clip the rare
         # high-weight batches back down to the common ones.
-        weighted_error = (error * weight)[mask, :]
+        weighted_error = (train_error * weight)[mask, :]
         loss = weighted_error.sum() / (weight[mask, :].sum() + self.eps)
 
-        # Calculate error
+        # Error stays smooth-L1 on (mu, nu) in both modes, comparable across runs
         error = torch.mean(error[mask,:])
 
         return loss, error
+
+    def _mu_two_hot(self, mu):
+        """Soft two-hot encoding of continuous mu over the K bin centers."""
+        K = self.mu_head_bins
+        x = (mu * K - 0.5).clamp(0, K - 1)
+        lo = x.floor()
+        frac = (x - lo).unsqueeze(-1)
+        lo = lo.long().unsqueeze(-1)
+        hi = (lo + 1).clamp(max=K - 1)
+        target = torch.zeros(*mu.shape, K, device=mu.device, dtype=mu.dtype)
+        target.scatter_(-1, lo, 1 - frac)
+        target.scatter_add_(-1, hi, frac)
+        return target
 
     def _sample_path(self, states, trav_map):
         """Sample the predicted traversability map along the path states.

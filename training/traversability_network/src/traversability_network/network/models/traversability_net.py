@@ -22,7 +22,7 @@ class TravNet(nn.Module):
     def __init__(
             self, grid_bounds, input_size, downsample=8,
             image_dim=64, temporal_length=3, predict_depth=True,
-            fuse_pcloud=True, voxel_downsample=1
+            fuse_pcloud=True, voxel_downsample=1, mu_bins=0
         ):
         super(TravNet, self).__init__()
 
@@ -32,6 +32,7 @@ class TravNet(nn.Module):
         self.downsample     = downsample     # Due to the encoder
         self.predict_depth  = predict_depth
         self.fuse_pcloud    = fuse_pcloud
+        self.mu_bins        = mu_bins        # 0 = sigmoid regression head
         self.voxel_downsample = voxel_downsample  # nearest-subsample depth before voxelizing
         self.eps            = 1e-6
         
@@ -86,13 +87,19 @@ class TravNet(nn.Module):
         # Bird's eye view decoder
         self.decoder = Decoder(in_channels=self.latent_dim)
         
-        # Traversability map head
-        self.travmap_head = nn.Sequential(
+        # Traversability map head: either 2 sigmoid channels (mu, nu) or, with
+        # mu_bins > 0, a categorical distribution over mu bins plus a sigmoid nu.
+        head_layers = [
             nn.Conv2d(self.latent_dim, self.latent_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(self.latent_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(self.latent_dim, 2, kernel_size=1, padding=0),
-            nn.Sigmoid())
+            nn.Conv2d(self.latent_dim, (self.mu_bins + 1) if self.mu_bins else 2, kernel_size=1, padding=0)]
+        if not self.mu_bins:
+            head_layers.append(nn.Sigmoid())
+        self.travmap_head = nn.Sequential(*head_layers)
+        if self.mu_bins:
+            centers = (torch.arange(self.mu_bins, dtype=torch.float) + 0.5) / self.mu_bins
+            self.mu_centers = nn.Parameter(centers, requires_grad=False)
     
     def create_voxels(self):
         """
@@ -240,6 +247,7 @@ class TravNet(nn.Module):
         Returns:
             tuple: A tuple containing:
                 - trav_map (torch.Tensor): Traversability map of shape (B, 2, X, Y).
+                - mu_logits (torch.Tensor or None): Mu bin logits (B, mu_bins, X, Y), None for the regression head.
                 - depth_logits (torch.Tensor): Predicted depth logits of shape (B*T, D, H, W).
                 - debug (torch.Tensor): Debug information tensor.
         """
@@ -296,6 +304,12 @@ class TravNet(nn.Module):
         bev_features = self.decoder(x)
         
         # Calculate traversability map
-        trav_map = self.travmap_head(bev_features)
+        out = self.travmap_head(bev_features)
+        if self.mu_bins:
+            mu_logits = out[:, :self.mu_bins]
+            mu = (mu_logits.softmax(1) * self.mu_centers.view(1, -1, 1, 1)).sum(1, keepdim=True)
+            trav_map = torch.cat([mu, out[:, self.mu_bins:].sigmoid()], dim=1)
+        else:
+            trav_map, mu_logits = out, None
 
-        return trav_map, depth_logits, debug
+        return trav_map, mu_logits, depth_logits, debug
