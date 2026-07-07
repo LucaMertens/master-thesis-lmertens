@@ -92,6 +92,7 @@ class GrandTourDataset(Dataset):
         self.lds_alpha = configs.DATASET.LDS_ALPHA
         self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
         self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
+        self.harvest_time_window = getattr(configs.DATASET, "HARVEST_TIME_WINDOW", 0.0)
 
         self.rosbags = []
         self.bag_sizes = [0]
