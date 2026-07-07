@@ -4,6 +4,8 @@
 #   - Train/valid sets built from configs.DATASET.TRAIN_MISSIONS / VALID_MISSIONS.
 #   - TrainingModule (trainer.py) is reused unchanged.
 import argparse
+import os
+import tempfile
 
 import pytorch_lightning as pl
 import torch
@@ -22,6 +24,9 @@ from .config import get_cfg
 from .data.grandtour_dataset import GrandTourDataset
 from .network.trainer import TrainingModule
 
+# Big-storage volume; home NFS is small and shared, it fills up mid-run.
+CKPT_BASE = "/datahome/lmertens/checkpoints"
+
 
 def parse_config():
     parser = argparse.ArgumentParser(description="arg parser")
@@ -33,6 +38,14 @@ def parse_config():
 
 
 def main():
+    # Checkpoint atomic-save stages to a tempfile then renames into CKPT_BASE.
+    # Default /tmp is a different device, so the rename crosses devices and fails
+    # (Errno 18). Keep the temp on the same fs as the checkpoints.
+    ckpt_tmp = os.path.join(CKPT_BASE, ".tmp")
+    os.makedirs(ckpt_tmp, exist_ok=True)
+    os.environ["TMPDIR"] = ckpt_tmp
+    tempfile.tempdir = ckpt_tmp
+
     torch.set_float32_matmul_precision("high")
     # Fixed input shapes (drop_last) -> let cudnn autotune the conv algorithms.
     torch.backends.cudnn.benchmark = True
@@ -94,7 +107,7 @@ def main():
     wandb_logger = WandbLogger(project="master-thesis-lmertens", log_model=False)
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"checkpoints/{wandb_logger.experiment.id}",
+        dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",
         filename="checkpoint_{epoch}-{step}",
         monitor="valid/loss",
         save_last=True,
@@ -103,7 +116,7 @@ def main():
     )
     # The best epoch can be early (mean-collapse sets in later); keep it separately.
     best_callback = ModelCheckpoint(
-        dirpath=f"checkpoints/{wandb_logger.experiment.id}",
+        dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",
         filename="best_{epoch}-{step}",
         monitor="valid/trav_loss",
         mode="min",
@@ -120,7 +133,7 @@ def main():
         enable_model_summary=True,
         accelerator="gpu",
         logger=wandb_logger,
-        default_root_dir="checkpoints",
+        default_root_dir=CKPT_BASE,
         max_epochs=configs.TRAINING.EPOCHS,
         check_val_every_n_epoch=1,
         precision=configs.TRAINING.PRECISION,

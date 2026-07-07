@@ -107,6 +107,9 @@ _C.DATASET.LDS_ALPHA = 0.75
 # as oversampling) from anywhere in the bag that fall inside the window's grid.
 # More views per rare low-mu cell; 0 = off.
 _C.DATASET.HARVEST_LOWMU_EXTRA = 0
+# Only harvest low-mu states within this many seconds of the window's current time.
+# Bounds how far the anchor-frame transform extrapolates the odometry; 0 = unlimited.
+_C.DATASET.HARVEST_TIME_WINDOW = 0.0
 # Zero the loss weight of horizon cells not visible in any input frame's camera
 # frustum. Invisible cells are unpredictable from the input; supervising them only
 # pulls predictions toward the label mean (~45% of low-mu cells are invisible).

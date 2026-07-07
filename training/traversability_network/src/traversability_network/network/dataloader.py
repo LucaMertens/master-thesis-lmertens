@@ -50,6 +50,7 @@ class Dataset(DataLoader.Dataset):
         self.lds_alpha = configs.DATASET.LDS_ALPHA
         self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
         self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
+        self.harvest_time_window = getattr(configs.DATASET, "HARVEST_TIME_WINDOW", 0.0)
 
         self.bin_width = 0.1
         self.dtype = torch.float32
@@ -548,6 +549,9 @@ class Dataset(DataLoader.Dataset):
         idx = rosbag_dict["lowmu_idx"]
         on_path = (st[idx] >= timestamps[0]) & (st[idx] <= timestamps[-1])
         idx = idx[~on_path]
+        if self.harvest_time_window > 0:
+            in_window = np.abs(st[idx] - timestamps[0]) <= self.harvest_time_window
+            idx = idx[in_window]
         if len(idx) == 0:
             return None
         position = np.asarray(rosbag_dict["position"])[idx]
