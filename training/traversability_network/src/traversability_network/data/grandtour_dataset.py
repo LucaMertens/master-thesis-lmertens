@@ -11,6 +11,7 @@ Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
     cam2base.npy         (4, 4)  front_center, from extract_alphasense.py
     intrinsics.npy       (3, 3)  front_center K, from extract_alphasense.py
     dlio_odom.npy        (M, 8)  t, x, y, z, qx, qy, qz, qw (base in dlio_map, ground-truth pose), from extract_dlio.py
+    ground_z.npy         (M, 2)  t, gravity-aligned base-to-ground offset (~-0.55), from extract_feet.py
     image_manifest.npz   front_center structured array {ts_ns, path}
     depth_manifest.npz   structured array {ts_ns, path} (FoundationStereo output)
 
@@ -23,7 +24,7 @@ interpolated to the RHE timestamps, NOT from rhe_states.npy (the RHE state
 estimate, an optimization byproduct).
 
 Mapping to WayFASTER's rosbag_dict:
-    position       <- dlio (x, y, 0) interpolated to RHE timestamps
+    position       <- dlio (x, y, z) interpolated to RHE timestamps
     quaternion     <- dlio orientation slerped to RHE timestamps (x, y, z, w)
     action         <- finite-difference (v, omega) from dlio position and yaw
     traversability <- trav_labels[:, LABEL_COLUMNS]
@@ -293,9 +294,18 @@ class GrandTourDataset(Dataset):
         odom_pos, quaternion = self._interp_odom(odom, timestamp)
         x, y = odom_pos[:, 0], odom_pos[:, 1]
         theta = R.from_quat(quaternion).as_euler("zyx")[:, 0]
-        position = np.column_stack((x, y, np.zeros_like(x)))
+        position = odom_pos
         action = self._finite_diff_action(x, y, theta, timestamp)
         traversability = trav[:, self.label_columns]
+
+        # Ground below the base from stance-feet kinematics (extract_feet.py)
+        ground_path = os.path.join(mission_dir, "ground_z.npy")
+        if os.path.exists(ground_path):
+            gz = np.load(ground_path)
+            ground_z = np.interp(timestamp, gz[:, 0], gz[:, 1])
+        else:
+            print(f"  WARNING: {ground_path} missing, assuming ground 0.55 m below base")
+            ground_z = np.full_like(timestamp, -0.55)
 
         # ---- images (front_center) ----
         manifest = np.load(os.path.join(mission_dir, "image_manifest.npz"))
@@ -336,6 +346,7 @@ class GrandTourDataset(Dataset):
                 "states_timestamp": list(timestamp),
                 "position": position,
                 "quaternion": quaternion,
+                "ground_z": ground_z,
                 "action": action,
                 "traversability": traversability,
                 "mu_observability": mu_observability,

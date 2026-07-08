@@ -132,8 +132,8 @@ class Dataset(DataLoader.Dataset):
                     camera's intrinsics matrix.
                 extrinsics: torch.Tensor<float> (4, 4)
                     6 DoF pose from world coordinates to camera coordinates.
-                states: torch.Tensor<float> (300, 5)
-                    array containing (x, y, theta, v. omega)
+                states: torch.Tensor<float> (300, 6)
+                    array containing (x, y, theta, v, omega, ground z)
                 traversability: torch.Tensor<float> (300, 2)
                     array containing (mu, nu)
         """
@@ -536,7 +536,18 @@ class Dataset(DataLoader.Dataset):
             aug_transformation[1, 0], aug_transformation[0, 0]
         )
 
-        states = np.hstack((position[:, :2], euler_angle[:, 0:1], action))
+        # Ground height at each state in the anchor frame: relative base z plus the
+        # base-to-ground offset from the stance feet. Flip and the yaw-only aug leave
+        # z untouched. z=0 itself is the base origin, ~0.55 m above the ground.
+        if "ground_z" in rosbag_dict:
+            ground = np.asarray(rosbag_dict["ground_z"])[sync]
+        else:
+            ground = np.zeros(len(sync))
+        ground = position[:, 2] + ground
+
+        states = np.hstack(
+            (position[:, :2], euler_angle[:, 0:1], action, ground[:, None])
+        )
 
         # Harvest: extra low-mu states from anywhere in the bag that land inside
         # this window's grid, so each rare low-mu cell is supervised from every
@@ -593,7 +604,12 @@ class Dataset(DataLoader.Dataset):
             yaw = -yaw
         yaw = yaw + np.arctan2(aug[1, 0], aug[0, 0])
         action = np.asarray(rosbag_dict["action"])[idx]
-        states = np.hstack((position[:, :2], yaw, action))
+        if "ground_z" in rosbag_dict:
+            ground = np.asarray(rosbag_dict["ground_z"])[idx]
+        else:
+            ground = np.zeros(len(idx))
+        ground = position[:, 2] + ground
+        states = np.hstack((position[:, :2], yaw, action, ground[:, None]))
         return (
             states,
             np.asarray(rosbag_dict["traversability"])[idx],
@@ -668,7 +684,7 @@ class Dataset(DataLoader.Dataset):
         frame's frustum (within the dbound depth range), else 0.0. The intrinsics
         must already be scaled to the input size."""
         d0, d1 = self.grid_bounds["dbound"][0], self.grid_bounds["dbound"][1]
-        pts = np.column_stack((states[:, :2], np.zeros(len(states))))
+        pts = np.column_stack((states[:, :2], states[:, 5]))
         visible = np.zeros(len(states), dtype=bool)
         for K, ext in zip(intrinsics_list, extrinsics_list):
             cam = (pts - ext[:3, 3]) @ ext[:3, :3]

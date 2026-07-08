@@ -23,9 +23,12 @@ TRAINING:
     HORIZON: 300        # 30 s at 10 Hz; for 50s, the  tail mostly supervises invisible cells
     DT: 0.1             # matches RHE timestep
     VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True  # label mu + gates on camera/BEV panels
+    DEBUG_VIS_GEOM: True    # path reprojected into every input frame
+    DEBUG_VIS_DEPTH: True   # input depth blended over the anchor RGB
 
 MODEL:
-    TIME_LENGTH: 4
+    TIME_LENGTH: 6
     DOWNSAMPLE: 8
     LATENT_DIM: 64
     INPUT_SIZE: [480, 360]   # Alphasense native 1440x1080 (4:3), /3 -> 480x360, /8 divisible
@@ -37,14 +40,14 @@ MODEL:
     GRID_BOUNDS: {
         'xbound': [-2.0, 8.0, 0.1],
         'ybound': [-5.0, 5.0, 0.1],
-        'zbound': [-1.5, 1.5, 0.2],   # ANYmal is lower, uneven terrain
+        'zbound': [-2.0, 2.6, 0.2],   # was [-1.5, 1.5]: base origin sits ~0.55 m above ground and slopes reach +-2 m
+                                      # within the grid; span must divide by 0.2 (2.5 - -2.0 = 22.5 bins crashes create_voxels)
         'dbound': [ 0.3, 8.0, 0.2]}
 
 DATASET:
     DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
     LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
-    # local-SSD copy of INPUT_SIZE color images (grandtour_extraction's resize_images.py);
-    # avoids the NFS bottleneck. /datalocal persists across container rebuilds, unlike /home.
+    # local copy of downsized color images; avoids the NFS bottleneck.
     RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
     TIME_TOLERANCE: 0.05
     MAX_TIME_GAP: 0.5

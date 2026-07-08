@@ -49,8 +49,9 @@ def render_sample(model, batch, device, grid_bounds):
     K, ext = intrinsics[-1].numpy(), extrinsics[-1].numpy()
     rgb = tensor_to_bgr(color_img[-1])
 
-    mu_panel = label_panel(overlay_bev_on_image(rgb, trav_map[0], K, ext, grid_bounds), "predicted mu")
-    nu_panel = label_panel(overlay_bev_on_image(rgb, trav_map[1], K, ext, grid_bounds), "predicted nu")
+    ground_z = TrainingModule._ground_plane(states)
+    mu_panel = label_panel(overlay_bev_on_image(rgb, trav_map[0], K, ext, grid_bounds, ground_z=ground_z), "predicted mu")
+    nu_panel = label_panel(overlay_bev_on_image(rgb, trav_map[1], K, ext, grid_bounds, ground_z=ground_z), "predicted nu")
     gt_panel = label_panel(overlay_path_on_image(rgb, states, target_trav, trav_weights, K, ext), "labelled mu (path)")
     return np.concatenate([mu_panel, nu_panel, gt_panel], axis=1)
 

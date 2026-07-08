@@ -39,7 +39,8 @@ class TravNet(nn.Module):
         
         dx = torch.Tensor([row[2] for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
         bx = torch.Tensor([row[0] + row[2]/2.0 for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
-        nx = torch.LongTensor([(row[1] - row[0]) / row[2] for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
+        # round, not truncate: (2.6 - -2.0) / 0.2 = 22.999... would silently drop a bin
+        nx = torch.LongTensor([round((row[1] - row[0]) / row[2]) for row in [grid_bounds['xbound'], grid_bounds['ybound'], grid_bounds['zbound']]])
 
         self.int_nx = [int(x) for x in nx.cpu().detach().tolist()]
 

@@ -674,11 +674,30 @@ class TrainingModule(pl.LightningModule):
             out.append(blend)
         return out
 
+    @staticmethod
+    def _ground_plane(path):
+        """Plane z = a*x + b*y + c fitted to the path's ground points, the surface
+        the BEV grid cells are drawn on; follows the terrain slope instead of a
+        horizontal plane at the anchor. 0.0 (the base origin) when the path has no
+        ground column or no valid points."""
+        finite = torch.isfinite(path[:, 0])
+        if path.shape[1] <= 5 or not finite.any():
+            return 0.0
+        p = path[finite].float().cpu().numpy()
+        if len(p) < 3:
+            return float(p[0, 5])
+        A = np.column_stack([p[:, 0], p[:, 1], np.ones(len(p))])
+        coef, *_ = np.linalg.lstsq(A, p[:, 5], rcond=None)
+        return tuple(coef)
+
     @torch.no_grad()
     def _project_path_to_cam(self, path, K, extrinsics):
-        """Base-frame path (H,>=2) -> anchor-camera pixels (inverse of read_pcloud)."""
+        """Base-frame path (H,>=2) -> anchor-camera pixels (inverse of read_pcloud).
+        State column 5 is the ground height under each state; without it the
+        points would sit at base height, half a meter above the ground."""
         p = path[torch.isfinite(path[:, 0])]
-        pts = torch.stack([p[:, 0], p[:, 1], torch.zeros_like(p[:, 0])], 1)
+        z = p[:, 5] if p.shape[1] > 5 else torch.zeros_like(p[:, 0])
+        pts = torch.stack([p[:, 0], p[:, 1], z], 1)
         cam = (pts - extrinsics[:3, 3]) @ extrinsics[:3, :3]
         cam = cam[cam[:, 2] > 1e-3]
         pix = cam @ K.T
@@ -768,7 +787,9 @@ class TrainingModule(pl.LightningModule):
             bgr = np.ascontiguousarray((img.transpose(1, 2, 0)[..., ::-1] * 255).astype(np.uint8))
             K = intrinsics[b, -1].float().cpu().numpy()
             ext = extrinsics[b, -1].float().cpu().numpy()
-            mu_cam.append(np.ascontiguousarray(overlay_bev_on_image(bgr, mu[b], K, ext, self.grid_bounds)[..., ::-1]))
+            mu_cam.append(np.ascontiguousarray(overlay_bev_on_image(
+                bgr, mu[b], K, ext, self.grid_bounds,
+                ground_z=self._ground_plane(path[b]))[..., ::-1]))
         self.logger.log_image(key=prefix + "/mu_cam", images=mu_cam)
 
         B, T = image.shape[:2]

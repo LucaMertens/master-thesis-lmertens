@@ -26,6 +26,7 @@ from grandtour_extraction import (
     extract_alphasense,
     extract_commands,
     extract_dlio,
+    extract_feet,
     label_video,
     rectify,
 )
@@ -64,6 +65,7 @@ def _current_versions() -> dict[str, int]:
         "tint_correction": correct_tint.VERSION,
         "dlio": extract_dlio.DLIO_VERSION,
         "command": extract_commands.COMMAND_VERSION,
+        "ground_z": extract_feet.GROUND_Z_VERSION,
         "rhe_labels": labeling_pipeline.LABELS_VERSION,
         "depth": _depth_version(),
         "label_video": label_video.LABEL_VIDEO_VERSION,
@@ -243,6 +245,12 @@ def run_pipeline(
         except Exception as e:
             log(f"!! {mission}: command failed: {e}")
             step_errors["command"] = str(e)
+        log(f"== {mission}: ground_z ==")
+        try:
+            extract_feet.extract(mission_dir, output_dir, force=force)
+        except Exception as e:
+            log(f"!! {mission}: ground_z failed: {e}")
+            step_errors["ground_z"] = str(e)
     if labels:
         log(f"== {mission}: rhe_labels ==")
         try:
