@@ -58,8 +58,8 @@ def _mean_trav_error(model, loader, device):
     total, n = 0.0, 0
     for batch in loader:
         batch = [x.to(device) for x in batch]
-        color, pcloud, K, ext, path, target, weights, depth_t, _ = batch
-        trav_map, _, _, _ = model.model(color, pcloud, K, ext, depth_t)
+        color, depth_voxel, K_full, K, ext, path, target, weights, depth_t, _ = batch
+        trav_map, _, _, _ = model.model(color, depth_voxel, K_full, K, ext, depth_t)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)
         n += 1
@@ -100,7 +100,7 @@ def test_path_in_map_coverage():
     for idx in indices:
         rosbag, data_idx = _locate(ds, int(idx))
         ts = [rosbag["image_timestamp"][data_idx + t] for t in range(ds.n_frames)]
-        states, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
+        states, _, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
 
         finite = np.isfinite(states[:, 0])
         in_map = (
@@ -246,10 +246,10 @@ def test_forward_backward_finite():
     opt = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
     opt.zero_grad()
 
-    color, pcloud, K, ext, path, target, weights, depth_t, depth_m = [
+    color, depth_voxel, K_full, K, ext, path, target, weights, depth_t, depth_m = [
         x.to(device) for x in batch
     ]
-    trav_map, _, pred_depth, _ = model.model(color, pcloud, K, ext, depth_t)
+    trav_map, _, pred_depth, _ = model.model(color, depth_voxel, K_full, K, ext, depth_t)
     trav_loss, _ = model.trav_criterion(path, trav_map, target, weights)
     depth_loss = model.depth_criterion(
         pred_depth,
@@ -410,8 +410,8 @@ def test_flip_augmentation():
     rosbag, data_idx = _locate(ds, 0)
     ts = [rosbag["image_timestamp"][data_idx + t] for t in range(ds.n_frames)]
 
-    states_nf, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
-    states_fl, _, _ = ds.get_states(rosbag, ts, np.eye(4), True)
+    states_nf, _, _, _ = ds.get_states(rosbag, ts, np.eye(4), False)
+    states_fl, _, _, _ = ds.get_states(rosbag, ts, np.eye(4), True)
 
     np.testing.assert_allclose(states_fl[:, 0], states_nf[:, 0], atol=1e-6)  # x
     np.testing.assert_allclose(states_fl[:, 1], -states_nf[:, 1], atol=1e-6)  # y
@@ -419,23 +419,45 @@ def test_flip_augmentation():
     np.testing.assert_allclose(states_fl[:, 3], states_nf[:, 3], atol=1e-6)  # v
     np.testing.assert_allclose(states_fl[:, 4], -states_nf[:, 4], atol=1e-6)  # ω
 
-    # Intrinsics: cx_flipped = W_orig - cx_orig; after resize: cx_fl + cx_nf = input_W
-    input_w = cfg.MODEL.INPUT_SIZE[0]
-    cx_nf_raw = rosbag["intrinsics"][data_idx][0, 2]
-    img_path = rosbag["color_image"][data_idx]
-    img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-    assert img is not None, f"Cannot read test image: {img_path}"
-    w_orig = img.shape[1]
+    # With pose aug A the labels must be aug(flip(p)), matching the extrinsics
+    # composition A @ flip(E) in __getitem__ (flip FIRST, then aug).
+    theta = 0.3
+    A = np.eye(4)
+    A[:2, :2] = [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
+    A[:2, 3] = [0.4, -0.7]
+    states_fa, _, _, _ = ds.get_states(rosbag, ts, A, True)
+    mirrored = states_nf[:, :2] * [1, -1]
+    expected_xy = mirrored @ A[:2, :2].T + A[:2, 3]
+    np.testing.assert_allclose(states_fa[:, :2], expected_xy, atol=1e-6)
+    np.testing.assert_allclose(states_fa[:, 2], -states_nf[:, 2] + theta, atol=1e-6)
 
-    cx_nf = cx_nf_raw * (input_w / w_orig)
-    cx_fl = (w_orig - cx_nf_raw) * (input_w / w_orig)
-    print(
-        f"\nFlip intrinsics: cx_no_flip={cx_nf:.2f}, cx_flip={cx_fl:.2f}, "
-        f"sum={cx_nf + cx_fl:.2f} (expected {input_w})"
-    )
-    assert abs(cx_nf + cx_fl - input_w) < 1e-3, (
-        f"cx_flip + cx_no_flip = {cx_nf + cx_fl:.3f} != input_W={input_w}"
-    )
+    # Intrinsics: fliplr sends pixel u to (W-1)-u, so cx_flipped = (W-1) - cx.
+    # W is the native depth width (K is native-res).
+    depth = cv2.imread(rosbag["depth_image"][data_idx], -1)
+    assert depth is not None, f"Cannot read depth: {rosbag['depth_image'][data_idx]}"
+    W = depth.shape[1]
+    K = rosbag["intrinsics"][data_idx].copy()
+    K_fl = K.copy()
+    K_fl[0, 2] = W - 1 - K_fl[0, 2]
+
+    # Extrinsics mirror conjugation: projecting the mirrored path through the
+    # flipped extrinsics must give the exact pixel mirror of the base projection.
+    c2b = [rosbag["cam2base"][data_idx + t].copy() for t in range(ds.n_frames)]
+    ext_nf = ds.get_extrinsics(rosbag, ts, [c.copy() for c in c2b], False)[-1]
+    ext_fl = ds.get_extrinsics(rosbag, ts, [c.copy() for c in c2b], True)[-1]
+
+    def proj(pts3, K, ext):
+        cam = (pts3 - ext[:3, 3]) @ ext[:3, :3]
+        keep = cam[:, 2] > 1e-3
+        pix = cam[keep] @ K.T
+        return pix[:, :2] / pix[:, 2:3], keep
+
+    p3 = np.column_stack([states_nf[:, :2], np.zeros(len(states_nf))])
+    uv0, keep0 = proj(p3, K, ext_nf)
+    uv1, keep1 = proj(p3 * [1, -1, 1], K_fl, ext_fl)
+    np.testing.assert_array_equal(keep0, keep1)
+    np.testing.assert_allclose(uv1[:, 0], (W - 1) - uv0[:, 0], atol=1e-6)
+    np.testing.assert_allclose(uv1[:, 1], uv0[:, 1], atol=1e-6)
 
 
 @pytest.mark.tier3

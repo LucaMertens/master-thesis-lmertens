@@ -1,5 +1,6 @@
 # Taken from wayfaster repository (https://github.com/matval/wayfaster)
 # Modifications: fixed import of TravNet for local package layout.
+import math
 import os
 import pathlib
 import time
@@ -13,6 +14,7 @@ from pytorch_lightning.loggers import WandbLogger
 from torchmetrics import MeanMetric
 
 from .models.traversability_net import TravNet
+from ..overlay import colorize_mu, overlay_bev_on_image, overlay_path_on_image
 
 # Path overlay colors (RGB): red line, green start (robot, t=0), white end (horizon).
 PATH_LINE = (255, 0, 0)
@@ -55,6 +57,12 @@ class TrainingModule(pl.LightningModule):
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
         self.overpred_weight = getattr(configs.TRAINING, "TRAV_OVERPRED_WEIGHT", 1.0)
         self.mu_head_bins = getattr(configs.MODEL, "MU_BINS", 0)
+        # Evidential (NIG) mu head: replaces the mu smooth-L1/binned-CE/BMC term with
+        # the Deep Evidential Regression loss (Amini et al. 2020); nu is unaffected.
+        self.evidential = getattr(configs.MODEL, "EVIDENTIAL", False)
+        self.evidential_lambda = getattr(configs.TRAINING, "EVIDENTIAL_LAMBDA", 0.01)
+        assert not (self.evidential and self.mu_head_bins), "EVIDENTIAL and MU_BINS are mutually exclusive"
+        assert not (self.evidential and self.bmc_sigma is not None), "EVIDENTIAL and BMC_SIGMA_INIT are mutually exclusive"
         self.epochs = configs.TRAINING.EPOCHS
         
         # Depth training
@@ -73,7 +81,8 @@ class TrainingModule(pl.LightningModule):
             predict_depth=configs.MODEL.PREDICT_DEPTH,
             fuse_pcloud=configs.MODEL.FUSE_PCLOUD,
             voxel_downsample=configs.MODEL.VOXEL_DEPTH_DOWNSAMPLE,
-            mu_bins=self.mu_head_bins
+            mu_bins=self.mu_head_bins,
+            evidential=self.evidential,
         )
 
         # Convert to channels_last to avoid DDP bucket stride mismatch warnings
@@ -113,6 +122,10 @@ class TrainingModule(pl.LightningModule):
 
         # Visualization rate
         self.vis_interval = configs.TRAINING.VIS_INTERVAL
+        # Optional debug panels (see visualize)
+        self.debug_vis_labels = getattr(configs.TRAINING, "DEBUG_VIS_LABELS", False)
+        self.debug_vis_geom = getattr(configs.TRAINING, "DEBUG_VIS_GEOM", False)
+        self.debug_vis_depth = getattr(configs.TRAINING, "DEBUG_VIS_DEPTH", False)
 
         # Graded low-mu eval: per-0.1-bin MAE and mean-predicted-mu (calibration)
         # over [0.0,0.1) ... [0.9,1.0). torchmetrics handles DDP reduction.
@@ -204,7 +217,7 @@ class TrainingModule(pl.LightningModule):
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, prefix='train')
+            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, target_trav, trav_weights, mu_logits, prefix='train')
 
         if batch_idx % 1000 == 0:
             self.print(f"[epoch {self.current_epoch} step {batch_idx}] loss={loss.item():.4f} trav={trav_loss.item():.4f} depth={depth_loss.item():.4f}")
@@ -272,7 +285,7 @@ class TrainingModule(pl.LightningModule):
         # Visualize a fixed set of batches spread across the whole shard
         if batch_idx in self._val_vis_batches:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, prefix='valid')
+            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, target_trav, trav_weights, mu_logits, prefix='valid')
 
         self.log("valid/loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("valid/trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
@@ -419,8 +432,9 @@ class TrainingModule(pl.LightningModule):
             trav_map (torch.Tensor): Tensor containing the traversability map.
             target_trav (torch.Tensor): Tensor containing the target traversability.
             target_weights (torch.Tensor): Tensor containing the target weights.
-            mu_logits (torch.Tensor, optional): Mu bin logits (B, K, X, Y); replaces
-                the mu regression term with a binned cross-entropy.
+            mu_logits (torch.Tensor, optional): auxiliary mu tensor from TravNet.forward:
+                bin logits (B, K, X, Y) with the binned head, or NIG (v, alpha, beta)
+                (B, 3, X, Y) with the evidential head; unused for plain regression.
 
         Returns:
             tuple: Tuple containing the loss and the error.
@@ -434,10 +448,14 @@ class TrainingModule(pl.LightningModule):
         # Binned mu head: cross-entropy against a soft two-hot target instead of
         # regressing the expectation; nu keeps its smooth-L1 term.
         train_error = error
-        if mu_logits is not None:
+        if self.mu_head_bins:
             logits, _ = self._sample_path(states, mu_logits)
             ce = -(self._mu_two_hot(target_trav[..., 0]) * logits.log_softmax(-1)).sum(-1)
             train_error = torch.stack([ce, error[..., 1]], dim=-1)
+        elif self.evidential:
+            aux, _ = self._sample_path(states, mu_logits)
+            nig = self._evidential_loss(traversability[..., 0], target_trav[..., 0], aux)
+            train_error = torch.stack([nig, error[..., 1]], dim=-1)
         # Asymmetric penalty: optimistic errors (predicting traversable where the
         # label says slippery) cost overpred_weight times more. For the binned head
         # the indicator uses the expected mu.
@@ -478,6 +496,24 @@ class TrainingModule(pl.LightningModule):
         target.scatter_(-1, lo, 1 - frac)
         target.scatter_add_(-1, hi, frac)
         return target
+
+    def _evidential_loss(self, gamma, y, aux):
+        """Deep Evidential Regression loss (Amini et al. 2020) for a Normal-Inverse-
+        Gamma prediction (gamma, v, alpha, beta) of the mu label y. NLL marginalizes
+        the unknown Gaussian mean/variance under the NIG prior; the regularizer
+        penalizes high evidence (v, alpha) on samples where gamma is still wrong,
+        which is what makes the evidence shrink on OOD/hard inputs instead of just
+        anywhere the residual is nonzero."""
+        v, alpha, beta = aux[..., 0], aux[..., 1], aux[..., 2]
+        omega = 2 * beta * (1 + v)
+        nll = (
+            0.5 * torch.log(math.pi / v)
+            - alpha * torch.log(omega)
+            + (alpha + 0.5) * torch.log((y - gamma).square() * v + omega)
+            + torch.lgamma(alpha) - torch.lgamma(alpha + 0.5)
+        )
+        reg = (y - gamma).abs() * (2 * v + alpha)
+        return nll + self.evidential_lambda * reg
 
     def _bmc_loss(self, pred, target, weight):
         """Balanced MSE, BMC variant (Ren et al. 2022): cross-entropy between each
@@ -591,6 +627,54 @@ class TrainingModule(pl.LightningModule):
         return overlays
 
     @torch.no_grad()
+    def _bev_label_overlays(self, trav_map, path, target_trav, trav_weights):
+        """Predicted mu BEV colorized red-green, with each labelled path cell drawn
+        on top in its label color; gated (zero-weight) cells as gray outlines."""
+        mu = trav_map[:, 0].detach().float().cpu().numpy()
+        out = []
+        for b in range(mu.shape[0]):
+            rgb = np.ascontiguousarray(colorize_mu(mu[b])[..., ::-1])
+            p = path[b].detach().float().cpu().numpy()
+            keep = np.isfinite(p[:, 0])
+            t = target_trav[b, keep, 0].detach().float().cpu().numpy()
+            w = trav_weights[b, keep, 0].detach().float().cpu().numpy()
+            u = np.round(self.map_origin[0] - p[keep, 0] / self.map_resolution[0]).astype(int)
+            v = np.round(self.map_origin[1] - p[keep, 1] / self.map_resolution[1]).astype(int)
+            colors = colorize_mu(t)[..., ::-1]
+            h_map, w_map = rgb.shape[:2]
+            for ui, vi, ci, wi in zip(u, v, colors, w):
+                if 0 <= ui < h_map and 0 <= vi < w_map:
+                    if wi > 0:
+                        cv2.circle(rgb, (vi, ui), 2, tuple(int(x) for x in ci), -1)
+                    else:
+                        cv2.circle(rgb, (vi, ui), 2, (128, 128, 128), 1)
+            out.append(rgb)
+        return out
+
+    @torch.no_grad()
+    def _depth_cam_overlays(self, image, depth_target, depth_mask):
+        """Anchor frame with the input depth target blended on top (JET, masked)."""
+        B, T = image.shape[:2]
+        n_d = int((self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0]) / self.grid_bounds['dbound'][2])
+        out = []
+        for b in range(B):
+            idx = (b + 1) * T - 1  # anchor frame in the flattened (B*T) stack
+            if self.predict_depth:
+                d = depth_target[idx].float().cpu().numpy() / (n_d - 1)
+            else:
+                d = depth_target[idx].argmax(0).float().cpu().numpy() / (n_d - 1)
+            m = depth_mask[idx].float().cpu().numpy() > 0
+            rgb = self._frame_rgb(image, b, -1)
+            h, w = rgb.shape[:2]
+            col = cv2.applyColorMap((np.clip(d, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)[..., ::-1]
+            col = cv2.resize(col, (w, h), interpolation=cv2.INTER_NEAREST)
+            m = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            blend = rgb.copy()
+            blend[m] = (0.55 * col[m] + 0.45 * rgb[m]).astype(np.uint8)
+            out.append(blend)
+        return out
+
+    @torch.no_grad()
     def _project_path_to_cam(self, path, K, extrinsics):
         """Base-frame path (H,>=2) -> anchor-camera pixels (inverse of read_pcloud)."""
         p = path[torch.isfinite(path[:, 0])]
@@ -621,25 +705,36 @@ class TrainingModule(pl.LightningModule):
         return combined
 
     @torch.no_grad()
+    def _frame_rgb(self, image, b, t):
+        """(B, T, 3, H, W) float [0,1] -> one (H, W, 3) uint8 frame."""
+        img = image[b, t].detach().float().cpu().clamp(0, 1).numpy()
+        return (img.transpose(1, 2, 0) * 255).astype(np.uint8).copy()
+
+    @torch.no_grad()
+    def _draw_path_on_frame(self, img, path, K, extrinsics):
+        """Project the base-frame path into one frame and draw it (in place)."""
+        uv = self._project_path_to_cam(path, K, extrinsics)
+        h, w = img.shape[:2]
+        inside = (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
+        uv = uv[inside]
+        if len(uv):
+            pts = uv.round().astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(img, [pts], False, PATH_LINE, 2, cv2.LINE_AA)
+            cv2.circle(img, tuple(pts[0, 0]), 4, PATH_START, -1)
+            cv2.circle(img, tuple(pts[-1, 0]), 4, PATH_END, -1)
+        return img
+
+    @torch.no_grad()
     def _cam_overlays(self, image, path, K, extrinsics):
         """Anchor RGB frame per batch element with the future path projected on top."""
         overlays = []
         for b in range(image.shape[0]):
-            img = image[b, -1].detach().float().cpu().clamp(0, 1).numpy()
-            img = (img.transpose(1, 2, 0) * 255).astype(np.uint8).copy()
-            uv = self._project_path_to_cam(path[b], K[b, -1], extrinsics[b, -1])
-            h, w = img.shape[:2]
-            inside = (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
-            uv = uv[inside]
-            if len(uv):
-                pts = uv.round().astype(np.int32).reshape(-1, 1, 2)
-                cv2.polylines(img, [pts], False, PATH_LINE, 2, cv2.LINE_AA)
-                cv2.circle(img, tuple(pts[0, 0]), 4, PATH_START, -1)
-                cv2.circle(img, tuple(pts[-1, 0]), 4, PATH_END, -1)
+            img = self._frame_rgb(image, b, -1)
+            self._draw_path_on_frame(img, path[b], K[b, -1], extrinsics[b, -1])
             overlays.append(torch.from_numpy(img))
         return overlays
 
-    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, prefix='train'):
+    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, target_trav=None, trav_weights=None, mu_logits=None, prefix='train'):
         """
         Visualize the training/validation results.
 
@@ -654,6 +749,9 @@ class TrainingModule(pl.LightningModule):
             path (torch.Tensor): Tensor containing the path states (B, H, >=2).
             intrinsics (torch.Tensor): Input-size camera K (B, T, 3, 3).
             extrinsics (torch.Tensor): Cam-to-base per frame (B, T, 4, 4).
+            target_trav (torch.Tensor): Label (mu, nu) along the path (B, H, 2).
+            trav_weights (torch.Tensor): Loss weights along the path (B, H, 2).
+            mu_logits (torch.Tensor): Auxiliary mu head output (see TravNet.forward).
             prefix (str): Prefix for the log keys.
         """
         # Camera input (anchor frame) with the future path projected on top
@@ -662,16 +760,74 @@ class TrainingModule(pl.LightningModule):
             images=[im.numpy() for im in self._cam_overlays(image, path, intrinsics, extrinsics)],
         )
 
+        # Predicted mu splatted onto the anchor frame (red = slippery, green = grippy)
+        mu = trav_map[:, 0].detach().float().cpu().numpy()
+        mu_cam = []
+        for b in range(image.shape[0]):
+            img = image[b, -1].detach().float().cpu().clamp(0, 1).numpy()
+            bgr = np.ascontiguousarray((img.transpose(1, 2, 0)[..., ::-1] * 255).astype(np.uint8))
+            K = intrinsics[b, -1].float().cpu().numpy()
+            ext = extrinsics[b, -1].float().cpu().numpy()
+            mu_cam.append(np.ascontiguousarray(overlay_bev_on_image(bgr, mu[b], K, ext, self.grid_bounds)[..., ::-1]))
+        self.logger.log_image(key=prefix + "/mu_cam", images=mu_cam)
+
+        B, T = image.shape[:2]
+
+        if self.debug_vis_labels and target_trav is not None:
+            # Supervision as the loss sees it: label mu (red-green) at weighted path
+            # cells, gray outlines where the visibility/observability gates zeroed it
+            label_cam = []
+            for b in range(B):
+                bgr = np.ascontiguousarray(self._frame_rgb(image, b, -1)[..., ::-1])
+                out = overlay_path_on_image(
+                    bgr, path[b].detach().float().cpu(), target_trav[b].detach().float().cpu(),
+                    trav_weights[b].detach().float().cpu(), intrinsics[b, -1].float().cpu().numpy(),
+                    extrinsics[b, -1].float().cpu().numpy(), show_gated=True)
+                label_cam.append(np.ascontiguousarray(out[..., ::-1]))
+            self.logger.log_image(key=prefix + "/label_cam", images=label_cam)
+            # Predicted mu BEV in color with the label cells drawn on top:
+            # prediction vs supervision in one map
+            self.logger.log_image(
+                key=prefix + "/bev_label",
+                images=self._bev_label_overlays(trav_map, path, target_trav, trav_weights))
+
+        if self.debug_vis_geom:
+            # Path reprojected into every input frame with that frame's own
+            # extrinsics: ego-motion or extrinsics errors show as the path
+            # detaching from the ground in the older frames
+            frame_cols = []
+            for t in range(T):
+                col = []
+                for b in range(B):
+                    img = self._frame_rgb(image, b, t)
+                    self._draw_path_on_frame(img, path[b], intrinsics[b, t], extrinsics[b, t])
+                    col.append(torch.from_numpy(img))
+                frame_cols.append(col)
+            self.logger.log_image(
+                key=prefix + "/geom_frames",
+                images=[im.numpy() for im in self._hstack(*frame_cols)])
+
+        if self.debug_vis_depth:
+            # Input depth (JET colormap) blended over the anchor frame: checks
+            # depth-RGB alignment, the border crop, and the K scaling
+            self.logger.log_image(
+                key=prefix + "/depth_cam",
+                images=self._depth_cam_overlays(image, depth_target, depth_mask))
+
         # BEV inputs: point-cloud occupancy density | lift-splat feature density (both sanity checks)
         pcloud = torch.mean(pcloud, dim=2).view(-1, 1, *pcloud.shape[3:])
         pcloud_overlays = self._bev_overlays(pcloud, path, normalize=True)
         debug_overlays = self._bev_overlays(torch.sum(debug, dim=1, keepdim=True), path, normalize=True)
         self.logger.log_image(key=prefix + "/bev_inputs", images=[im.numpy() for im in self._hstack(pcloud_overlays, debug_overlays)])
 
-        # BEV outputs: predicted mu | nu, side by side
-        mu_overlays = self._bev_overlays(trav_map[:, :1], path)
-        nu_overlays = self._bev_overlays(trav_map[:, 1:], path)
-        self.logger.log_image(key=prefix + "/bev_outputs", images=[im.numpy() for im in self._hstack(mu_overlays, nu_overlays)])
+        # BEV outputs: predicted mu | nu (| epistemic uncertainty when evidential)
+        columns = [self._bev_overlays(trav_map[:, :1], path), self._bev_overlays(trav_map[:, 1:], path)]
+        if self.evidential and mu_logits is not None:
+            # NIG variance of the mean, beta / (v * (alpha - 1)); per-image normalized
+            v, alpha, beta = mu_logits[:, 0:1], mu_logits[:, 1:2], mu_logits[:, 2:3]
+            unc = beta / (v * (alpha - 1).clamp_min(self.eps))
+            columns.append(self._bev_overlays(unc, path, normalize=True))
+        self.logger.log_image(key=prefix + "/bev_outputs", images=[im.numpy() for im in self._hstack(*columns)])
 
         # Depth (camera frame, no BEV path): predicted | target | validity mask
         n_d = (self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0])/self.grid_bounds['dbound'][2]

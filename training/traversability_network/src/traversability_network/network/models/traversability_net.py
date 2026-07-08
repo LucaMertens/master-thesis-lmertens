@@ -22,7 +22,7 @@ class TravNet(nn.Module):
     def __init__(
             self, grid_bounds, input_size, downsample=8,
             image_dim=64, temporal_length=3, predict_depth=True,
-            fuse_pcloud=True, voxel_downsample=1, mu_bins=0
+            fuse_pcloud=True, voxel_downsample=1, mu_bins=0, evidential=False
         ):
         super(TravNet, self).__init__()
 
@@ -33,6 +33,7 @@ class TravNet(nn.Module):
         self.predict_depth  = predict_depth
         self.fuse_pcloud    = fuse_pcloud
         self.mu_bins        = mu_bins        # 0 = sigmoid regression head
+        self.evidential      = evidential    # mu head emits a Normal-Inverse-Gamma instead
         self.voxel_downsample = voxel_downsample  # nearest-subsample depth before voxelizing
         self.eps            = 1e-6
         
@@ -87,14 +88,23 @@ class TravNet(nn.Module):
         # Bird's eye view decoder
         self.decoder = Decoder(in_channels=self.latent_dim)
         
-        # Traversability map head: either 2 sigmoid channels (mu, nu) or, with
-        # mu_bins > 0, a categorical distribution over mu bins plus a sigmoid nu.
+        # Traversability map head, one of three mutually exclusive mu parameterizations:
+        # plain sigmoid regression (2 ch: mu, nu), a categorical distribution over
+        # mu_bins bins (mu_bins+1 ch: bin logits + sigmoid nu), or an evidential
+        # Normal-Inverse-Gamma over mu (5 ch: gamma, v, alpha, beta + sigmoid nu).
+        assert not (self.mu_bins and self.evidential), "mu_bins and evidential are mutually exclusive"
+        if self.evidential:
+            out_ch = 5
+        elif self.mu_bins:
+            out_ch = self.mu_bins + 1
+        else:
+            out_ch = 2
         head_layers = [
             nn.Conv2d(self.latent_dim, self.latent_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(self.latent_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(self.latent_dim, (self.mu_bins + 1) if self.mu_bins else 2, kernel_size=1, padding=0)]
-        if not self.mu_bins:
+            nn.Conv2d(self.latent_dim, out_ch, kernel_size=1, padding=0)]
+        if not self.mu_bins and not self.evidential:
             head_layers.append(nn.Sigmoid())
         self.travmap_head = nn.Sequential(*head_layers)
         if self.mu_bins:
@@ -246,8 +256,11 @@ class TravNet(nn.Module):
 
         Returns:
             tuple: A tuple containing:
-                - trav_map (torch.Tensor): Traversability map of shape (B, 2, X, Y).
-                - mu_logits (torch.Tensor or None): Mu bin logits (B, mu_bins, X, Y), None for the regression head.
+                - trav_map (torch.Tensor): Traversability map of shape (B, 2, X, Y), (mu, nu);
+                  mu is the bin-expectation for the binned head or gamma for the evidential head.
+                - mu_logits (torch.Tensor or None): auxiliary mu tensor, meaning depends on the
+                  head: bin logits (B, mu_bins, X, Y) for the binned head, NIG (v, alpha, beta)
+                  (B, 3, X, Y) for the evidential head, None for plain regression.
                 - depth_logits (torch.Tensor): Predicted depth logits of shape (B*T, D, H, W).
                 - debug (torch.Tensor): Debug information tensor.
         """
@@ -309,6 +322,13 @@ class TravNet(nn.Module):
             mu_logits = out[:, :self.mu_bins]
             mu = (mu_logits.softmax(1) * self.mu_centers.view(1, -1, 1, 1)).sum(1, keepdim=True)
             trav_map = torch.cat([mu, out[:, self.mu_bins:].sigmoid()], dim=1)
+        elif self.evidential:
+            gamma = out[:, 0:1].sigmoid()
+            v = F.softplus(out[:, 1:2]) + self.eps
+            alpha = F.softplus(out[:, 2:3]) + 1.0 + self.eps
+            beta = F.softplus(out[:, 3:4]) + self.eps
+            trav_map = torch.cat([gamma, out[:, 4:5].sigmoid()], dim=1)
+            mu_logits = torch.cat([v, alpha, beta], dim=1)
         else:
             trav_map, mu_logits = out, None
 

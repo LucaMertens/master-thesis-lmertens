@@ -56,13 +56,13 @@ def main():
     pl.seed_everything(configs.SEED, workers=True)
 
     brightness, contrast, saturation, hue = configs.AUGMENTATIONS.COLOR_JITTER
+    # Tensor-mode transforms applied to the stacked (T, C, H, W) window in the
+    # dataloader: parameters are drawn once per window, not per frame.
     steps = [
-        transforms.ToPILImage(),
         transforms.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue),
-        transforms.ToTensor(),
     ]
     if configs.AUGMENTATIONS.BLUR_PROB > 0:
-        steps.insert(2, transforms.RandomApply(
+        steps.append(transforms.RandomApply(
             [transforms.GaussianBlur(5, sigma=(0.1, 1.5))], p=configs.AUGMENTATIONS.BLUR_PROB
         ))
     transform = transforms.Compose(steps)

@@ -36,7 +36,17 @@ _C.TRAINING.TRAV_OVERPRED_WEIGHT = 1.0
 # Balanced MSE (BMC, Ren et al. 2022) on the mu term: initial noise sigma of the
 # learnable scale; 0 = off (plain smooth-L1). Changes the trav_loss scale.
 _C.TRAINING.BMC_SIGMA_INIT = 0.0
+# Deep Evidential Regression (Amini et al. 2020) regularizer weight; only used
+# when MODEL.EVIDENTIAL is True. Amini et al. use small values (~1e-2 to 1e-1);
+# too high collapses evidence everywhere, too low lets it grow unchecked on noise.
+_C.TRAINING.EVIDENTIAL_LAMBDA = 0.01
 _C.TRAINING.VIS_INTERVAL = 500
+# Extra wandb debug panels (see TrainingModule.visualize), one flag per stage:
+# label supervision on the camera/BEV, per-frame path reprojection (ego-motion
+# and extrinsics consistency), input depth blended over RGB (alignment).
+_C.TRAINING.DEBUG_VIS_LABELS = False
+_C.TRAINING.DEBUG_VIS_GEOM = False
+_C.TRAINING.DEBUG_VIS_DEPTH = False
 _C.TRAINING.VERBOSE = True
 
 # model parameters
@@ -56,6 +66,11 @@ _C.MODEL.INPUT_SIZE = [480, 360]  # (W, H); Alphasense native is 1440x1080 (4:3)
 # Mu head: 0 = sigmoid regression (WayFASTER default); K > 0 = categorical
 # distribution over K mu bins trained with soft two-hot CE, expectation readout.
 _C.MODEL.MU_BINS = 0
+# Evidential mu head: predicts a Normal-Inverse-Gamma (gamma, v, alpha, beta)
+# instead of a point estimate, trained with the DER NLL + regularizer. Mutually
+# exclusive with MU_BINS and BMC_SIGMA_INIT. gamma is the point estimate (still
+# in trav_map[:,0]); v, alpha, beta give per-cell epistemic uncertainty for OOD.
+_C.MODEL.EVIDENTIAL = False
 _C.MODEL.LABEL_COLUMNS = [0, 1]  # columns of rhe_trav_labels.npy used as (mu, nu)
 _C.MODEL.GRID_BOUNDS = {
     "xbound": [-2.0, 8.0, 0.1],

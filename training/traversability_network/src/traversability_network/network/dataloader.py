@@ -13,6 +13,11 @@ import torch.utils.data as DataLoader
 from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation as R
 
+# Horizontal flip mirrors the base frame (y -> -y) and the camera x-axis (the
+# image u-flip), so cam2base conjugates as FLIP_BASE @ cam2base @ FLIP_CAM.
+FLIP_BASE = np.diag([1.0, -1.0, 1.0, 1.0])
+FLIP_CAM = np.diag([-1.0, 1.0, 1.0, 1.0])
+
 
 class Dataset(DataLoader.Dataset):
     """
@@ -173,8 +178,9 @@ class Dataset(DataLoader.Dataset):
             if horizontal_flip:
                 color_img = np.fliplr(color_img).copy()
                 depth_img = np.fliplr(depth_img).copy()
-                # K is native-res; depth stays native even when color is pre-resized
-                intrinsics[0, 2] = depth_img.shape[1] - intrinsics[0, 2]
+                # K is native-res; depth stays native even when color is pre-resized.
+                # fliplr sends pixel u to (W - 1) - u.
+                intrinsics[0, 2] = depth_img.shape[1] - 1 - intrinsics[0, 2]
 
             image_timestamp_list.append(image_timestamp)
             color_img_list.append(color_img)
@@ -219,13 +225,10 @@ class Dataset(DataLoader.Dataset):
                     depth_img, self.image_size, interpolation=cv2.INTER_NEAREST
                 )
 
-            if self.transform is not None:
-                color_img_list[t] = self.transform(color_img)
-            else:
-                color_img_list[t] = (
-                    torch.from_numpy(color_img).permute(2, 0, 1).type(self.dtype)
-                    / 255.0
-                )
+            color_img_list[t] = (
+                torch.from_numpy(color_img).permute(2, 0, 1).type(self.dtype)
+                / 255.0
+            )
             """
              Here, if the network is predicting the depth, then the target_depth is the training label
              Otherwise, the target_depth is the voxel representation of the deterministic depth
@@ -272,14 +275,15 @@ class Dataset(DataLoader.Dataset):
                     (depth_target.flatten(), xs.flatten(), ys.flatten()), -1
                 )
 
-                # Create empty frustum voxel
-                depth_voxel = np.zeros((n_d, fH, fW))
+                # Create empty frustum voxel (do not reuse the depth_voxel name:
+                # it would clobber the cleaned depth stack returned above)
+                frustum = np.zeros((n_d, fH, fW))
                 # Filter undesirable values
                 idxs = (points[:, 0] >= 0) & (points[:, 0] <= n_d - 1)
                 points = points[idxs]
                 # And assign ones to populates depths
-                depth_voxel[points[:, 0], points[:, 1], points[:, 2]] = 1.0
-                depth_target = depth_voxel.astype("float32")
+                frustum[points[:, 0], points[:, 1], points[:, 2]] = 1.0
+                depth_target = frustum.astype("float32")
 
             depth_target_list.append(depth_target)
             depth_mask_list.append(depth_mask)
@@ -306,6 +310,11 @@ class Dataset(DataLoader.Dataset):
 
         # Because we have a single camera
         color_img = torch.stack(color_img_list)
+        # One transform call on the whole (T, C, H, W) stack: jitter parameters are
+        # sampled once, so all frames of a window get the same photometric change
+        # instead of flickering frame to frame.
+        if self.transform is not None:
+            color_img = self.transform(color_img)
         intrinsics = np.stack(intrinsics_list)
         extrinsics = np.stack(extrinsics_list)
         depth_target = np.stack(depth_target_list)
@@ -513,11 +522,19 @@ class Dataset(DataLoader.Dataset):
             heading_rot.inv().as_matrix() @ (position.T - curr_position[None].T)
         ).T
 
+        # Mirror before augmenting: __getitem__ composes the extrinsics as
+        # aug @ flip(E), so the labels must be aug @ flip(p) to stay consistent.
+        if horizontal_flip:
+            position[:, 1] = -position[:, 1]
+            euler_angle[:, 0] = -euler_angle[:, 0]
+
         # Apply augmentation
         position = (aug_transformation[:3, :3] @ position.T).T + aug_transformation[
             :3, 3
         ]
-        euler_angle[0] += np.arctan2(aug_transformation[1, 0], aug_transformation[0, 0])
+        euler_angle[:, 0] += np.arctan2(
+            aug_transformation[1, 0], aug_transformation[0, 0]
+        )
 
         states = np.hstack((position[:, :2], euler_angle[:, 0:1], action))
 
@@ -526,7 +543,8 @@ class Dataset(DataLoader.Dataset):
         # window that can see it, not only along the 30s future path.
         if self.train and self.harvest_extra and len(rosbag_dict.get("lowmu_idx", ())):
             extra = self._harvest_lowmu(
-                rosbag_dict, timestamps, curr_position, heading_rot, aug_transformation
+                rosbag_dict, timestamps, curr_position, heading_rot,
+                aug_transformation, horizontal_flip,
             )
             if extra is not None:
                 states = np.concatenate((states, extra[0]))
@@ -535,13 +553,13 @@ class Dataset(DataLoader.Dataset):
                 nu_observability = np.concatenate((nu_observability, extra[3]))
 
         if horizontal_flip:
-            states[:, 1] = -states[:, 1]
-            states[:, 2] = -states[:, 2]
             states[:, 4] = -states[:, 4]
 
         return states, traversability, mu_observability, nu_observability
 
-    def _harvest_lowmu(self, rosbag_dict, timestamps, curr_position, heading_rot, aug):
+    def _harvest_lowmu(
+        self, rosbag_dict, timestamps, curr_position, heading_rot, aug, horizontal_flip
+    ):
         """Low-mu states of the bag outside this window's horizon, transformed to the
         anchor frame and filtered to the grid. The visibility gate downstream still
         decides whether an input frame actually sees them."""
@@ -556,6 +574,8 @@ class Dataset(DataLoader.Dataset):
             return None
         position = np.asarray(rosbag_dict["position"])[idx]
         position = (heading_rot.inv().as_matrix() @ (position - curr_position).T).T
+        if horizontal_flip:
+            position[:, 1] = -position[:, 1]
         position = (aug[:3, :3] @ position.T).T + aug[:3, 3]
         xb, yb = self.grid_bounds["xbound"], self.grid_bounds["ybound"]
         inside = (
@@ -569,6 +589,8 @@ class Dataset(DataLoader.Dataset):
             pick = np.random.choice(len(idx), self.harvest_extra, replace=False)
             idx, position = idx[pick], position[pick]
         yaw = R.from_quat(np.asarray(rosbag_dict["quaternion"])[idx]).as_euler("zyx")[:, :1]
+        if horizontal_flip:
+            yaw = -yaw
         yaw = yaw + np.arctan2(aug[1, 0], aug[0, 0])
         action = np.asarray(rosbag_dict["action"])[idx]
         states = np.hstack((position[:, :2], yaw, action))
@@ -622,7 +644,9 @@ class Dataset(DataLoader.Dataset):
         extrinsics_list = []
         for i, cam2base in enumerate(cam2base_list):
             if horizontal_flip:
-                cam2base[1, 3] = -cam2base[1, 3]
+                # Full mirror conjugation; only negating the y translation leaves
+                # the mount misalignment un-mirrored (~15 px projection error).
+                cam2base = FLIP_BASE @ cam2base @ FLIP_CAM
 
             # Get extrinsics disregarding heading angle
             base_rot = R.from_euler("zyx", [0, euler_angle[i, 1], euler_angle[i, 2]])
