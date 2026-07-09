@@ -17,6 +17,7 @@ members = [
     "training/traversability_network",
     "shared-utils",
     "side_experiments",
+    "ood_detection",
 ]
 
 [tool.uv.sources]
