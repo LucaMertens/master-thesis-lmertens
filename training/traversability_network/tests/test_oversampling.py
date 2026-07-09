@@ -19,21 +19,27 @@ def make_ds(rosbags, *, n_frames=1, horizon=5, dt=0.1,
     ds.os_mu_max = mu_max
     ds.os_obs_min = obs_min
     ds.OVERSAMPLE_FRACTION = fraction
+    ds.grid_bounds = {"xbound": [-2.0, 8.0, 0.1], "ybound": [-5.0, 5.0, 0.1]}
     ds.bag_sizes = [0]
     for bag in rosbags:
         ds.bag_sizes.append(ds.bag_sizes[-1] + len(bag["image_timestamp"]) - n_frames + 1)
     return ds
 
 
-def make_bag(mu, obs, *, dt=0.1, n_frames=1):
-    """A bag whose images coincide with its states (one window per state)."""
+def make_bag(mu, obs, *, dt=0.1, n_frames=1, position=None):
+    """A bag whose images coincide with its states (one window per state).
+    All states sit at the origin unless position (N, 3) is given, so the
+    spatial in-grid filter passes and the tests exercise the time logic."""
     mu = np.asarray(mu, float)
     st = np.arange(len(mu)) * dt
+    n = len(mu)
     return {
         "states_timestamp": st,
         "traversability": np.stack([mu, np.zeros_like(mu)], axis=1),
         "mu_observability": np.asarray(obs, float),
         "image_timestamp": st,
+        "position": np.zeros((n, 3)) if position is None else np.asarray(position, float),
+        "quaternion": np.tile([0.0, 0.0, 0.0, 1.0], (n, 1)),
     }
 
 
@@ -76,6 +82,19 @@ def test_mu_threshold_boundary():
     ds_gt = make_ds([make_bag(np.full(3, 0.61), np.ones(3))], horizon=3)
     assert ds_eq._flagged_windows().all()
     assert not ds_gt._flagged_windows().any()
+
+
+def test_out_of_grid_low_mu_not_flagged():
+    # low-mu state 50m away: temporally inside the horizon of earlier windows
+    # but outside their BEV grid, so only the window anchored on it flags
+    mu = np.ones(20)
+    mu[10] = 0.3
+    position = np.zeros((20, 3))
+    position[10, 0] = 50.0
+    ds = make_ds([make_bag(mu, np.ones(20), position=position)], horizon=5)
+    flags = ds._flagged_windows()
+    assert flags[10]
+    assert not flags[6:10].any()
 
 
 def test_flags_concatenate_across_bags():

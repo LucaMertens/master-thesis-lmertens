@@ -676,19 +676,27 @@ class TrainingModule(pl.LightningModule):
 
     @staticmethod
     def _ground_plane(path):
-        """Plane z = a*x + b*y + c fitted to the path's ground points, the surface
-        the BEV grid cells are drawn on; follows the terrain slope instead of a
-        horizontal plane at the anchor. 0.0 (the base origin) when the path has no
-        ground column or no valid points."""
+        """Plane z = a*x + b*y + c fitted to the path's ground points near the grid,
+        the surface the BEV grid cells are drawn on. Only points within 10 m enter
+        the fit (the 30 s path can climb far outside the grid and would tilt it),
+        the slope is ridge-regularized against ill-conditioned point layouts, and
+        the plane is clamped to the observed z range so extrapolation to the grid
+        corners cannot leave the terrain. 0.0 (the base origin) when the path has
+        no ground column or no valid points."""
         finite = torch.isfinite(path[:, 0])
         if path.shape[1] <= 5 or not finite.any():
             return 0.0
         p = path[finite].float().cpu().numpy()
+        near = np.hypot(p[:, 0], p[:, 1]) <= 10.0
+        if near.sum() >= 3:
+            p = p[near]
         if len(p) < 3:
             return float(p[0, 5])
         A = np.column_stack([p[:, 0], p[:, 1], np.ones(len(p))])
-        coef, *_ = np.linalg.lstsq(A, p[:, 5], rcond=None)
-        return tuple(coef)
+        AtA = A.T @ A + np.diag([4.0, 4.0, 0.0])
+        a, b, c = np.linalg.solve(AtA, A.T @ p[:, 5])
+        margin = 0.3
+        return (a, b, c, p[:, 5].min() - margin, p[:, 5].max() + margin)
 
     @torch.no_grad()
     def _project_path_to_cam(self, path, K, extrinsics):
@@ -699,9 +707,10 @@ class TrainingModule(pl.LightningModule):
         z = p[:, 5] if p.shape[1] > 5 else torch.zeros_like(p[:, 0])
         pts = torch.stack([p[:, 0], p[:, 1], z], 1)
         cam = (pts - extrinsics[:3, 3]) @ extrinsics[:3, :3]
-        cam = cam[cam[:, 2] > 1e-3]
+        front = cam[:, 2] > 1e-3
         pix = cam @ K.T
-        return (pix[:, :2] / pix[:, 2:3]).float().cpu().numpy()
+        uv = pix[:, :2] / pix[:, 2:3].clamp(min=1e-3)
+        return uv.float().cpu().numpy(), front.cpu().numpy()
 
     @staticmethod
     def _gray_to_rgb(img):
@@ -732,15 +741,17 @@ class TrainingModule(pl.LightningModule):
     @torch.no_grad()
     def _draw_path_on_frame(self, img, path, K, extrinsics):
         """Project the base-frame path into one frame and draw it (in place)."""
-        uv = self._project_path_to_cam(path, K, extrinsics)
+        uv, front = self._project_path_to_cam(path, K, extrinsics)
         h, w = img.shape[:2]
-        inside = (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
-        uv = uv[inside]
-        if len(uv):
-            pts = uv.round().astype(np.int32).reshape(-1, 1, 2)
-            cv2.polylines(img, [pts], False, PATH_LINE, 2, cv2.LINE_AA)
-            cv2.circle(img, tuple(pts[0, 0]), 4, PATH_START, -1)
-            cv2.circle(img, tuple(pts[-1, 0]), 4, PATH_END, -1)
+        inside = front & (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
+        idx = np.flatnonzero(inside)
+        if len(idx):
+            pts = uv.round().astype(np.int32)
+            # split at gaps so exits/re-entries are not bridged with straight lines
+            for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
+                cv2.polylines(img, [pts[run].reshape(-1, 1, 2)], False, PATH_LINE, 2, cv2.LINE_AA)
+            cv2.circle(img, tuple(pts[idx[0]]), 4, PATH_START, -1)
+            cv2.circle(img, tuple(pts[idx[-1]]), 4, PATH_END, -1)
         return img
 
     @torch.no_grad()

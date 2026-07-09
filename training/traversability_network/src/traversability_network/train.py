@@ -141,8 +141,10 @@ def main():
         callbacks=[checkpoint_callback, best_callback, early_stopping, lr_monitor, RichProgressBar(leave=True)],
     )
 
+    # weights_only=False: our own checkpoints carry EasyDict hparams (see LOAD_NETWORK above).
     trainer.fit(
-        model, train_loader, valid_loader, ckpt_path=configs.MODEL.RESUME_CHECKPOINT
+        model, train_loader, valid_loader,
+        ckpt_path=configs.MODEL.RESUME_CHECKPOINT, weights_only=False,
     )
 
 

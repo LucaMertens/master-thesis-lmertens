@@ -25,12 +25,12 @@ def grid_world_centers(grid_bounds, Hd, Wd):
 
 
 def ground_plane_z(X, Y, ground_z):
-    """ground_z is either a constant height or (a, b, c) plane coefficients
-    z = a*x + b*y + c, both in the anchor frame (0.0 = base origin, half a
-    meter above the actual ground on ANYmal)."""
+    """ground_z is either a constant height or (a, b, c, zlo, zhi): plane
+    coefficients z = a*x + b*y + c clamped to [zlo, zhi], all in the anchor frame
+    (0.0 = base origin, half a meter above the actual ground on ANYmal)."""
     if isinstance(ground_z, tuple):
-        a, b, c = ground_z
-        return a * X + b * Y + c
+        a, b, c, zlo, zhi = ground_z
+        return np.clip(a * X + b * Y + c, zlo, zhi)
     return np.full_like(X, ground_z)
 
 
