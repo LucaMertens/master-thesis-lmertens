@@ -5,7 +5,7 @@ uv run --project training/traversability_network python -u -m traversability_net
 ```
 
 
-uv run --project training/traversability_network python -u -m traversability_network.train --cfg_file   --cfg_file training/traversability_network/configs/grandtour_binned.yaml  2>&1 | tee train_binned.log
+uv run python -m traversability_network.train --cfg_file training/traversability_network/configs/grandtour_v2.yaml  2>&1 | tee train_v2.log
 ```
 
 Qualitative check of a checkpoint: predicted mu/nu projected onto the camera image,
