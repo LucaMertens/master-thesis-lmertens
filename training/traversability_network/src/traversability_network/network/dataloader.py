@@ -509,14 +509,16 @@ class Dataset(DataLoader.Dataset):
         curr_position = np.asarray(rosbag_dict["position"])[curr_idx]
         curr_quaternion = np.asarray(rosbag_dict["quaternion"])[curr_idx]
         curr_rotation = R.from_quat(curr_quaternion)
-        curr_euler_angle = curr_rotation.as_euler("zyx")
+        # Intrinsic "ZYX" (capital) = yaw-pitch-roll; lowercase "zyx" is extrinsic
+        # (R = Rx Ry Rz) and scrambles the tilt axes on slopes.
+        curr_euler_angle = curr_rotation.as_euler("ZYX")
 
         # Get rotations from quaternions
         rotation = R.from_quat(quaternion)
         # Get euler angles from rotations
-        euler_angle = rotation.as_euler("zyx")
+        euler_angle = rotation.as_euler("ZYX")
         # Get extrinsics disregarding heading angle
-        heading_rot = R.from_euler("zyx", [curr_euler_angle[0], 0, 0])
+        heading_rot = R.from_euler("ZYX", [curr_euler_angle[0], 0, 0])
         # Transform position in relation to the first timestamp
         position = (
             heading_rot.inv().as_matrix() @ (position.T - curr_position[None].T)
@@ -599,7 +601,7 @@ class Dataset(DataLoader.Dataset):
         if len(idx) > self.harvest_extra:
             pick = np.random.choice(len(idx), self.harvest_extra, replace=False)
             idx, position = idx[pick], position[pick]
-        yaw = R.from_quat(np.asarray(rosbag_dict["quaternion"])[idx]).as_euler("zyx")[:, :1]
+        yaw = R.from_quat(np.asarray(rosbag_dict["quaternion"])[idx]).as_euler("ZYX")[:, :1]
         if horizontal_flip:
             yaw = -yaw
         yaw = yaw + np.arctan2(aug[1, 0], aug[0, 0])
@@ -643,10 +645,11 @@ class Dataset(DataLoader.Dataset):
 
         # Get rotations from quaternions
         rotation = R.from_quat(quaternion)
-        # Get euler angles from rotations
-        euler_angle = rotation.as_euler("zyx")
+        # Intrinsic yaw-pitch-roll so R = Rz(yaw) @ Ry(pitch) @ Rx(roll); the
+        # odom_trans @ base_trans split below relies on exactly this factorization.
+        euler_angle = rotation.as_euler("ZYX")
         # Get extrinsics disregarding heading angle
-        heading_rot = R.from_euler("zyx", [euler_angle[-1, 0], 0, 0])
+        heading_rot = R.from_euler("ZYX", [euler_angle[-1, 0], 0, 0])
         # Transform position in relation to the first timestamp
         position = (
             heading_rot.inv().as_matrix() @ (position.T - position[-1, None].T)
@@ -665,12 +668,12 @@ class Dataset(DataLoader.Dataset):
                 cam2base = FLIP_BASE @ cam2base @ FLIP_CAM
 
             # Get extrinsics disregarding heading angle
-            base_rot = R.from_euler("zyx", [0, euler_angle[i, 1], euler_angle[i, 2]])
+            base_rot = R.from_euler("ZYX", [0, euler_angle[i, 1], euler_angle[i, 2]])
             base_trans = np.eye(4)
             base_trans[:3, :3] = base_rot.as_matrix()
             odom_trans = np.eye(4)
             odom_rot = R.from_euler(
-                "zyx", [euler_angle[i, 0] - euler_angle[-1, 0], 0, 0]
+                "ZYX", [euler_angle[i, 0] - euler_angle[-1, 0], 0, 0]
             )
             odom_trans[:3, :3] = odom_rot.as_matrix()
             odom_trans[:2, 3] = position[i, :2]

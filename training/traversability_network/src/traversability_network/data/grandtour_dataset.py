@@ -147,7 +147,7 @@ class GrandTourDataset(Dataset):
             mu = np.asarray(bag["traversability"])[:, 0]
             observability = np.asarray(bag["mu_observability"])
             position = np.asarray(bag["position"])
-            yaw = R.from_quat(bag["quaternion"]).as_euler("zyx")[:, 0]
+            yaw = R.from_quat(bag["quaternion"]).as_euler("ZYX")[:, 0]
             qualifying = np.flatnonzero(
                 (mu <= self.os_mu_max) & (observability >= self.os_obs_min)
             )
@@ -169,7 +169,7 @@ class GrandTourDataset(Dataset):
                 for w in np.flatnonzero(q_hi > q_lo):
                     idxs = qualifying[q_lo[w] : q_hi[w]]
                     a = anchor_idx[w]
-                    heading = R.from_euler("zyx", [yaw[a], 0, 0])
+                    heading = R.from_euler("ZYX", [yaw[a], 0, 0])
                     rel = (heading.inv().as_matrix() @ (position[idxs] - position[a]).T).T
                     inside = (
                         (rel[:, 0] >= xb[0]) & (rel[:, 0] < xb[1])
@@ -293,7 +293,7 @@ class GrandTourDataset(Dataset):
         # Ground-truth pose from dlio odometry (not the RHE estimate).
         odom_pos, quaternion = self._interp_odom(odom, timestamp)
         x, y = odom_pos[:, 0], odom_pos[:, 1]
-        theta = R.from_quat(quaternion).as_euler("zyx")[:, 0]
+        theta = R.from_quat(quaternion).as_euler("ZYX")[:, 0]
         position = odom_pos
         action = self._finite_diff_action(x, y, theta, timestamp)
         traversability = trav[:, self.label_columns]

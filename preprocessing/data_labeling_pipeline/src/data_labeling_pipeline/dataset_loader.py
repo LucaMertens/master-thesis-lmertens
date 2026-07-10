@@ -48,7 +48,9 @@ def quaternions_to_yaws(quaternions):
 
     rotation = Rotation.from_quat(quaternions, scalar_first=False)
 
-    return rotation.as_euler("zyx", degrees=False)[:, 0]
+    # Intrinsic "ZYX" (capital) = yaw-pitch-roll; lowercase "zyx" is extrinsic
+    # and its first angle deviates from the true heading on tilted terrain.
+    return rotation.as_euler("ZYX", degrees=False)[:, 0]
 
 
 def interpolate_unwrapped_angles(timestamps, angles, shared_timestamps):
@@ -229,7 +231,7 @@ class GrandTourLoader:
         odom_ts, odom_pos, odom_orien = self.load_odometry()
         px = odom_pos[:, 0]
         py = odom_pos[:, 1]
-        odom_yaw = Rotation.from_quat(odom_orien).as_euler("zyx", degrees=False)[:, 0]
+        odom_yaw = Rotation.from_quat(odom_orien).as_euler("ZYX", degrees=False)[:, 0]
 
         shared_ts = get_shared_timestamps(cmd_ts, odom_ts, dt=dt)
         assert _is_strictly_monotonic_increasing(shared_ts)

@@ -4,7 +4,7 @@
 uv run --project training/traversability_network python -u -m traversability_network.train --cfg_file training/traversability_network/configs/grandtour_lite.yaml 2>&1 | tee train.log
 ```
 
-
+```bash
 uv run python -m traversability_network.train --cfg_file training/traversability_network/configs/grandtour_v2.yaml  2>&1 | tee train_v2.log
 ```
 

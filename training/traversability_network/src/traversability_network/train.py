@@ -104,7 +104,28 @@ def main():
         if missing or unexpected:
             print(f"  non-strict load: missing={missing} unexpected={unexpected}")
 
-    wandb_logger = WandbLogger(project="master-thesis-lmertens", log_model=False)
+    wandb_logger = WandbLogger(
+        project="master-thesis-lmertens", log_model=False, save_code=True
+    )
+
+    # Persist the exact uncommitted diff so a run is reproducible even without a
+    # commit; wandb records the commit hash but its auto diff.patch comes back empty.
+    from pytorch_lightning.utilities.rank_zero import rank_zero_only
+
+    if rank_zero_only.rank == 0:
+        import subprocess
+
+        try:
+            root = subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+            diff = subprocess.check_output(["git", "diff", "HEAD"], cwd=root, text=True)
+            patch = os.path.join(ckpt_tmp, f"uncommitted_{wandb_logger.experiment.id}.patch")
+            with open(patch, "w") as fh:
+                fh.write(diff)
+            wandb_logger.experiment.save(patch, base_path=ckpt_tmp, policy="now")
+        except Exception as e:
+            print(f"git diff capture failed: {e}")
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",

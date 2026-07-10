@@ -45,26 +45,58 @@ def project_to_cam(X, Y, K, extrinsics, ground_z=0.0):
     return uv.reshape(*X.shape, 2), (cam[:, 2].reshape(X.shape) > 0.3)
 
 
-def overlay_bev_on_image(rgb, values, K, extrinsics, grid_bounds, stride=2, alpha=0.55, ground_z=0.0):
-    """values: (Hd, Wd) array in [0,1] (mu or nu). Splats colored dots at each
-    grid cell's camera projection on the ground plane, sized by inverse depth
-    for pseudo-perspective."""
+def cell_ground_z(depth, K, extrinsics, grid_bounds, Hd, Wd, pix_stride=2):
+    """Visible-surface height per BEV cell: 25th percentile z of the metric depth
+    image (H, W) unprojected into the anchor frame. NaN where a cell has no returns.
+    K must match the depth resolution."""
+    d = depth[::pix_stride, ::pix_stride]
+    vs, us = np.nonzero(d > 0.1)
+    z = d[vs, us]
+    cam = np.stack([(us * pix_stride - K[0, 2]) / K[0, 0] * z,
+                    (vs * pix_stride - K[1, 2]) / K[1, 1] * z, z], 1)
+    p = cam @ extrinsics[:3, :3].T + extrinsics[:3, 3]
+    xb, yb = grid_bounds["xbound"], grid_bounds["ybound"]
+    i = np.round((xb[1] - p[:, 0]) * (Hd - 1) / (xb[1] - xb[0])).astype(int)
+    j = np.round((yb[1] - p[:, 1]) * (Wd - 1) / (yb[1] - yb[0])).astype(int)
+    ok = (i >= 0) & (i < Hd) & (j >= 0) & (j < Wd)
+    cell, pz = i[ok] * Wd + j[ok], p[ok, 2]
+    if len(pz) == 0:
+        return np.full((Hd, Wd), np.nan, np.float32)
+    order = np.lexsort((pz, cell))
+    cell, pz = cell[order], pz[order]
+    starts = np.searchsorted(cell, np.arange(Hd * Wd))
+    counts = np.diff(np.append(starts, len(cell)))
+    sel = np.minimum(starts + (0.25 * np.maximum(counts - 1, 0)).astype(int), len(pz) - 1)
+    return np.where(counts > 0, pz[sel], np.nan).reshape(Hd, Wd)
+
+
+def overlay_bev_on_image(rgb, values, K, extrinsics, grid_bounds, stride=2, alpha=0.55,
+                         ground_z=0.0, depth=None, depth_K=None, slack=1.0):
+    """values: (Hd, Wd) array in [0,1] (mu or nu). Splats colored dots at each grid
+    cell's camera projection, sized by inverse depth for pseudo-perspective. With a
+    metric depth image the dots sit on the visible terrain per cell and cells whose
+    surface is far above the ground_z plane are skipped (canopy, trunks, occluded);
+    without one everything is drawn on the ground_z plane."""
     Hd, Wd = values.shape
     X, Y = grid_world_centers(grid_bounds, Hd, Wd)
-    uv, front = project_to_cam(X[::stride, ::stride], Y[::stride, ::stride], K, extrinsics, ground_z)
+    Z = ground_plane_z(X, Y, ground_z)
+    if depth is not None:
+        Zd = cell_ground_z(depth, depth_K, extrinsics, grid_bounds, Hd, Wd)
+        Z = np.where(np.isfinite(Zd) & (Zd <= Z + slack), Zd, np.nan)
+    Xs, Ys, Zs = X[::stride, ::stride], Y[::stride, ::stride], Z[::stride, ::stride]
     vals = values[::stride, ::stride]
+    pts = np.stack([Xs, Ys, Zs], -1).reshape(-1, 3)
+    cam = (pts - extrinsics[:3, 3]) @ extrinsics[:3, :3]
+    z = cam[:, 2].reshape(Xs.shape)
+    pix = cam @ K.T
+    uv = (pix[:, :2] / np.clip(pix[:, 2:3], 1e-6, None)).reshape(*Xs.shape, 2)
     h, w = rgb.shape[:2]
-    inside = front & (uv[..., 0] >= 0) & (uv[..., 0] < w) & (uv[..., 1] >= 0) & (uv[..., 1] < h)
-    uv, vals = uv[inside], vals[inside]
-    if len(uv) == 0:
-        return rgb.copy()
-    # depth for radius: recompute z from the same projection (cheap, small arrays)
-    Xs, Ys = X[::stride, ::stride], Y[::stride, ::stride]
-    pts = np.stack([Xs, Ys, ground_plane_z(Xs, Ys, ground_z)], -1)
-    z = ((pts.reshape(-1, 3) - extrinsics[:3, 3]) @ extrinsics[:3, :3])[:, 2].reshape(X[::stride, ::stride].shape)[inside]
+    draw = np.isfinite(z) & (z > 0.3) & (uv[..., 0] >= 0) & (uv[..., 0] < w) & (uv[..., 1] >= 0) & (uv[..., 1] < h)
     colors = colorize_mu(vals)
     overlay = rgb.copy()
-    for (u, v), c, zc in zip(uv, colors, z):
+    for (u, v), c, zc, ok in zip(uv.reshape(-1, 2), colors.reshape(-1, 3), z.ravel(), draw.ravel()):
+        if not ok:
+            continue
         radius = int(np.clip(35.0 / max(zc, 0.5), 2, 14))
         cv2.circle(overlay, (int(round(u)), int(round(v))), radius, tuple(int(x) for x in c), -1, cv2.LINE_AA)
     return cv2.addWeighted(overlay, alpha, rgb, 1 - alpha, 0)

@@ -189,6 +189,7 @@ class TrainingModule(pl.LightningModule):
         color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask = batch
 
         # Pointcloud dropout: zero whole depth windows so the GPU builds an empty grid
+        depth_raw = depth_voxel  # undropped, for the viz panels
         if self.pcloud_dropout > 0:
             drop = torch.rand(depth_voxel.shape[0], device=depth_voxel.device) < self.pcloud_dropout
             if drop.any():
@@ -217,7 +218,7 @@ class TrainingModule(pl.LightningModule):
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, target_trav, trav_weights, mu_logits, prefix='train')
+            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, target_trav, trav_weights, mu_logits, depth_voxel=depth_raw, intrinsics_full=intrinsics_full, prefix='train')
 
         if batch_idx % 1000 == 0:
             self.print(f"[epoch {self.current_epoch} step {batch_idx}] loss={loss.item():.4f} trav={trav_loss.item():.4f} depth={depth_loss.item():.4f}")
@@ -285,7 +286,7 @@ class TrainingModule(pl.LightningModule):
         # Visualize a fixed set of batches spread across the whole shard
         if batch_idx in self._val_vis_batches:
             pcloud = self._voxelize_for_vis(color_img, depth_voxel, intrinsics_full, extrinsics)
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, target_trav, trav_weights, mu_logits, prefix='valid')
+            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, inv_intrinsics, extrinsics, target_trav, trav_weights, mu_logits, depth_voxel=depth_voxel, intrinsics_full=intrinsics_full, prefix='valid')
 
         self.log("valid/loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("valid/trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
@@ -764,7 +765,7 @@ class TrainingModule(pl.LightningModule):
             overlays.append(torch.from_numpy(img))
         return overlays
 
-    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, target_trav=None, trav_weights=None, mu_logits=None, prefix='train'):
+    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, target_trav=None, trav_weights=None, mu_logits=None, depth_voxel=None, intrinsics_full=None, prefix='train'):
         """
         Visualize the training/validation results.
 
@@ -782,6 +783,8 @@ class TrainingModule(pl.LightningModule):
             target_trav (torch.Tensor): Label (mu, nu) along the path (B, H, 2).
             trav_weights (torch.Tensor): Loss weights along the path (B, H, 2).
             mu_logits (torch.Tensor): Auxiliary mu head output (see TravNet.forward).
+            depth_voxel (torch.Tensor): Full-res depth stack (B, T, H, W) in int16 mm.
+            intrinsics_full (torch.Tensor): Full-res camera K matching depth_voxel.
             prefix (str): Prefix for the log keys.
         """
         # Camera input (anchor frame) with the future path projected on top
@@ -798,9 +801,12 @@ class TrainingModule(pl.LightningModule):
             bgr = np.ascontiguousarray((img.transpose(1, 2, 0)[..., ::-1] * 255).astype(np.uint8))
             K = intrinsics[b, -1].float().cpu().numpy()
             ext = extrinsics[b, -1].float().cpu().numpy()
+            depth_m = depth_voxel[b, -1].float().cpu().numpy() * 1e-3 if depth_voxel is not None else None
+            K_full = intrinsics_full[b, -1].float().cpu().numpy() if intrinsics_full is not None else None
             mu_cam.append(np.ascontiguousarray(overlay_bev_on_image(
                 bgr, mu[b], K, ext, self.grid_bounds,
-                ground_z=self._ground_plane(path[b]))[..., ::-1]))
+                ground_z=self._ground_plane(path[b]),
+                depth=depth_m, depth_K=K_full)[..., ::-1]))
         self.logger.log_image(key=prefix + "/mu_cam", images=mu_cam)
 
         B, T = image.shape[:2]
