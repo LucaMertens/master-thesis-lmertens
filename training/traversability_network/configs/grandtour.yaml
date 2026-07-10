@@ -10,7 +10,7 @@ TRAINING:
     BATCHSIZE: 8
     WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
     DEVICES: [1, 2, 3]  # -1 = all GPUs; set e.g. 2 to use N GPUs, or a list like this to pin specific ones
-    EPOCHS: 50          # early stopping (patience 10 on valid/trav_loss) usually ends the run sooner
+    EPOCHS: 50          # early stopping (patience 10 on valid/balanced_mae) usually ends the run sooner
     VERBOSE: False
     GAMMA: 0.998
     DEPTH_WEIGHT: 0.05  # was 0.1: depth CE dominates the shared encoder gradient ~5x

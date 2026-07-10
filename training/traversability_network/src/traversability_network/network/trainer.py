@@ -326,8 +326,8 @@ class TrainingModule(pl.LightningModule):
                 calib_metrics[b].update(pred_mu[sel])
 
     def _log_mu_bins(self, prefix, mae_metrics, calib_metrics):
-        """Log per-bin MAE and mean predicted mu; returns (centers, means) for curves."""
-        centers, means = [], []
+        """Log per-bin MAE and mean predicted mu; returns (centers, means, maes) for curves."""
+        centers, means, maes = [], [], []
         for b in range(self.n_mu_bins):
             lo = b * self.mu_bin_width
             name = f"{lo:.1f}-{lo + self.mu_bin_width:.1f}"
@@ -343,13 +343,20 @@ class TrainingModule(pl.LightningModule):
                 self.log(f"{prefix}/mu_{name}", calib, sync_dist=True)
             centers.append(lo + self.mu_bin_width / 2)
             means.append(float(calib) if seen else None)
-        return centers, means
+            maes.append(float(mae) if seen else None)
+        return centers, means, maes
 
     def on_validation_epoch_end(self):
         """Log per-sub-bin MAE, mean predicted mu, and a calibration curve."""
-        centers, means = self._log_mu_bins("calib", self.val_mae, self.val_calib)
-        self._log_mu_bins("calib_vis", self.val_mae_vis, self.val_calib_vis)
+        centers, means, _ = self._log_mu_bins("calib", self.val_mae, self.val_calib)
+        _, _, vis_maes = self._log_mu_bins("calib_vis", self.val_mae_vis, self.val_calib_vis)
         self._log_calibration_curve(centers, means)
+        # Macro-average over mu bins (equal weight per bin, not per sample), so the
+        # rare low-mu bins count as much as the common high-mu mass. trav_loss and
+        # micro MAE stay flat straight through mean collapse; this doesn't.
+        seen = [m for m in vis_maes if m is not None]
+        if seen:
+            self.log("valid/balanced_mae", sum(seen) / len(seen), sync_dist=False)
 
     def _log_calibration_curve(self, centers, means):
         if not self.trainer.is_global_zero or not isinstance(self.logger, WandbLogger):

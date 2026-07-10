@@ -135,15 +135,18 @@ def main():
         save_top_k=-1,  # Save every nth checkpoint, do not check for best.
         every_n_epochs=5,  # Save every 5 epochs
     )
-    # The best epoch can be early (mean-collapse sets in later); keep it separately.
+    # valid/trav_loss stays flat straight through mean collapse (dominated by the
+    # common high-mu mass), so it can't see the failure it's meant to catch.
+    # valid/balanced_mae macro-averages MAE per true-mu bin (equal weight per bin),
+    # which degrades monotonically as low-mu predictions collapse toward the mean.
     best_callback = ModelCheckpoint(
         dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",
         filename="best_{epoch}-{step}",
-        monitor="valid/trav_loss",
+        monitor="valid/balanced_mae",
         mode="min",
         save_top_k=1,
     )
-    early_stopping = EarlyStopping(monitor="valid/trav_loss", mode="min", patience=10)
+    early_stopping = EarlyStopping(monitor="valid/balanced_mae", mode="min", patience=10)
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     trainer = pl.Trainer(
