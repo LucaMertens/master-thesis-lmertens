@@ -203,3 +203,5 @@ preprocessing/depth_generation/pretrained_models/
 *.ckpt
 
 **/wandb
+
+*.out

@@ -46,8 +46,25 @@ class TrainingModule(pl.LightningModule):
         if harvest_extra:
             gamma = torch.cat([gamma, torch.ones(harvest_extra)])
         self.gamma = nn.Parameter(gamma, requires_grad=False)
-        # Balanced MSE (BMC) noise scale, learnable; None = smooth-L1 mu term
+        # Mu loss selector. LOSS_TYPE, when set, is authoritative; otherwise the loss
+        # is inferred from the legacy MU_BINS/BMC_SIGMA_INIT/EVIDENTIAL flags.
+        mu_bins = getattr(configs.MODEL, "MU_BINS", 0)
         bmc_init = getattr(configs.TRAINING, "BMC_SIGMA_INIT", 0.0)
+        evidential = getattr(configs.MODEL, "EVIDENTIAL", False)
+        loss_type = getattr(configs.TRAINING, "LOSS_TYPE", None)
+        if loss_type is not None:
+            valid = {"regression", "bmc", "binned_ce", "evidential"}
+            assert loss_type in valid, f"LOSS_TYPE must be one of {valid}, got {loss_type!r}"
+            if loss_type == "bmc":
+                assert bmc_init > 0, "LOSS_TYPE=bmc needs TRAINING.BMC_SIGMA_INIT > 0"
+            else:
+                bmc_init = 0.0
+            if loss_type == "binned_ce":
+                assert mu_bins > 0, "LOSS_TYPE=binned_ce needs MODEL.MU_BINS > 0"
+            else:
+                mu_bins = 0
+            evidential = loss_type == "evidential"
+        # Balanced MSE (BMC) noise scale, learnable; None = smooth-L1 mu term
         self.bmc_sigma = nn.Parameter(torch.tensor(float(bmc_init))) if bmc_init > 0 else None
         self.learning_rate = configs.OPTIMIZER.LR
         self.lr_ref_batchsize = configs.OPTIMIZER.LR_REF_BATCHSIZE
@@ -56,10 +73,10 @@ class TrainingModule(pl.LightningModule):
         self.weight_decay = configs.OPTIMIZER.WEIGHT_DECAY
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
         self.overpred_weight = getattr(configs.TRAINING, "TRAV_OVERPRED_WEIGHT", 1.0)
-        self.mu_head_bins = getattr(configs.MODEL, "MU_BINS", 0)
+        self.mu_head_bins = mu_bins
         # Evidential (NIG) mu head: replaces the mu smooth-L1/binned-CE/BMC term with
         # the Deep Evidential Regression loss (Amini et al. 2020); nu is unaffected.
-        self.evidential = getattr(configs.MODEL, "EVIDENTIAL", False)
+        self.evidential = evidential
         self.evidential_lambda = getattr(configs.TRAINING, "EVIDENTIAL_LAMBDA", 0.01)
         assert not (self.evidential and self.mu_head_bins), "EVIDENTIAL and MU_BINS are mutually exclusive"
         assert not (self.evidential and self.bmc_sigma is not None), "EVIDENTIAL and BMC_SIGMA_INIT are mutually exclusive"
@@ -122,6 +139,7 @@ class TrainingModule(pl.LightningModule):
 
         # Visualization rate
         self.vis_interval = configs.TRAINING.VIS_INTERVAL
+        self.vis_batch_size = getattr(configs.TRAINING, "VIS_BATCH_SIZE", 8)
         # Optional debug panels (see visualize)
         self.debug_vis_labels = getattr(configs.TRAINING, "DEBUG_VIS_LABELS", False)
         self.debug_vis_geom = getattr(configs.TRAINING, "DEBUG_VIS_GEOM", False)
@@ -772,6 +790,11 @@ class TrainingModule(pl.LightningModule):
             overlays.append(torch.from_numpy(img))
         return overlays
 
+    @staticmethod
+    def _stride_batch(n, cap):
+        """Evenly-spaced indices into [0, n) capped at `cap`."""
+        return np.linspace(0, n - 1, min(cap, n)).round().astype(int)
+
     def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, target_trav=None, trav_weights=None, mu_logits=None, depth_voxel=None, intrinsics_full=None, prefix='train'):
         """
         Visualize the training/validation results.
@@ -794,6 +817,28 @@ class TrainingModule(pl.LightningModule):
             intrinsics_full (torch.Tensor): Full-res camera K matching depth_voxel.
             prefix (str): Prefix for the log keys.
         """
+        # Batch elements are 1-frame-apart sliding windows (near-duplicate scenes),
+        # so stride through the batch dim to spread the logged panel across it
+        # instead of showing self.vis_batch_size consecutive near-identical frames.
+        B_full, T = image.shape[:2]
+        b_idx = self._stride_batch(B_full, self.vis_batch_size)
+        flat_idx = (b_idx[:, None] * T + np.arange(T)[None, :]).ravel()
+
+        image, pcloud, trav_map, path, intrinsics, extrinsics = (
+            t[b_idx] for t in (image, pcloud, trav_map, path, intrinsics, extrinsics))
+        if target_trav is not None:
+            target_trav = target_trav[b_idx]
+        if trav_weights is not None:
+            trav_weights = trav_weights[b_idx]
+        if mu_logits is not None:
+            mu_logits = mu_logits[b_idx]
+        if depth_voxel is not None:
+            depth_voxel = depth_voxel[b_idx]
+        if intrinsics_full is not None:
+            intrinsics_full = intrinsics_full[b_idx]
+        pred_depth, depth_target, depth_mask, debug = (
+            t[flat_idx] for t in (pred_depth, depth_target, depth_mask, debug))
+
         # Camera input (anchor frame) with the future path projected on top
         self.logger.log_image(
             key=prefix + "/images",

@@ -33,6 +33,11 @@ _C.TRAINING.DEPTH_WEIGHT = 0.1
 # slippery terrain traversable costlier than the reverse, pushing uncertain
 # predictions down instead of onto the high-mu mean.
 _C.TRAINING.TRAV_OVERPRED_WEIGHT = 1.0
+# Mu loss selector. None = infer from the legacy MU_BINS/BMC_SIGMA_INIT/EVIDENTIAL
+# flags (back-compat). When set it is authoritative: one of "regression"
+# (smooth-L1), "bmc" (needs BMC_SIGMA_INIT > 0), "binned_ce" (needs MU_BINS > 0),
+# or "evidential".
+_C.TRAINING.LOSS_TYPE = None
 # Balanced MSE (BMC, Ren et al. 2022) on the mu term: initial noise sigma of the
 # learnable scale; 0 = off (plain smooth-L1). Changes the trav_loss scale.
 _C.TRAINING.BMC_SIGMA_INIT = 0.0
@@ -41,6 +46,10 @@ _C.TRAINING.BMC_SIGMA_INIT = 0.0
 # too high collapses evidence everywhere, too low lets it grow unchecked on noise.
 _C.TRAINING.EVIDENTIAL_LAMBDA = 0.01
 _C.TRAINING.VIS_INTERVAL = 500
+# Cap on images per visualized panel: batch elements are evenly strided down
+# to this many, since consecutive elements are 1-frame-apart sliding windows
+# (near-duplicate scenes) rather than independent samples.
+_C.TRAINING.VIS_BATCH_SIZE = 8
 # Extra wandb debug panels (see TrainingModule.visualize), one flag per stage:
 # label supervision on the camera/BEV, per-frame path reprojection (ego-motion
 # and extrinsics consistency), input depth blended over RGB (alignment).
