@@ -100,6 +100,24 @@ def main():
         pretrained_dict = torch.load(
             configs.MODEL.LOAD_NETWORK, map_location="cpu", weights_only=False
         )["state_dict"]
+        # Normalize torch.compile's "._orig_mod" prefix to match this run's keys
+        # (COMPILE can differ between the saved run and this one): strip it, then
+        # re-add it if this run's own model is the one that's compiled.
+        pretrained_dict = {k.replace("._orig_mod", ""): v for k, v in pretrained_dict.items()}
+        own = model.state_dict()
+        if any("._orig_mod" in k for k in own):
+            pretrained_dict = {
+                k.replace("model.", "model._orig_mod.", 1) if k.startswith("model.") else k: v
+                for k, v in pretrained_dict.items()
+            }
+        # Warm start across head changes (e.g. plain -> evidential/binned mu head):
+        # drop shape-mismatched keys so the new head keeps its fresh init, since
+        # load_state_dict raises on those regardless of strict=False.
+        mismatched = [k for k, v in pretrained_dict.items() if k in own and own[k].shape != v.shape]
+        for k in mismatched:
+            del pretrained_dict[k]
+        if mismatched:
+            print(f"  dropped {len(mismatched)} shape-mismatched keys: {mismatched}")
         missing, unexpected = model.load_state_dict(pretrained_dict, strict=False)
         if missing or unexpected:
             print(f"  non-strict load: missing={missing} unexpected={unexpected}")

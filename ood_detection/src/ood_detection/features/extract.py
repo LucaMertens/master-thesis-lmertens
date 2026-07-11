@@ -6,6 +6,8 @@ uncertainty (if the checkpoint has an evidential head), and the true-mu error ov
 visible+observable path cells (for the RQ3 failure-mode handoff).
 
 One .npz per tier written to --out-dir; ood_detection.eval.run reads them back.
+With --max-cell-maps > 0, also writes a {tier}_cellmaps.npz of raw per-cell BEV
+feature grids for a few windows, for eval.run's per-cell spatial score maps.
 """
 
 import argparse
@@ -30,13 +32,18 @@ FIELDS = (
 
 
 @torch.no_grad()
-def extract_mission(configs, model, dino, dino_patch, mission, device, batch_size, workers):
+def extract_mission(configs, model, dino, dino_patch, mission, device, batch_size, workers, max_cell_maps=0):
+    """Returns (per-window rows, per-cell BEV feature maps for up to max_cell_maps
+    windows). The maps let eval.run score a fitted detector per grid cell instead
+    of pooled, for RQ3 spatial failure-mode plots; 0 skips them (they're
+    (X, Y, latent_dim) each, too big to save for every window)."""
     ds = GrandTourDataset(configs, [mission], train=False)
     if len(ds) == 0:
-        return None
+        return None, None
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=workers)
     hook = BEVFeatureHook(model)
     rows = {k: [] for k in FIELDS}
+    cell_maps, cell_meta = [], {"mission": [], "timestamp": []}
 
     idx0 = 0
     for batch in loader:
@@ -83,6 +90,10 @@ def extract_mission(configs, model, dino, dino_patch, mission, device, batch_siz
             rows["mu_err_mean"].append(float((p - t).abs().mean()))
             rows["evidential_unc"].append(float(unc[b, m].mean()) if unc is not None else float("nan"))
             rows["evidential_unc_rgbonly"].append(float(unc_rgbonly[b, m].mean()) if unc_rgbonly is not None else float("nan"))
+            if len(cell_maps) < max_cell_maps:
+                cell_maps.append(hook.features[b].permute(1, 2, 0).half().cpu().numpy())
+                cell_meta["mission"].append(mission)
+                cell_meta["timestamp"].append(rows["timestamp"][-1])
         idx0 += B
 
     hook.remove()
@@ -91,7 +102,11 @@ def extract_mission(configs, model, dino, dino_patch, mission, device, batch_siz
     out["bev_feat_rgbonly"] = np.stack(rows["bev_feat_rgbonly"])
     out["dino_feat"] = np.stack(rows["dino_feat"])
     out["mission"] = np.array([mission] * len(out["timestamp"]))
-    return out
+
+    cellmaps_out = None
+    if cell_maps:
+        cellmaps_out = {"maps": np.stack(cell_maps), **{k: np.array(v) for k, v in cell_meta.items()}}
+    return out, cellmaps_out
 
 
 def main():
@@ -105,6 +120,8 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--tiers", nargs="+", default=None, help="default: all tiers, including id_train")
+    ap.add_argument("--max-cell-maps", type=int, default=0,
+                     help="per mission, save this many per-cell BEV feature maps for RQ3 spatial plots")
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -118,11 +135,11 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     for tier, missions in tiers.items():
-        chunks = [
-            extract_mission(configs, model, dino, patch, m, device, args.batch_size, args.workers)
+        results = [
+            extract_mission(configs, model, dino, patch, m, device, args.batch_size, args.workers, args.max_cell_maps)
             for m in tqdm(missions, desc=tier)
         ]
-        chunks = [c for c in chunks if c is not None]
+        chunks = [c for c, _ in results if c is not None]
         if not chunks:
             print(f"{tier}: no windows, skipping")
             continue
@@ -130,6 +147,13 @@ def main():
         out_path = os.path.join(args.out_dir, f"{tier}.npz")
         np.savez_compressed(out_path, **merged)
         print(f"{tier}: {len(merged['timestamp'])} windows -> {out_path}")
+
+        cellmap_chunks = [cm for _, cm in results if cm is not None]
+        if cellmap_chunks:
+            merged_maps = {k: np.concatenate([c[k] for c in cellmap_chunks]) for k in cellmap_chunks[0]}
+            maps_path = os.path.join(args.out_dir, f"{tier}_cellmaps.npz")
+            np.savez_compressed(maps_path, **merged_maps)
+            print(f"{tier}: {len(merged_maps['timestamp'])} cell maps -> {maps_path}")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,11 @@ Each detector is also scored with a temporal EMA applied to its raw scores
 Tiers: near_forest, near_gravel, far_snow, far_arc (id_heldout is negative class
 for all of them), plus sensor_dropout (id_heldout scored under simulated depth
 dropout, using the *_rgbonly feature/score columns as the "OOD" condition).
+
+--cell-maps additionally scores any {tier}_cellmaps.npz (written by features.extract
+with --max-cell-maps) per grid cell with the already-fit mahalanobis_wayfaster
+detector, for RQ3 spatial failure-mode plots: where in the BEV grid a window's
+OOD score actually comes from, rather than one pooled number per window.
 """
 
 import argparse
@@ -35,6 +40,26 @@ OOD_TIERS = ["near_forest", "near_gravel", "far_snow", "far_arc"]
 def load_tier(features_dir, tier):
     path = os.path.join(features_dir, f"{tier}.npz")
     return dict(np.load(path, allow_pickle=True)) if os.path.exists(path) else None
+
+
+def load_cellmaps(features_dir, tier):
+    path = os.path.join(features_dir, f"{tier}_cellmaps.npz")
+    return dict(np.load(path, allow_pickle=True)) if os.path.exists(path) else None
+
+
+def save_cell_score_maps(features_dir, out_dir, detector, tiers):
+    maps_dir = os.path.join(out_dir, "cell_maps")
+    for tier in ["id_heldout"] + tiers:
+        data = load_cellmaps(features_dir, tier)
+        if data is None:
+            continue
+        os.makedirs(maps_dir, exist_ok=True)
+        n, x, y, c = data["maps"].shape
+        scores = detector.score(data["maps"].reshape(-1, c).astype(np.float32)).reshape(n, x, y)
+        for i in range(n):
+            name = f"{tier}_{data['mission'][i]}_{data['timestamp'][i]:.2f}"
+            np.save(os.path.join(maps_dir, f"{name}.npy"), scores[i])
+        print(f"{tier}: {n} cell score maps -> {maps_dir}")
 
 
 def build_detectors(id_train):
@@ -63,6 +88,8 @@ def main():
     ap.add_argument("--out-dir", default=None, help="default: <features-dir>/eval")
     ap.add_argument("--ema-halflife", type=float, default=1.0, help="seconds")
     ap.add_argument("--plots", action="store_true")
+    ap.add_argument("--cell-maps", action="store_true",
+                     help="score {tier}_cellmaps.npz per grid cell (needs --max-cell-maps at extraction)")
     args = ap.parse_args()
     out_dir = args.out_dir or os.path.join(args.features_dir, "eval")
     os.makedirs(out_dir, exist_ok=True)
@@ -109,6 +136,9 @@ def main():
     df.to_csv(csv_path, index=False)
     print(df.to_string(index=False))
     print(f"\nresults -> {csv_path}")
+
+    if args.cell_maps:
+        save_cell_score_maps(args.features_dir, out_dir, detectors["mahalanobis_wayfaster"], OOD_TIERS)
 
 
 if __name__ == "__main__":
