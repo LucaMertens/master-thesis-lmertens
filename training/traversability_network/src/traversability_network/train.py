@@ -159,6 +159,7 @@ def main():
         logger=wandb_logger,
         default_root_dir=CKPT_BASE,
         max_epochs=configs.TRAINING.EPOCHS,
+        min_epochs=20,  # early stopping (patience 10) can't fire before this many epochs
         check_val_every_n_epoch=1,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
