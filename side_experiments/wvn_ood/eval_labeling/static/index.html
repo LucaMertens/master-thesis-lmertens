@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Eval labeling</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #1c1c1e; color: #ddd; }
+  #bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #2a2a2e; flex-wrap: wrap; }
+  #bar button { background: #3a3a3f; color: #ddd; border: 1px solid #555; border-radius: 5px; padding: 5px 12px; cursor: pointer; }
+  #bar button.active { outline: 2px solid #fff; }
+  #btn-trav.active { background: #1f7a3a; } #btn-prob.active { background: #6f8f10; }
+  #btn-risky.active { background: #b5670f; } #btn-untrav.active { background: #a02020; }
+  #btn-erase.active { background: #555; }
+  #wrap { position: relative; width: 960px; height: 720px; margin: 10px auto; cursor: crosshair; }
+  #wrap canvas { position: absolute; left: 0; top: 0; }
+  #status { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+  .dirty { color: #f0b040; } .saved { color: #6c6; }
+  #hint { text-align: center; color: #888; font-size: 13px; margin-bottom: 12px; }
+  select, input[type=range] { accent-color: #888; background: #3a3a3f; color: #ddd; border: 1px solid #555; border-radius: 4px; }
+  kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 0 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="prev">&#8592;</button>
+  <select id="framesel"></select>
+  <button id="next">&#8594;</button>
+  <span style="width:12px"></span>
+  <button id="btn-trav">1 traversable</button>
+  <button id="btn-prob">2 probably trav</button>
+  <button id="btn-risky">3 risky</button>
+  <button id="btn-untrav">4 untraversable</button>
+  <button id="btn-erase">0 erase</button>
+  <label>opacity <input id="opacity" type="range" min="10" max="90" value="45" style="width:80px"></label>
+  <label>brush <span id="brushsize">8</span>px</label>
+  <button id="undo">undo (z)</button>
+  <button id="save">save (s)</button>
+  <div id="status"><span id="progress"></span><span id="savestate" class="saved">saved</span></div>
+</div>
+<div id="wrap">
+  <canvas id="base" width="960" height="720"></canvas>
+  <canvas id="over" width="960" height="720"></canvas>
+</div>
+<div id="hint">
+  drag: paint segment under cursor &nbsp; <kbd>Shift</kbd>+drag: brush &nbsp; right-drag: erase &nbsp;
+  <kbd>[</kbd><kbd>]</kbd> brush size &nbsp; <kbd>a</kbd>/<kbd>d</kbd> prev/next (autosaves) &nbsp;
+  <kbd>z</kbd> undo &nbsp; only paint what you are sure about, leave the rest unknown
+  <br>
+  <b>1</b> traversable (full speed) &nbsp; <b>2</b> probably (reduced speed) &nbsp;
+  <b>3</b> risky (route around) &nbsp; <b>4</b> untraversable (never enter)
+</div>
+<script>
+"use strict";
+const S = 2, W = 480, H = 360, N = W * H;
+const COLORS = {1: [40, 200, 90], 2: [170, 210, 40], 3: [245, 150, 20], 4: [220, 40, 40]};
+let frames = [], idx = 0, labels = new Uint8Array(N), segMap = new Uint32Array(N);
+let segPixels = new Map(), hoverId = 0, cls = 1, dirty = false, undoStack = [];
+let gesture = null, brushR = 8, lastPt = null;
+
+const base = document.getElementById("base").getContext("2d");
+const overC = document.getElementById("over");
+const over = overC.getContext("2d");
+const off = Object.assign(document.createElement("canvas"), {width: W, height: H});
+const offCtx = off.getContext("2d");
+
+function setClass(c) {
+  cls = c;
+  for (const [id, v] of [["btn-trav", 1], ["btn-prob", 2], ["btn-risky", 3], ["btn-untrav", 4], ["btn-erase", 0]])
+    document.getElementById(id).classList.toggle("active", v === c);
+}
+
+function setDirty(d) {
+  dirty = d;
+  const el = document.getElementById("savestate");
+  el.textContent = d ? "unsaved" : "saved";
+  el.className = d ? "dirty" : "saved";
+}
+
+function redraw() {
+  const img = offCtx.createImageData(W, H);
+  const a = document.getElementById("opacity").value * 2.55, d = img.data;
+  for (let i = 0; i < N; i++) {
+    const c = labels[i], j = i * 4;
+    if (c) { const col = COLORS[c]; d[j] = col[0]; d[j+1] = col[1]; d[j+2] = col[2]; d[j+3] = a; }
+    if (hoverId && segMap[i] === hoverId) {
+      d[j] = Math.min(255, d[j] + 160); d[j+1] = Math.min(255, d[j+1] + 160);
+      d[j+2] = Math.min(255, d[j+2] + 160); d[j+3] = Math.max(d[j+3], 70);
+    }
+  }
+  offCtx.putImageData(img, 0, 0);
+  over.clearRect(0, 0, W * S, H * S);
+  over.imageSmoothingEnabled = false;
+  over.drawImage(off, 0, 0, W * S, H * S);
+  if (gesture && gesture.mode === "brush" && lastPt) {
+    over.strokeStyle = "#fff"; over.beginPath();
+    over.arc(lastPt.x * S, lastPt.y * S, brushR * S, 0, 7); over.stroke();
+  }
+}
+
+function pushUndo() {
+  undoStack.push(labels.slice());
+  if (undoStack.length > 25) undoStack.shift();
+}
+
+function applySeg(id) {
+  if (!id || gesture.visited.has(id)) return;
+  gesture.visited.add(id);
+  const px = segPixels.get(id);
+  if (px) for (const i of px) labels[i] = gesture.cls;
+  setDirty(true);
+}
+
+function applyBrush(x, y) {
+  const r = brushR, r2 = r * r;
+  for (let dy = -r; dy <= r; dy++) {
+    const yy = y + dy;
+    if (yy < 0 || yy >= H) continue;
+    for (let dx = -r; dx <= r; dx++) {
+      const xx = x + dx;
+      if (xx >= 0 && xx < W && dx * dx + dy * dy <= r2) labels[yy * W + xx] = gesture.cls;
+    }
+  }
+  setDirty(true);
+}
+
+function stroke(x, y) {
+  if (gesture.mode === "seg") { applySeg(segMap[y * W + x]); return; }
+  if (lastPt) {
+    const dx = x - lastPt.x, dy = y - lastPt.y, dist = Math.hypot(dx, dy), step = Math.max(1, brushR / 2);
+    for (let t = step; t < dist; t += step)
+      applyBrush(Math.round(lastPt.x + dx * t / dist), Math.round(lastPt.y + dy * t / dist));
+  }
+  applyBrush(x, y);
+}
+
+function decodeSegments(imgEl) {
+  const c = Object.assign(document.createElement("canvas"), {width: W, height: H});
+  const ctx = c.getContext("2d");
+  ctx.drawImage(imgEl, 0, 0);
+  const d = ctx.getImageData(0, 0, W, H).data;
+  for (let i = 0; i < N; i++) segMap[i] = d[i*4] | (d[i*4+1] << 8) | (d[i*4+2] << 16);
+}
+
+function gridSegments(step) {
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    segMap[y * W + x] = ((y / step) | 0) * (((W / step) | 0) + 1) + ((x / step) | 0) + 1;
+}
+
+function buildSegPixels() {
+  segPixels = new Map();
+  for (let i = 0; i < N; i++) {
+    const id = segMap[i];
+    if (!id) continue;
+    let arr = segPixels.get(id);
+    if (!arr) { arr = []; segPixels.set(id, arr); }
+    arr.push(i);
+  }
+}
+
+async function save() {
+  if (!dirty) return;
+  await fetch("/api/labels/" + frames[idx].name, {method: "POST", body: labels});
+  frames[idx].labeled = labels.some(v => v);
+  setDirty(false);
+  updateProgress();
+}
+
+function updateProgress() {
+  const n = frames.filter(f => f.labeled).length;
+  document.getElementById("progress").textContent = `${n}/${frames.length} labeled`;
+  const sel = document.getElementById("framesel");
+  [...sel.options].forEach((o, i) => {
+    o.textContent = `${frames[i].labeled ? "✓ " : ""}${i + 1}. ${frames[i].name}`;
+  });
+}
+
+async function loadFrame(i) {
+  await save();
+  idx = Math.max(0, Math.min(frames.length - 1, i));
+  document.getElementById("framesel").value = idx;
+  const name = frames[idx].name;
+  const img = new Image();
+  img.src = "/frames/" + name + ".jpg";
+  await img.decode();
+  base.imageSmoothingEnabled = true;
+  base.drawImage(img, 0, 0, W * S, H * S);
+  const seg = new Image();
+  seg.src = "/segments/" + name + ".png";
+  try { await seg.decode(); decodeSegments(seg); }
+  catch { gridSegments(32); }
+  buildSegPixels();
+  const r = await fetch("/api/labels/" + name);
+  labels = r.status === 200 ? new Uint8Array(await r.arrayBuffer()) : new Uint8Array(N);
+  undoStack = []; hoverId = 0;
+  setDirty(false);
+  redraw();
+}
+
+overC.addEventListener("contextmenu", e => e.preventDefault());
+overC.addEventListener("mousedown", e => {
+  e.preventDefault();
+  const x = (e.offsetX / S) | 0, y = (e.offsetY / S) | 0;
+  pushUndo();
+  gesture = {mode: e.shiftKey ? "brush" : "seg", cls: e.button === 2 ? 0 : cls, visited: new Set()};
+  lastPt = null;
+  stroke(x, y);
+  lastPt = {x, y};
+  redraw();
+});
+overC.addEventListener("mousemove", e => {
+  const x = (e.offsetX / S) | 0, y = (e.offsetY / S) | 0;
+  hoverId = segMap[y * W + x] || 0;
+  if (gesture) { stroke(x, y); lastPt = {x, y}; }
+  redraw();
+});
+window.addEventListener("mouseup", () => { gesture = null; redraw(); });
+overC.addEventListener("mouseleave", () => { hoverId = 0; redraw(); });
+
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === "1") setClass(1);
+  else if (k === "2") setClass(2);
+  else if (k === "3") setClass(3);
+  else if (k === "4") setClass(4);
+  else if (k === "0" || k === "e") setClass(0);
+  else if (k === "a" || k === "arrowleft") loadFrame(idx - 1);
+  else if (k === "d" || k === "arrowright") loadFrame(idx + 1);
+  else if (k === "z") { if (undoStack.length) { labels = undoStack.pop(); setDirty(true); redraw(); } }
+  else if (k === "s") save();
+  else if (k === "[") { brushR = Math.max(2, brushR - 2); document.getElementById("brushsize").textContent = brushR; }
+  else if (k === "]") { brushR = Math.min(60, brushR + 2); document.getElementById("brushsize").textContent = brushR; }
+  else return;
+  e.preventDefault();
+});
+
+document.getElementById("prev").onclick = () => loadFrame(idx - 1);
+document.getElementById("next").onclick = () => loadFrame(idx + 1);
+document.getElementById("btn-trav").onclick = () => setClass(1);
+document.getElementById("btn-prob").onclick = () => setClass(2);
+document.getElementById("btn-risky").onclick = () => setClass(3);
+document.getElementById("btn-untrav").onclick = () => setClass(4);
+document.getElementById("btn-erase").onclick = () => setClass(0);
+document.getElementById("undo").onclick = () => { if (undoStack.length) { labels = undoStack.pop(); setDirty(true); redraw(); } };
+document.getElementById("save").onclick = save;
+document.getElementById("opacity").oninput = redraw;
+document.getElementById("framesel").onchange = e => loadFrame(+e.target.value);
+setInterval(save, 15000);
+window.addEventListener("beforeunload", e => { if (dirty) e.preventDefault(); });
+
+(async () => {
+  frames = await (await fetch("/api/frames")).json();
+  const sel = document.getElementById("framesel");
+  frames.forEach((f, i) => sel.add(new Option(f.name, i)));
+  updateProgress();
+  setClass(1);
+  const first = frames.findIndex(f => !f.labeled);
+  await loadFrame(first < 0 ? 0 : first);
+})();
+</script>
+</body>
+</html>

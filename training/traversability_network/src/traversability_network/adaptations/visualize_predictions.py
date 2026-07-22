@@ -1,7 +1,4 @@
-"""Qualitative check of a checkpoint: predicted mu/nu projected onto the anchor
-camera image, next to the same image with the ground-truth (RHE) path colored by
-its labelled mu. Samples both train and valid missions, saves PNGs locally.
-"""
+"""Qualitative check of a checkpoint: predicted mu/nu and the labelled path overlaid on the camera image, saved as PNGs per train/valid mission."""
 import argparse
 import os
 
@@ -9,9 +6,9 @@ import cv2
 import numpy as np
 import torch
 
-from .config import get_cfg
-from .data.grandtour_dataset import GrandTourDataset
-from .network.trainer import TrainingModule
+from ..config import get_cfg
+from ..network.trainer import TrainingModule
+from .grandtour_dataset import GrandTourDataset
 from .overlay import overlay_bev_on_image, overlay_path_on_image
 
 
@@ -41,9 +38,10 @@ def load_model(cfg_file, checkpoint, device):
 
 @torch.no_grad()
 def render_sample(model, batch, device, grid_bounds):
-    color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, states, target_trav, trav_weights, depth_target, depth_mask = batch
+    color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, states, target_trav, trav_weights, depth_target, depth_mask, *extra = batch
     b = tuple(x.unsqueeze(0).to(device) for x in (color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, depth_target))
-    trav_map, _, _, _ = model.model(*b)
+    image_feats = extra[0].unsqueeze(0).to(device) if extra else None
+    trav_map, _, _, _ = model.model(*b, image_feats=image_feats)
     trav_map = trav_map[0].cpu().numpy()  # (2, Hd, Wd)
 
     K, ext = intrinsics[-1].numpy(), extrinsics[-1].numpy()

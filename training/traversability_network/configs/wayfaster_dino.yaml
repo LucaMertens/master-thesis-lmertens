@@ -1,0 +1,66 @@
+TAG: 'wayfaster_dino'
+
+# Architecture control: grandtour_dino.yaml (the jqag0wz6 setup) trained on the
+# ORIGINAL WayFASTER realsense dataset instead of GrandTour. Same network, same
+# frozen-DINOv3 backbone, same loss/weights/gates; only the dataset (and its
+# native 320x180 image geometry) differs. If mu learning works here, the
+# GrandTour collapse is a data/label property, not an architecture defect.
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 12
+    DEVICES: [0]
+    EPOCHS: 50
+    VERBOSE: False
+    GAMMA: 0.998
+    DEPTH_WEIGHT: 0.05
+    HORIZON: 300
+    DT: 0.1
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+MODEL:
+    BACKBONE: 'dino'
+    DINO_MODEL: 'facebook/dinov3-vitb16-pretrain-lvd1689m'
+    DINO_FEAT_DIM: 768
+    DINO_INPUT_SIZE: [320, 176]  # patch-16 multiple at the wayfaster 320x180 native res
+    DINO_NECK_DIM: 256
+    TIME_LENGTH: 4
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [320, 176]   # native 320x180, /8-divisible
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    NAME: 'wayfaster'
+    CSV_FILE: 'rosbags.csv'
+    TRAIN_DIRS: ['/datahome/lmertens/wayfaster_dataset/realsense/data_train']
+    VALID_DIRS: ['/datahome/lmertens/wayfaster_dataset/realsense/data_valid']
+    DINO_CACHE_ROOT: '/datalocal/lmertens/wayfaster_dino'
+    RESIZED_ROOT: null       # wayfaster images are read from the bag dirs directly
+    DEPTH_CACHE_ROOT: null   # ...and so are the depth tifs
+    LDS_ALPHA: 0.75
+    VISIBILITY_GATE: True
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5      # reads the exact flipped-state cache (features_flip.npy)
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.5
+    MAX_ROTATION: 0.2
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]

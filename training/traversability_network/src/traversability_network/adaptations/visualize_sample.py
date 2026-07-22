@@ -1,19 +1,4 @@
-"""Sanity overlay: depth, future path and BEV occupancy for training samples.
-
-Renders, per anchor frame, exactly the geometry the loss sees (reuses the
-dataset's get_states / get_extrinsics / read_pcloud):
-  left  - raw RGB with depth blended in and the future path reprojected
-  right - BEV z-height from read_pcloud with the future path drawn on top
-
-Static frames:
-    uv run --project training/traversability_network python -m \
-        traversability_network.visualize_sample --mission ETH-1 --indices 800 1500
-
-Video:
-    uv run --project training/traversability_network python -m \
-        traversability_network.visualize_sample --mission ETH-1 \
-        --video ETH-1_overlay.mp4 --stride 2 --fps 15
-"""
+"""Sanity overlay: renders per-anchor-frame depth, future path and BEV occupancy, reusing the dataset's get_states/get_extrinsics/read_pcloud."""
 
 import argparse
 import bisect
@@ -23,11 +8,11 @@ from functools import lru_cache
 import cv2
 import numpy as np
 
-from .config import get_cfg
-from .data.grandtour_dataset import GrandTourDataset
-from .network.dataloader import Dataset
+from ..config import get_cfg
+from ..network.dataloader import Dataset
+from .grandtour_dataset import GrandTourDataset
 
-CFG = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "grandtour.yaml")
+CFG = os.path.join(os.path.dirname(__file__), "..", "..", "..", "configs", "grandtour.yaml")
 
 GREEN = (80, 255, 80)
 RED = (60, 60, 255)

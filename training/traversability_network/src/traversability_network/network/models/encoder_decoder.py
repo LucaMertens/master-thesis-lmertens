@@ -142,13 +142,15 @@ class Encoder(nn.Module):
     Args:
         C (int): Number of output channels.
         downsample (int, optional): Downsampling factor. Defaults to 8.
+        freeze (bool, optional): Freeze the pretrained ResNet stages. Defaults to False.
     """
-    def __init__(self, C, downsample=8):
+    def __init__(self, C, downsample=8, freeze=False):
         super().__init__()
         self.C = C
         self.downsample = downsample
+        self.freeze = freeze
 
-        print('Using Resnet34')
+        print('Using Resnet34' + (' (frozen)' if freeze else ''))
         resnet = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
         c0 = 64
         c1 = 128
@@ -169,6 +171,23 @@ class Encoder(nn.Module):
         else:
             print('Downsample {} not implemented'.format(downsample))
             sys.exit(1)
+
+        if freeze:
+            for m in self._pretrained_modules():
+                m.requires_grad_(False)
+
+    def _pretrained_modules(self):
+        if self.downsample == 8:
+            return [self.backbone, self.layer]
+        return [self.backbone, self.layer1, self.layer2]
+
+    def train(self, mode=True):
+        # Frozen stages stay in eval so BN running stats don't drift.
+        super().train(mode)
+        if self.freeze:
+            for m in self._pretrained_modules():
+                m.eval()
+        return self
 
     def forward(self, x):
         """

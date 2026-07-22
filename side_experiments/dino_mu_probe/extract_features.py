@@ -1,5 +1,6 @@
-"""Ceiling probe, step 1: project low/high-mu path points into earlier camera
-frames and cache frozen DINO patch features at the projected pixels."""
+"""Ceiling probe, step 1: cache frozen DINO patch features for low/high-mu path points.
+
+Run: uv run python side_experiments/dino_mu_probe/extract_features.py --cfg <cfg.yaml>"""
 
 import argparse
 import os
@@ -19,8 +20,6 @@ LOOKBACK = (0.3, 15.0)  # s before arrival to search for a view (slip events are
 VIEW_DEPTH = (1.0, 6.0)  # m, accepted camera-frame depth of the target point
 EDGE_MARGIN = 8        # px, keep projections away from image borders
 HIGH_MU = 0.85
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
-IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 
 def interp_odom(odom, query_t):
@@ -36,19 +35,20 @@ def interp_odom(odom, query_t):
     return position, quaternion
 
 
-def select_points(mu, obs, mu_max, obs_min, neg_per_pos, rng):
+def select_points(mu, obs, mu_max, obs_min, neg_per_pos, rng, mid_band=False):
     low = np.flatnonzero((mu <= mu_max) & (obs >= obs_min))
     high = np.flatnonzero((mu >= HIGH_MU) & (obs >= obs_min))
     n_neg = min(len(high), max(200, neg_per_pos * len(low)))
     if len(high) > n_neg:
         high = np.sort(rng.choice(high, n_neg, replace=False))
-    return low, high
+    mid = np.flatnonzero((mu > mu_max) & (mu < HIGH_MU) & (obs >= obs_min)) if mid_band else np.array([], np.int64)
+    if len(mid) > n_neg:
+        mid = np.sort(rng.choice(mid, n_neg, replace=False))
+    return low, mid, high
 
 
 def find_view(ground, t_arrive, img_ts, R_wc, t_wc, K, img_size):
-    """Latest (frame_idx, u, v) from which the ground point is decently visible.
-    Distance-gated rather than time-gated: slip events are approached slowly, so a
-    fixed lookahead time would put the camera on top of the point."""
+    """Finds the latest frame with a clean view of a ground point."""
     W, H = img_size
     lo = np.searchsorted(img_ts, t_arrive - LOOKBACK[1])
     hi = np.searchsorted(img_ts, t_arrive - LOOKBACK[0])
@@ -69,7 +69,7 @@ def find_view(ground, t_arrive, img_ts, R_wc, t_wc, K, img_size):
     return lo + f, float(u[f]), float(v[f])
 
 
-def mission_records(cfg, mission, rng, neg_per_pos):
+def mission_records(cfg, mission, rng, neg_per_pos, mid_band=False):
     """(img_path, u, v, mu, y, mission) tuples for all projectable probe points."""
     ds = cfg["DATASET"]
     data_dir = os.path.join(ds["DATA_ROOT"], mission)
@@ -103,33 +103,56 @@ def mission_records(cfg, mission, rng, neg_per_pos):
     Kr[1] *= H / NATIVE[1]
 
     pos, _ = interp_odom(odom, ts)
-    low, high = select_points(
+    low, mid, high = select_points(
         mu, obs, ds.get("OVERSAMPLE_MU_MAX", 0.6), ds.get("OVERSAMPLE_OBSERVABILITY_THRESH", 0.6),
-        neg_per_pos, rng,
+        neg_per_pos, rng, mid_band=mid_band,
     )
-    recs, placed_low = [], 0
-    for j, y in [(j, 1) for j in low] + [(j, 0) for j in high]:
+    recs, placed = [], {1: 0, 0: 0, -1: 0}
+    for j, y in [(j, 1) for j in low] + [(j, 0) for j in high] + [(j, -1) for j in mid]:
         ground = pos[j] - np.array([0.0, 0.0, BASE_HEIGHT])
         view = find_view(ground, ts[j], img_ts, R_wc, t_wc, Kr, (W, H))
         if view is not None:
             f, u, v = view
             recs.append((img_paths[f], u, v, float(mu[j]), y, mission))
-            placed_low += y
-    print(f"  {mission}: low {placed_low}/{len(low)} placed, "
-          f"{len(recs) - placed_low}/{len(high)} high, {len(recs)} total")
+            placed[y] += 1
+    print(f"  {mission}: low {placed[1]}/{len(low)} placed, {placed[0]}/{len(high)} high, "
+          f"{placed[-1]}/{len(mid)} mid, {len(recs)} total")
     return recs
 
 
+class ResNetFeatures(torch.nn.Module):
+    """Torchvision ResNet wrapped with the DINO models' feature-extraction API."""
+
+    patch_size = 32
+
+    def __init__(self, resnet):
+        super().__init__()
+        self.stem = torch.nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
+        self.layer1, self.layer2, self.layer3, self.layer4 = (
+            resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4,
+        )
+
+    def get_intermediate_layers(self, x, n=1, reshape=True):
+        x = self.layer4(self.layer3(self.layer2(self.layer1(self.stem(x)))))
+        return [x]
+
+
 def load_model(name, weights, device):
-    repo = "facebookresearch/dinov3" if name.startswith("dinov3") else "facebookresearch/dinov2"
-    kwargs = {"weights": weights} if weights else {}
-    model = torch.hub.load(repo, name, **kwargs)
-    return model.eval().to(device)
+    if name.startswith("resnet"):
+        import torchvision.models as tvm
+
+        model = getattr(tvm, name)(weights=weights or "IMAGENET1K_V1")
+        return ResNetFeatures(model).eval().to(device)
+    from ood_detection.common.dino import load_dino
+
+    return load_dino(name, weights, device)
 
 
 @torch.no_grad()
 def extract_features(recs, model, patch, device, batch=32):
     """Bilinear-sample the last-layer patch feature at each record's pixel."""
+    from ood_detection.common.dino import dino_patch_features
+
     by_frame = defaultdict(list)
     for i, r in enumerate(recs):
         by_frame[r[0]].append(i)
@@ -143,14 +166,13 @@ def extract_features(recs, model, patch, device, batch=32):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255
             H, W = img.shape[:2]
             img = cv2.resize(img, (W // patch * patch, H // patch * patch), interpolation=cv2.INTER_AREA)
-            imgs.append((img - IMAGENET_MEAN) / IMAGENET_STD)
+            imgs.append(img)
             idx = by_frame[p]
             # pixel -> [-1,1] over the full image = full feature map (align_corners=False)
             uv = np.array([[recs[i][1] / W * 2 - 1, recs[i][2] / H * 2 - 1] for i in idx], np.float32)
             groups.append((idx, uv))
         x = torch.from_numpy(np.stack(imgs)).permute(0, 3, 1, 2).to(device)
-        with torch.autocast(device.type, torch.bfloat16, enabled=device.type == "cuda"):
-            fmap = model.get_intermediate_layers(x, n=1, reshape=True)[0].float()
+        fmap = dino_patch_features(model, x, patch)
         if feats is None:
             feats = np.zeros((len(recs), fmap.shape[1]), np.float32)
         for b, (idx, uv) in enumerate(groups):
@@ -180,10 +202,14 @@ def save_overlays(recs, out_dir, n, rng):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cfg", default="training/traversability_network/configs/grandtour_lite.yaml")
-    ap.add_argument("--model", default="dinov2_vitb14_reg")
-    ap.add_argument("--weights", default=None, help="local .pth for gated dinov3_* models")
+    ap.add_argument("--model", default="dinov2_vitb14_reg", help="dinov2_*/dinov3_* or resnet18/34/50")
+    ap.add_argument("--weights", default=None,
+                     help="local .pth for gated dinov3_* models, or a torchvision weights "
+                          "enum name for resnet* (default IMAGENET1K_V1)")
     ap.add_argument("--missions", nargs="*", default=None, help="default: TRAIN + VALID missions")
     ap.add_argument("--neg-per-pos", type=int, default=4)
+    ap.add_argument("--mid-band", action="store_true",
+                    help="also sample mu in (0.6, 0.85) for regression probes")
     ap.add_argument("--out", default="side_experiments/dino_mu_probe/output/features.npz")
     ap.add_argument("--overlay-dir", default="side_experiments/dino_mu_probe/output/overlays")
     ap.add_argument("--overlays", type=int, default=8)
@@ -199,14 +225,16 @@ def main():
 
     recs = []
     for mission in missions:
-        recs += mission_records(cfg, mission, rng, args.neg_per_pos)
+        recs += mission_records(cfg, mission, rng, args.neg_per_pos, mid_band=args.mid_band)
     print(f"{len(recs)} probe points on {len({r[0] for r in recs})} frames")
     if args.overlays:
         save_overlays(recs, args.overlay_dir, args.overlays, rng)
 
+    from ood_detection.common.dino import patch_size
+
     device = torch.device(args.device)
     model = load_model(args.model, args.weights, device)
-    patch = model.patch_size if hasattr(model, "patch_size") else model.patch_embed.patch_size[0]
+    patch = patch_size(model)
     feats = extract_features(recs, model, patch, device)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

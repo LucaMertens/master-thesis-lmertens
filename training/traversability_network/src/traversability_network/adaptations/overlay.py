@@ -1,5 +1,4 @@
-"""Camera-image overlays of BEV traversability values, shared by the trainer
-(wandb panels) and visualize_predictions.py (standalone CLI)."""
+"""Camera-image overlays of BEV traversability values, used by the trainer's wandb panels and visualize_predictions.py."""
 import cv2
 import numpy as np
 import torch

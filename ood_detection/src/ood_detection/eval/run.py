@@ -1,25 +1,4 @@
-"""Step 2 of the OOD pipeline: read the cached feature .npz files (from
-ood_detection.features.extract) and produce an AUROC/FPR95 table across every
-detector x tier combination, plus score-histogram/ROC plots.
-
-Detectors:
-  mahalanobis_wayfaster / mahalanobis_dino  - post-hoc feature distance (RQ2),
-      identical detector class on two feature spaces (answers optional RQ4 too)
-  modality_disagreement                     - optional RQ5, cheap pseudo-ensemble
-  evidential                                - RQ2, only if the checkpoint has a
-      Deep Evidential Regression head (MODEL.EVIDENTIAL)
-Each detector is also scored with a temporal EMA applied to its raw scores
-(optional RQ6), added as "<detector>+ema" rows.
-
-Tiers: near_forest, near_gravel, far_snow, far_arc (id_heldout is negative class
-for all of them), plus sensor_dropout (id_heldout scored under simulated depth
-dropout, using the *_rgbonly feature/score columns as the "OOD" condition).
-
---cell-maps additionally scores any {tier}_cellmaps.npz (written by features.extract
-with --max-cell-maps) per grid cell with the already-fit mahalanobis_wayfaster
-detector, for RQ3 spatial failure-mode plots: where in the BEV grid a window's
-OOD score actually comes from, rather than one pooled number per window.
-"""
+"""Step 2 of the OOD pipeline: scores cached features and reports detection metrics."""
 
 import argparse
 import os
@@ -127,7 +106,8 @@ def main():
         # Sensor dropout: id_heldout scored under simulated depth loss (the *_rgbonly
         # columns) as the "OOD" condition against the same RGB+D-fitted detector.
         # modality_disagreement is skipped here: it *is* the depth-off signal itself.
-        if name != "modality_disagreement":
+        # mahalanobis_dino too: DINO never sees depth, its features are unchanged.
+        if name not in ("modality_disagreement", "mahalanobis_dino"):
             s_dropout = score(name, id_heldout, detectors, feat_keys, rgbonly=True)
             rows.append({"detector": name, "tier": "sensor_dropout", **evaluate(s_id, s_dropout)})
 

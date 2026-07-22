@@ -1,11 +1,4 @@
-"""Estimate, per epoch and without training, how OVERSAMPLE_FRACTION and the LDS
-exponent alpha reshape the mu loss: fraction moves cell *exposure*, alpha moves
-*loss-mass share* and the max/min weight ratio (the instability indicator).
-
-Usage:
-    uv run --project training/traversability_network python \
-        training/traversability_network/tests/oversampling_effect.py
-"""
+"""Estimates, without training, how OVERSAMPLE_FRACTION and the LDS exponent alpha reshape mu-loss cell exposure and loss-mass share."""
 
 import os
 from pathlib import Path
@@ -14,7 +7,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from traversability_network.config import get_cfg
-from traversability_network.data.grandtour_dataset import GrandTourDataset
+from traversability_network.adaptations.grandtour_dataset import GrandTourDataset
 
 CFG = Path(__file__).resolve().parents[1] / "configs" / "grandtour.yaml"
 NBINS = 5  # 0.2-wide mu bins, matching prepare_weights

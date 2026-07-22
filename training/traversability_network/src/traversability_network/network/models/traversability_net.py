@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .temporal_fusion import TemporalModel
-from .encoder_decoder import Encoder, Decoder
+from .encoder_decoder import Decoder
+from ...adaptations import build_encoder
 
 class TravNet(nn.Module):
     """
@@ -22,7 +23,9 @@ class TravNet(nn.Module):
     def __init__(
             self, grid_bounds, input_size, downsample=8,
             image_dim=64, temporal_length=3, predict_depth=True,
-            fuse_pcloud=True, voxel_downsample=1, mu_bins=0, evidential=False
+            fuse_pcloud=True, voxel_downsample=1, mu_bins=0, evidential=False,
+            freeze_backbone=False, backbone="resnet34", dino_feat_dim=768,
+            dino_neck_dim=256, mu_pixel_linear=False
         ):
         super(TravNet, self).__init__()
 
@@ -71,8 +74,12 @@ class TravNet(nn.Module):
         else:
             pcloud_dim = 0
         
-        # Image encoder
-        self.encoder = Encoder(self.D + self.camC, downsample=self.downsample)
+        # ADAPTATION: image encoder select (trainable ResNet, or frozen-DINO neck
+        # on precomputed patch features passed to forward() as image_feats).
+        self.backbone = backbone
+        self.encoder = build_encoder(
+            backbone, self.D + self.camC, self.downsample, self.input_size,
+            freeze_backbone, dino_feat_dim, dino_neck_dim)
 
         # Bird's eye view compressor        
         self.bev_compressor = nn.Sequential(
@@ -94,8 +101,18 @@ class TravNet(nn.Module):
         # mu_bins bins (mu_bins+1 ch: bin logits + sigmoid nu), or an evidential
         # Normal-Inverse-Gamma over mu (5 ch: gamma, v, alpha, beta + sigmoid nu).
         assert not (self.mu_bins and self.evidential), "mu_bins and evidential are mutually exclusive"
+        # Probe-as-layer mu path: linear per-pixel classifier on the L2-normalized
+        # frozen DINO features, lifted to BEV geometrically (depth-weighted
+        # sample2bev, mass-normalized mean over frames/z). No learnable mu decoder;
+        # the BEV head then only outputs nu.
+        self.mu_pixel_linear = mu_pixel_linear
+        if mu_pixel_linear:
+            assert backbone == "dino" and self.mu_bins, "mu_pixel_linear needs BACKBONE=dino and MU_BINS>0"
+            self.mu_pixel_head = nn.Conv2d(dino_feat_dim, self.mu_bins, kernel_size=1)
         if self.evidential:
             out_ch = 5
+        elif self.mu_pixel_linear:
+            out_ch = 1
         elif self.mu_bins:
             out_ch = self.mu_bins + 1
         else:
@@ -105,7 +122,7 @@ class TravNet(nn.Module):
             nn.BatchNorm2d(self.latent_dim),
             nn.ReLU(inplace=True),
             nn.Conv2d(self.latent_dim, out_ch, kernel_size=1, padding=0)]
-        if not self.mu_bins and not self.evidential:
+        if self.mu_pixel_linear or (not self.mu_bins and not self.evidential):
             head_layers.append(nn.Sigmoid())
         self.travmap_head = nn.Sequential(*head_layers)
         if self.mu_bins:
@@ -243,7 +260,7 @@ class TravNet(nn.Module):
             # (BT, X, Y, Z) -> (BT, Z, X, Y)
             return grid.view(BT, nx[0], nx[1], nx[2]).permute(0, 3, 1, 2)
 
-    def forward(self, color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, depth_img=None):
+    def forward(self, color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, depth_img=None, image_feats=None):
         """
         Forward pass of the TravNet model.
 
@@ -270,10 +287,14 @@ class TravNet(nn.Module):
 
         color_img = color_img.view(B*T, C, imH, imW)
 
-        # Normalize image according to statistics
-        x = (color_img - self.mean) / self.std
-        # Pass image throught encoder
-        x = self.encoder(x)
+        if image_feats is not None:
+            # Precomputed frozen backbone features (already normalized at cache time)
+            x = self.encoder(image_feats.view(B*T, *image_feats.shape[2:]).float())
+        else:
+            # Normalize image according to statistics
+            x = (color_img - self.mean) / self.std
+            # Pass image throught encoder
+            x = self.encoder(x)
 
         # Depth is B x N x D x H/downsample x W/downsample
         if self.predict_depth:
@@ -288,6 +309,22 @@ class TravNet(nn.Module):
 
         # Create 3D frustrum
         geom = self.get_inv_geometry(intrinsics, extrinsics)
+
+        mu_pixel_logits = None
+        if self.mu_pixel_linear:
+            assert image_feats is not None
+            # Linear probe on L2-normalized patch features; the depth weights are
+            # detached so the mu loss cannot shape the depth path (mu stays a pure
+            # linear image-space readout plus fixed geometry).
+            pl = self.mu_pixel_head(F.normalize(image_feats.view(B*T, *image_feats.shape[2:]).float(), p=2, dim=1))
+            pl = F.interpolate(pl, size=depth_logits.shape[-2:], mode="bilinear", align_corners=False)
+            pl = torch.cat([pl, torch.ones_like(pl[:, :1])], dim=1)
+            mu_x = depth_logits.softmax(dim=1).detach().unsqueeze(1) * pl.unsqueeze(2)
+            mu_bev = self.sample2bev(geom, mu_x)                      # B x T x K+1 x Z x X x Y
+            num = mu_bev[:, :, :self.mu_bins].sum(dim=(1, 3))
+            den = mu_bev[:, :, self.mu_bins:].sum(dim=(1, 3))
+            mu_pixel_logits = num / (den + self.eps)                  # B x K x X x Y
+
         x = self.sample2bev(geom, x)
 
         # X is B x T x C x Z x X x Y ->  B*T x C*Z x X x Y
@@ -319,7 +356,11 @@ class TravNet(nn.Module):
         
         # Calculate traversability map
         out = self.travmap_head(bev_features)
-        if self.mu_bins:
+        if self.mu_pixel_linear:
+            mu = (mu_pixel_logits.softmax(1) * self.mu_centers.view(1, -1, 1, 1)).sum(1, keepdim=True)
+            trav_map = torch.cat([mu, out], dim=1)
+            mu_logits = mu_pixel_logits
+        elif self.mu_bins:
             mu_logits = out[:, :self.mu_bins]
             mu = (mu_logits.softmax(1) * self.mu_centers.view(1, -1, 1, 1)).sum(1, keepdim=True)
             trav_map = torch.cat([mu, out[:, self.mu_bins:].sigmoid()], dim=1)

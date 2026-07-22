@@ -1,13 +1,4 @@
-"""Overfit smoke test: train on ETH-1 and check traversability error drops on it.
-
-Exercises the full pipeline (GrandTourDataset -> TravNet -> Lightning loop) on a
-small ETH-1 subset and asserts the model fits it. Skips when the dataset or a
-GPU is unavailable. Run directly for a verbose report incl. the convergence
-curve:
-
-    uv run --project training/traversability_network python \
-        training/traversability_network/tests/test_smoke_train_eth1.py
-"""
+"""Overfit smoke test: trains on a small ETH-1 subset through the full pipeline and asserts traversability error drops; skips without a dataset or GPU."""
 
 import os
 import subprocess
@@ -30,7 +21,7 @@ import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, Subset
 from traversability_network.config import get_cfg
-from traversability_network.data.grandtour_dataset import GrandTourDataset
+from traversability_network.adaptations.grandtour_dataset import GrandTourDataset
 from traversability_network.network.trainer import TrainingModule
 
 MISSION = "ETH-1"

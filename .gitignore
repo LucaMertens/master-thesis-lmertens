@@ -196,9 +196,13 @@ CLAUDE.md
 twist_comparison*.png
 preprocessing/data_labeling_pipeline/tests/benchmark_results
 
+**/output/**/*.png
+**/output/**/*.jpg
+
 # depth_generation: cloned at build time, weights downloaded separately
 preprocessing/depth_generation/FoundationStereo/
 preprocessing/depth_generation/pretrained_models/
+
 
 *.ckpt
 

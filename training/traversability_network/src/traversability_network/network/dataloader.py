@@ -1,5 +1,5 @@
-# Taken from wayfaster repository (https://github.com/matval/wayfaster)
-# Used as the base Dataset; GrandTourDataset subclasses it (see grandtour_dataset.py).
+# Base Dataset from the wayfaster repository (https://github.com/matval/wayfaster).
+# GrandTourDataset (adaptations/grandtour_dataset.py) subclasses it.
 import bisect
 import os
 import random
@@ -13,10 +13,7 @@ import torch.utils.data as DataLoader
 from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation as R
 
-# Horizontal flip mirrors the base frame (y -> -y) and the camera x-axis (the
-# image u-flip), so cam2base conjugates as FLIP_BASE @ cam2base @ FLIP_CAM.
-FLIP_BASE = np.diag([1.0, -1.0, 1.0, 1.0])
-FLIP_CAM = np.diag([-1.0, 1.0, 1.0, 1.0])
+from .. import adaptations
 
 
 class Dataset(DataLoader.Dataset):
@@ -54,11 +51,13 @@ class Dataset(DataLoader.Dataset):
         self.max_rotation_aug = configs.AUGMENTATIONS.MAX_ROTATION
         self.lds_alpha = configs.DATASET.LDS_ALPHA
         self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
+        self.occlusion_gate = getattr(configs.DATASET, "OCCLUSION_GATE", False)
         self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
         self.harvest_time_window = getattr(configs.DATASET, "HARVEST_TIME_WINDOW", 0.0)
 
         self.bin_width = 0.1
         self.dtype = torch.float32
+        self.use_dino_cache = False  # GrandTourDataset enables this in DINO mode
 
         self.map_size = (
             int(
@@ -89,6 +88,10 @@ class Dataset(DataLoader.Dataset):
 
                 # Prepare data
                 formatted_data = self.read_data(states_data, images_data, curr_dir)
+                if getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino":
+                    # ADAPTATION: frozen-DINO feature cache (see adaptations/dino_cache.py)
+                    adaptations.attach_dino_cache(formatted_data, configs.DATASET.DINO_CACHE_ROOT, bag[0])
+                    self.use_dino_cache = True
                 # Append to the list of rosbag data
                 if len(formatted_data["image_timestamp"]) >= self.n_frames:
                     self.rosbags.append(formatted_data)
@@ -294,19 +297,15 @@ class Dataset(DataLoader.Dataset):
         trav_weights[:, 0] = self.weights[weight_idxs[:, 0], 0]
         trav_weights[:, 1] = self.weights[weight_idxs[:, 1], 1]
 
-        # mu/nu observability gates: precomputed smoothstep from the RHE (0 at standstill
-        # where the parameter is unobservable, 1 in normal motion). A soft mask, never a
-        # general scalar reweighting.
-        trav_weights[:, 0] *= mu_observability
-        trav_weights[:, 1] *= nu_observability
+        # ADAPTATION: mu/nu observability gate (RHE smoothstep, 0 at standstill)
+        trav_weights = adaptations.observability_gate(trav_weights, mu_observability, nu_observability)
 
-        # Visibility gate: zero the weight of horizon cells no input frame can see.
-        # They are unpredictable from the input, and their gradient only pulls the
-        # prediction toward the label mean.
+        # ADAPTATION: visibility/occlusion gate (zero cells no input frame can see)
         if self.visibility_gate:
-            trav_weights *= self.visible_states(
-                states, intrinsics_list, extrinsics_list
-            )[:, None]
+            trav_weights = adaptations.apply_visibility_gate(
+                trav_weights, states, intrinsics_list, extrinsics_list,
+                self.grid_bounds, self.image_size, self.occlusion_gate, depth_img_list,
+            )
 
         # Because we have a single camera
         color_img = torch.stack(color_img_list)
@@ -345,7 +344,7 @@ class Dataset(DataLoader.Dataset):
         depth_target = torch.from_numpy(depth_target)
         depth_mask = torch.from_numpy(depth_mask).type(self.dtype)
 
-        return (
+        out = (
             color_img,
             depth_voxel,
             intrinsics_full,
@@ -357,6 +356,11 @@ class Dataset(DataLoader.Dataset):
             depth_target,
             depth_mask,
         )
+        if self.use_dino_cache:
+            # ADAPTATION: frozen-DINO feature cache (see adaptations/dino_cache.py)
+            feats = adaptations.read_dino_feats(rosbag_dict, data_idx, self.n_frames, horizontal_flip)
+            out = out + (feats,)
+        return out
 
     def read_data(self, states_data, images_data, curr_dir):
         """
@@ -385,6 +389,13 @@ class Dataset(DataLoader.Dataset):
 
         map_float = lambda x: np.array(list(map(float, x)))
 
+        # ADAPTATION: resized-image / depth-cache root fallback (see adaptations/paths.py)
+        img_root, depth_root = adaptations.resolve_media_roots(
+            curr_dir,
+            getattr(self.configs.DATASET, "RESIZED_ROOT", None),
+            getattr(self.configs.DATASET, "DEPTH_CACHE_ROOT", None),
+        )
+
         for i in range(len(images_data)):
             timestamp = images_data["timestamp"].iloc[i]
             color_fname = images_data["image"].iloc[i]
@@ -393,18 +404,7 @@ class Dataset(DataLoader.Dataset):
             cam2base = images_data["cam2base"].iloc[i]
 
             # pcloud_fname = os.path.join(curr_dir, pcloud_fname)
-            img_root = curr_dir
-            if getattr(self.configs.DATASET, "RESIZED_ROOT", None):
-                img_root = os.path.join(
-                    self.configs.DATASET.RESIZED_ROOT, os.path.basename(curr_dir)
-                )
             color_fname = os.path.join(img_root, color_fname)
-
-            depth_root = curr_dir
-            if getattr(self.configs.DATASET, "DEPTH_CACHE_ROOT", None):
-                depth_root = os.path.join(
-                    self.configs.DATASET.DEPTH_CACHE_ROOT, os.path.basename(curr_dir)
-                )
             depth_fname = os.path.join(depth_root, depth_fname)
 
             # Read intrinsics matrix
@@ -469,6 +469,9 @@ class Dataset(DataLoader.Dataset):
             "quaternion": quaternion_list,
             "action": action_list,
             "traversability": trav_list,
+            # The CSV labels have no RHE observability gates: fully observable.
+            "mu_observability": np.ones(len(states_timestamp_list)),
+            "nu_observability": np.ones(len(states_timestamp_list)),
         }
 
         return data_dict
@@ -538,26 +541,19 @@ class Dataset(DataLoader.Dataset):
             aug_transformation[1, 0], aug_transformation[0, 0]
         )
 
-        # Ground height at each state in the anchor frame: relative base z plus the
-        # base-to-ground offset from the stance feet. Flip and the yaw-only aug leave
-        # z untouched. z=0 itself is the base origin, ~0.55 m above the ground.
-        if "ground_z" in rosbag_dict:
-            ground = np.asarray(rosbag_dict["ground_z"])[sync]
-        else:
-            ground = np.zeros(len(sync))
-        ground = position[:, 2] + ground
+        # ADAPTATION: ground height from RHE base-to-ground offset (see adaptations/geometry.py)
+        # z=0 is the base origin, ~0.55 m above the ground; flip and the yaw-only aug leave z untouched.
+        ground = adaptations.ground_height(rosbag_dict, sync, position)
 
         states = np.hstack(
             (position[:, :2], euler_angle[:, 0:1], action, ground[:, None])
         )
 
-        # Harvest: extra low-mu states from anywhere in the bag that land inside
-        # this window's grid, so each rare low-mu cell is supervised from every
-        # window that can see it, not only along the 30s future path.
+        # ADAPTATION: harvest extra low-mu states from anywhere in the bag (see adaptations/harvest.py)
         if self.train and self.harvest_extra and len(rosbag_dict.get("lowmu_idx", ())):
-            extra = self._harvest_lowmu(
-                rosbag_dict, timestamps, curr_position, heading_rot,
-                aug_transformation, horizontal_flip,
+            extra = adaptations.harvest_lowmu(
+                rosbag_dict, timestamps, curr_position, heading_rot, aug_transformation,
+                horizontal_flip, self.harvest_extra, self.harvest_time_window, self.grid_bounds,
             )
             if extra is not None:
                 states = np.concatenate((states, extra[0]))
@@ -569,55 +565,6 @@ class Dataset(DataLoader.Dataset):
             states[:, 4] = -states[:, 4]
 
         return states, traversability, mu_observability, nu_observability
-
-    def _harvest_lowmu(
-        self, rosbag_dict, timestamps, curr_position, heading_rot, aug, horizontal_flip
-    ):
-        """Low-mu states of the bag outside this window's horizon, transformed to the
-        anchor frame and filtered to the grid. The visibility gate downstream still
-        decides whether an input frame actually sees them."""
-        st = np.asarray(rosbag_dict["states_timestamp"])
-        idx = rosbag_dict["lowmu_idx"]
-        on_path = (st[idx] >= timestamps[0]) & (st[idx] <= timestamps[-1])
-        idx = idx[~on_path]
-        if self.harvest_time_window > 0:
-            in_window = np.abs(st[idx] - timestamps[0]) <= self.harvest_time_window
-            idx = idx[in_window]
-        if len(idx) == 0:
-            return None
-        position = np.asarray(rosbag_dict["position"])[idx]
-        position = (heading_rot.inv().as_matrix() @ (position - curr_position).T).T
-        if horizontal_flip:
-            position[:, 1] = -position[:, 1]
-        position = (aug[:3, :3] @ position.T).T + aug[:3, 3]
-        xb, yb = self.grid_bounds["xbound"], self.grid_bounds["ybound"]
-        inside = (
-            (position[:, 0] >= xb[0]) & (position[:, 0] < xb[1])
-            & (position[:, 1] >= yb[0]) & (position[:, 1] < yb[1])
-        )
-        idx, position = idx[inside], position[inside]
-        if len(idx) == 0:
-            return None
-        if len(idx) > self.harvest_extra:
-            pick = np.random.choice(len(idx), self.harvest_extra, replace=False)
-            idx, position = idx[pick], position[pick]
-        yaw = R.from_quat(np.asarray(rosbag_dict["quaternion"])[idx]).as_euler("ZYX")[:, :1]
-        if horizontal_flip:
-            yaw = -yaw
-        yaw = yaw + np.arctan2(aug[1, 0], aug[0, 0])
-        action = np.asarray(rosbag_dict["action"])[idx]
-        if "ground_z" in rosbag_dict:
-            ground = np.asarray(rosbag_dict["ground_z"])[idx]
-        else:
-            ground = np.zeros(len(idx))
-        ground = position[:, 2] + ground
-        states = np.hstack((position[:, :2], yaw, action, ground[:, None]))
-        return (
-            states,
-            np.asarray(rosbag_dict["traversability"])[idx],
-            np.asarray(rosbag_dict["mu_observability"])[idx],
-            np.asarray(rosbag_dict["nu_observability"])[idx],
-        )
 
     def get_extrinsics(
         self, rosbag_dict, image_timestamp, cam2base_list, horizontal_flip=False
@@ -663,9 +610,8 @@ class Dataset(DataLoader.Dataset):
         extrinsics_list = []
         for i, cam2base in enumerate(cam2base_list):
             if horizontal_flip:
-                # Full mirror conjugation; only negating the y translation leaves
-                # the mount misalignment un-mirrored (~15 px projection error).
-                cam2base = FLIP_BASE @ cam2base @ FLIP_CAM
+                # ADAPTATION: full mirror conjugation fix (see adaptations/geometry.py)
+                cam2base = adaptations.flip_cam2base(cam2base)
 
             # Get extrinsics disregarding heading angle
             base_rot = R.from_euler("ZYX", [0, euler_angle[i, 1], euler_angle[i, 2]])
@@ -682,112 +628,25 @@ class Dataset(DataLoader.Dataset):
 
         return extrinsics_list
 
-    def visible_states(self, states, intrinsics_list, extrinsics_list):
-        """1.0 per horizon state whose ground point falls inside at least one input
-        frame's frustum (within the dbound depth range), else 0.0. The intrinsics
-        must already be scaled to the input size."""
-        d0, d1 = self.grid_bounds["dbound"][0], self.grid_bounds["dbound"][1]
-        pts = np.column_stack((states[:, :2], states[:, 5]))
-        visible = np.zeros(len(states), dtype=bool)
-        for K, ext in zip(intrinsics_list, extrinsics_list):
-            cam = (pts - ext[:3, 3]) @ ext[:3, :3]
-            z = cam[:, 2]
-            with np.errstate(divide="ignore", invalid="ignore"):
-                u = K[0, 0] * cam[:, 0] / z + K[0, 2]
-                v = K[1, 1] * cam[:, 1] / z + K[1, 2]
-            visible |= (
-                (z > d0) & (z < d1)
-                & (u >= 0) & (u < self.image_size[0])
-                & (v >= 0) & (v < self.image_size[1])
-            )
-        return visible.astype(np.float64)
-
     def read_pcloud(self, depth_image_list, cam_intrinsics_list, cam_extrinsics_list):
         """
-        Read and process point cloud data from depth images.
-
-        Args:
-            depth_image_list (list): List of depth images.
-            cam_intrinsics_list (list): List of camera intrinsics matrices.
-            cam_extrinsics_list (list): List of camera extrinsics matrices.
-
-        Returns:
-            numpy.ndarray: Processed point cloud data.
+        Clean native-res depth for the GPU voxelization (TravNet.voxelize); same
+        contract as GrandTourDataset.read_pcloud, without its rectification
+        border crop. Clips depth to the dbound range and returns (depth (T, H, W)
+        int16 mm, native intrinsics (T, 3, 3)); extrinsics are consumed GPU-side.
         """
-        temporal_grid = []
-        for t in range(len(depth_image_list)):
-            depth_image = depth_image_list[t]
-            cam_intrinsics = cam_intrinsics_list[t]
-            cam_extrinsics = cam_extrinsics_list[t]
-            # separate rotation and translation from extrinsics matrix
-            rotation, translation = cam_extrinsics[:3, :3], cam_extrinsics[:3, 3]
-            # Create points from depth in the image space
-            xs = np.arange(
-                0, depth_image.shape[1]
-            )  # , fW, dtype=torch.float).view(1, 1, fW).expand(D, fH, fW)
-            ys = np.arange(
-                0, depth_image.shape[0]
-            )  # , fH, dtype=torch.float).view(1, fH, 1).expand(D, fH, fW)
-            xs, ys = np.meshgrid(xs, ys)
-            # Camera to ego reference frame
-            points = np.stack(
-                (
-                    xs.flatten() * depth_image.flatten() * 1e-3,
-                    ys.flatten() * depth_image.flatten() * 1e-3,
-                    depth_image.flatten() * 1e-3,
-                ),
-                -1,
-            )
-            points = points[np.isfinite(points[:, 2])]
-            points = points[points[:, 2] > 0]
-            combined_transformation = rotation @ np.linalg.inv(cam_intrinsics)
-            points = (combined_transformation @ points.T).T
-            points += translation
-
-            dx = np.asarray([
-                row[2]
-                for row in [
-                    self.grid_bounds["xbound"],
-                    self.grid_bounds["ybound"],
-                    self.grid_bounds["zbound"],
-                ]
-            ])
-            cx = np.asarray([
-                np.round(row[1] / row[2] - 0.5)
-                for row in [
-                    self.grid_bounds["xbound"],
-                    self.grid_bounds["ybound"],
-                    self.grid_bounds["zbound"],
-                ]
-            ]).astype(int)
-            nx = np.asarray([
-                (row[1] - row[0]) / row[2]
-                for row in [
-                    self.grid_bounds["xbound"],
-                    self.grid_bounds["ybound"],
-                    self.grid_bounds["zbound"],
-                ]
-            ]).astype(int)
-
-            # Create gridmap X x Y x Z
-            grid = np.zeros((nx[0], nx[1], nx[2]))
-            idx_lidar = np.round(np.array([cx]) - points / dx - 0.5).astype(int)
-            idx_lidar = idx_lidar[
-                (idx_lidar[:, 0] >= 0)
-                * (idx_lidar[:, 0] < nx[0])
-                * (idx_lidar[:, 1] >= 0)
-                * (idx_lidar[:, 1] < nx[1])
-                * (idx_lidar[:, 2] >= 0)
-                * (idx_lidar[:, 2] < nx[2])
-            ]
-
-            grid[idx_lidar[:, 0], idx_lidar[:, 1], idx_lidar[:, 2]] = 1
-
-            # Transform it to Z x X x Y
-            grid = grid.transpose((2, 0, 1))
-            temporal_grid.append(grid)
-
-        return np.stack(temporal_grid)
+        dmin, dmax = (
+            self.grid_bounds["dbound"][0] * 1000,
+            self.grid_bounds["dbound"][1] * 1000,
+        )
+        cleaned, full_K = [], []
+        for depth, K in zip(depth_image_list, cam_intrinsics_list):
+            depth = depth.copy()
+            depth[~np.isfinite(depth)] = 0
+            depth[(depth < dmin) | (depth > dmax)] = 0
+            cleaned.append(depth.astype(np.int16))
+            full_K.append(K.copy())
+        return np.stack(cleaned), np.stack(full_K)
 
     def prepare_weights(self):
         """
@@ -827,8 +686,8 @@ class Dataset(DataLoader.Dataset):
                 f"Warning: {zero_count} bins have zero density, which will lead to infinite weights."
             )
 
-        # Inverse-density LDS, tempered by exponent alpha to soften the rare bins.
-        weights = (1.0 / values) ** self.lds_alpha
+        # ADAPTATION: inverse-density LDS tempered by exponent alpha
+        weights = adaptations.lds_weights(values, self.lds_alpha)
 
         return weights, bins
 

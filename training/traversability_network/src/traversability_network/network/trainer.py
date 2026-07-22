@@ -1,27 +1,19 @@
 # Taken from wayfaster repository (https://github.com/matval/wayfaster)
 # Modifications: fixed import of TravNet for local package layout.
-import math
 import os
 import pathlib
 import time
-import cv2
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import WandbLogger
-from torchmetrics import MeanMetric
 
 from .models.traversability_net import TravNet
-from ..overlay import colorize_mu, overlay_bev_on_image, overlay_path_on_image
+from .. import adaptations
 
-# Path overlay colors (RGB): red line, green start (robot, t=0), white end (horizon).
-PATH_LINE = (255, 0, 0)
-PATH_START = (0, 255, 0)
-PATH_END = (255, 255, 255)
 
-class TrainingModule(pl.LightningModule):
+class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
     """
     Training module for the TravNet model using PyTorch Lightning.
     """
@@ -53,17 +45,27 @@ class TrainingModule(pl.LightningModule):
         evidential = getattr(configs.MODEL, "EVIDENTIAL", False)
         loss_type = getattr(configs.TRAINING, "LOSS_TYPE", None)
         if loss_type is not None:
-            valid = {"regression", "bmc", "binned_ce", "evidential"}
+            valid = {"regression", "bmc", "binned_ce", "class3", "evidential"}
             assert loss_type in valid, f"LOSS_TYPE must be one of {valid}, got {loss_type!r}"
             if loss_type == "bmc":
                 assert bmc_init > 0, "LOSS_TYPE=bmc needs TRAINING.BMC_SIGMA_INIT > 0"
             else:
                 bmc_init = 0.0
-            if loss_type == "binned_ce":
-                assert mu_bins > 0, "LOSS_TYPE=binned_ce needs MODEL.MU_BINS > 0"
+            if loss_type in ("binned_ce", "class3"):
+                assert mu_bins > 0, f"LOSS_TYPE={loss_type} needs MODEL.MU_BINS > 0"
             else:
                 mu_bins = 0
             evidential = loss_type == "evidential"
+        # class3 head: hard classes from thresholded mu, logit-adjusted CE (Menon et
+        # al. 2021). Log-priors are added to the logits in the loss only, so raw
+        # argmax at inference is already imbalance-corrected.
+        self.mu_class_loss = loss_type == "class3"
+        if self.mu_class_loss:
+            thresholds = list(configs.TRAINING.MU_CLASS_THRESHOLDS)
+            priors = list(configs.TRAINING.MU_CLASS_PRIORS)
+            assert mu_bins == len(thresholds) + 1 == len(priors)
+            self.mu_class_thresholds = nn.Parameter(torch.tensor(thresholds), requires_grad=False)
+            self.mu_class_log_priors = nn.Parameter(torch.tensor(priors).log(), requires_grad=False)
         # Balanced MSE (BMC) noise scale, learnable; None = smooth-L1 mu term
         self.bmc_sigma = nn.Parameter(torch.tensor(float(bmc_init))) if bmc_init > 0 else None
         self.learning_rate = configs.OPTIMIZER.LR
@@ -73,6 +75,9 @@ class TrainingModule(pl.LightningModule):
         self.weight_decay = configs.OPTIMIZER.WEIGHT_DECAY
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
         self.overpred_weight = getattr(configs.TRAINING, "TRAV_OVERPRED_WEIGHT", 1.0)
+        self.smooth_l1_beta = getattr(configs.TRAINING, "SMOOTH_L1_BETA", 0.1)
+        # ADAPTATION: trav_loss normalization knob ("weighted" adapted, "mean" original)
+        self.loss_norm = getattr(configs.TRAINING, "LOSS_NORM", "weighted")
         self.mu_head_bins = mu_bins
         # Evidential (NIG) mu head: replaces the mu smooth-L1/binned-CE/BMC term with
         # the Deep Evidential Regression loss (Amini et al. 2020); nu is unaffected.
@@ -100,6 +105,11 @@ class TrainingModule(pl.LightningModule):
             voxel_downsample=configs.MODEL.VOXEL_DEPTH_DOWNSAMPLE,
             mu_bins=self.mu_head_bins,
             evidential=self.evidential,
+            freeze_backbone=getattr(configs.MODEL, "FREEZE_BACKBONE", False),
+            backbone=getattr(configs.MODEL, "BACKBONE", "resnet34"),
+            dino_feat_dim=getattr(configs.MODEL, "DINO_FEAT_DIM", 768),
+            dino_neck_dim=getattr(configs.MODEL, "DINO_NECK_DIM", 256),
+            mu_pixel_linear=getattr(configs.MODEL, "MU_PIXEL_LINEAR", False),
         )
 
         # Convert to channels_last to avoid DDP bucket stride mismatch warnings
@@ -145,21 +155,8 @@ class TrainingModule(pl.LightningModule):
         self.debug_vis_geom = getattr(configs.TRAINING, "DEBUG_VIS_GEOM", False)
         self.debug_vis_depth = getattr(configs.TRAINING, "DEBUG_VIS_DEPTH", False)
 
-        # Graded low-mu eval: per-0.1-bin MAE and mean-predicted-mu (calibration)
-        # over [0.0,0.1) ... [0.9,1.0). torchmetrics handles DDP reduction.
-        self.n_mu_bins = 10
-        self.mu_bin_width = 0.1
-        self.val_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
-        self.val_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
-        # Same per-bin metrics on train batches: memorization (train sharp, valid
-        # flat) and global collapse (both flat) are different failures.
-        self.train_mae = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
-        self.train_calib = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
-        # calib/* counts every in-grid path cell, including ones no input frame can
-        # see; calib_vis/* restricts to cells with nonzero loss weight (visible and
-        # observable), i.e. the cells the network can actually be expected to predict.
-        self.val_mae_vis = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
-        self.val_calib_vis = nn.ModuleList([MeanMetric() for _ in range(self.n_mu_bins)])
+        # ADAPTATION: observation-only mu calibration metrics (see adaptations/metrics.py)
+        self.mu_metrics = adaptations.MuBinMetrics()
 
     def prepare_data(self):
         """Called exactly once per node by PyTorch Lightning to prepare data."""
@@ -192,6 +189,24 @@ class TrainingModule(pl.LightningModule):
                     n_workers=os.cpu_count(), force=False,
                 )
 
+        # DINO features are precomputed by a separate GPU job, not built here; just
+        # fail early with the exact command if a mission's cache is missing or stale.
+        if getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino":
+            cache_root = pathlib.Path(configs.DATASET.DINO_CACHE_ROOT)
+            for mission in missions:
+                meta_path = cache_root / mission / "meta.npz"
+                assert meta_path.exists(), (
+                    f"DINO feature cache missing for {mission}. Run:\n"
+                    f"  uv run python -m grandtour_extraction.cache_dino_features --missions {mission}"
+                )
+                meta = np.load(meta_path, allow_pickle=True)
+                assert str(meta["model"]) == configs.MODEL.DINO_MODEL, (
+                    f"{mission}: cached model {meta['model']} != configured {configs.MODEL.DINO_MODEL}"
+                )
+                assert list(meta["input_size"]) == list(configs.MODEL.DINO_INPUT_SIZE), (
+                    f"{mission}: cached input_size {meta['input_size']} != configured {configs.MODEL.DINO_INPUT_SIZE}"
+                )
+
     def training_step(self, batch, batch_idx):
         """
         Perform a single training step.
@@ -203,8 +218,9 @@ class TrainingModule(pl.LightningModule):
         Returns:
             torch.Tensor: Training loss.
         """
-        # Get data
-        color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask = batch
+        # Get data (11th element = cached backbone features, DINO mode only)
+        color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask, *extra = batch
+        image_feats = extra[0] if extra else None
 
         # Pointcloud dropout: zero whole depth windows so the GPU builds an empty grid
         depth_raw = depth_voxel  # undropped, for the viz panels
@@ -215,13 +231,13 @@ class TrainingModule(pl.LightningModule):
                 depth_voxel[drop] = 0
 
         # Forward pass
-        trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
+        trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target, image_feats=image_feats)
 
         # Calculate traversability loss
         trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
 
-        # Update graded low-mu metrics on train batches (logged at epoch end)
-        self._update_mu_metrics(path, trav_map, target_trav, self.train_mae, self.train_calib)
+        # ADAPTATION: update graded low-mu metrics on train batches (logged at epoch end)
+        self.mu_metrics.update_train(self, path, trav_map, target_trav)
 
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
@@ -245,8 +261,8 @@ class TrainingModule(pl.LightningModule):
         self.log("train/loss", loss, on_step=True, on_epoch=False)
         self.log("train/trav_loss", trav_loss, on_step=True, on_epoch=False)
         self.log("train/depth_loss", depth_loss, on_step=True, on_epoch=False)
-        self.log("train/depth_mae", self._depth_mae(pred_depth, depth_target, depth_mask), on_step=True, on_epoch=False)
-        self.log("train/mu_spread", self._mu_spread(trav_map), on_step=True, on_epoch=False)
+        self.log("train/depth_mae", adaptations.depth_mae(self.grid_bounds, pred_depth, depth_target, depth_mask), on_step=True, on_epoch=False)
+        self.log("train/mu_spread", adaptations.mu_spread(trav_map), on_step=True, on_epoch=False)
 
         return loss
 
@@ -265,7 +281,7 @@ class TrainingModule(pl.LightningModule):
         if hasattr(self, '_epoch_start_time'):
             epoch_time = time.time() - self._epoch_start_time
             self.log("perf/time_per_epoch", epoch_time, on_step=False, on_epoch=True, sync_dist=True)
-        self._log_mu_bins("calib_train", self.train_mae, self.train_calib)
+        self.mu_metrics.on_train_epoch_end(self)
 
     def validation_step(self, batch, batch_idx):
         """
@@ -278,18 +294,18 @@ class TrainingModule(pl.LightningModule):
         Returns:
             torch.Tensor: Validation loss.
         """
-        # Get data
-        color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask = batch
+        # Get data (11th element = cached backbone features, DINO mode only)
+        color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask, *extra = batch
+        image_feats = extra[0] if extra else None
 
         # Forward pass
-        trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target)
+        trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target, image_feats=image_feats)
 
         # Calculate traversability loss
         trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
 
-        # Update graded low-mu metrics (per-0.1-bin MAE + calibration)
-        self._update_mu_metrics(path, trav_map, target_trav, self.val_mae, self.val_calib)
-        self._update_mu_metrics(path, trav_map, target_trav, self.val_mae_vis, self.val_calib_vis, weights=trav_weights)
+        # ADAPTATION: update graded low-mu metrics (per-0.1-bin MAE + calibration)
+        self.mu_metrics.update_valid(self, path, trav_map, target_trav, trav_weights)
 
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
@@ -310,8 +326,8 @@ class TrainingModule(pl.LightningModule):
         self.log("valid/trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
         self.log("valid/trav_error", trav_error, on_step=False, on_epoch=True, sync_dist=True)
         self.log("valid/depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid/depth_mae", self._depth_mae(pred_depth, depth_target, depth_mask), on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid/mu_spread", self._mu_spread(trav_map), on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/depth_mae", adaptations.depth_mae(self.grid_bounds, pred_depth, depth_target, depth_mask), on_step=False, on_epoch=True, sync_dist=True)
+        self.log("valid/mu_spread", adaptations.mu_spread(trav_map), on_step=False, on_epoch=True, sync_dist=True)
 
         return loss
 
@@ -324,76 +340,11 @@ class TrainingModule(pl.LightningModule):
             self._val_vis_batches = {int(i) for i in np.linspace(0, int(n) - 1, min(4, int(n)))}
         else:
             self._val_vis_batches = {0}
-
-    @torch.no_grad()
-    def _update_mu_metrics(self, states, trav_map, target_trav, mae_metrics, calib_metrics, weights=None):
-        """Accumulate per-true-mu-bin MAE and mean predicted mu over valid cells.
-        With ``weights``, only cells carrying loss weight count (visibility and
-        observability gates)."""
-        pred, mask = self._sample_path(states, trav_map)
-        mask = mask.bool()
-        if weights is not None:
-            mask = mask & (weights[..., 0] > 0)
-        pred_mu = pred[..., 0][mask]
-        true_mu = target_trav[..., 0][mask]
-        for b in range(self.n_mu_bins):
-            lo = b * self.mu_bin_width
-            sel = (true_mu >= lo) & (true_mu < lo + self.mu_bin_width)
-            if sel.any():
-                mae_metrics[b].update((pred_mu[sel] - true_mu[sel]).abs())
-                calib_metrics[b].update(pred_mu[sel])
-
-    def _log_mu_bins(self, prefix, mae_metrics, calib_metrics):
-        """Log per-bin MAE and mean predicted mu; returns (centers, means, maes) for curves."""
-        centers, means, maes = [], [], []
-        for b in range(self.n_mu_bins):
-            lo = b * self.mu_bin_width
-            name = f"{lo:.1f}-{lo + self.mu_bin_width:.1f}"
-            # compute() is collective: call for every bin on every rank
-            mae = mae_metrics[b].compute()
-            calib = calib_metrics[b].compute()
-            mae_metrics[b].reset()
-            calib_metrics[b].reset()
-            # empty bins compute() to NaN (same on every rank, so logging stays consistent)
-            seen = not torch.isnan(calib)
-            if seen:
-                self.log(f"{prefix}/mae_mu_{name}", mae, sync_dist=True)
-                self.log(f"{prefix}/mu_{name}", calib, sync_dist=True)
-            centers.append(lo + self.mu_bin_width / 2)
-            means.append(float(calib) if seen else None)
-            maes.append(float(mae) if seen else None)
-        return centers, means, maes
+        self.mu_metrics.reset_confusion()
 
     def on_validation_epoch_end(self):
-        """Log per-sub-bin MAE, mean predicted mu, and a calibration curve."""
-        centers, means, _ = self._log_mu_bins("calib", self.val_mae, self.val_calib)
-        _, _, vis_maes = self._log_mu_bins("calib_vis", self.val_mae_vis, self.val_calib_vis)
-        self._log_calibration_curve(centers, means)
-        # Macro-average over mu bins (equal weight per bin, not per sample), so the
-        # rare low-mu bins count as much as the common high-mu mass. trav_loss and
-        # micro MAE stay flat straight through mean collapse; this doesn't.
-        seen = [m for m in vis_maes if m is not None]
-        if seen:
-            self.log("valid/balanced_mae", sum(seen) / len(seen), sync_dist=False)
-
-    def _log_calibration_curve(self, centers, means):
-        if not self.trainer.is_global_zero or not isinstance(self.logger, WandbLogger):
-            return
-        import wandb
-        rows = [[c, m] for c, m in zip(centers, means) if m is not None]
-        if not rows:
-            return
-        table = wandb.Table(data=rows, columns=["true_mu_bin", "mean_pred_mu"])
-        self.logger.experiment.log(
-            {
-                "calib/table": table,
-                "calib/curve": wandb.plot.line(
-                    table, "true_mu_bin", "mean_pred_mu",
-                    title="Calibration: mean predicted mu vs true mu bin",
-                ),
-            },
-            step=self.trainer.global_step,
-        )
+        # ADAPTATION: per-bin calibration + confusion image (see adaptations/metrics.py)
+        self.mu_metrics.on_validation_epoch_end(self)
 
     def configure_optimizers(self):
         """
@@ -409,14 +360,16 @@ class TrainingModule(pl.LightningModule):
         # the freshly initialized heads and BEV stack at the full LR.
         pretrained = [
             p for n, p in self.model.named_parameters()
-            if "encoder.backbone" in n or "encoder.layer" in n
+            if ("encoder.backbone" in n or "encoder.layer" in n) and p.requires_grad
         ]
         pretrained_ids = {id(p) for p in pretrained}
-        rest = [p for p in self.model.parameters() if id(p) not in pretrained_ids]
-        groups = [
-            {"params": rest, "lr": lr},
-            {"params": pretrained, "lr": lr * self.backbone_lr_factor},
+        rest = [
+            p for p in self.model.parameters()
+            if id(p) not in pretrained_ids and p.requires_grad
         ]
+        groups = [{"params": rest, "lr": lr}]
+        if pretrained:
+            groups.append({"params": pretrained, "lr": lr * self.backbone_lr_factor})
         if self.bmc_sigma is not None:
             # single scalar; the BMC reference implementation trains it at ~1e-2
             groups.append({"params": [self.bmc_sigma], "lr": 1e-2, "weight_decay": 0.0})
@@ -470,95 +423,40 @@ class TrainingModule(pl.LightningModule):
 
         # Calculate loss
         gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
-        error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.5)
-        # Binned mu head: cross-entropy against a soft two-hot target instead of
-        # regressing the expectation; nu keeps its smooth-L1 term.
+        error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=self.smooth_l1_beta)
+        # ADAPTATION: alternative mu parameterizations swap the mu error column;
+        # nu keeps its smooth-L1 term.
         train_error = error
-        if self.mu_head_bins:
+        if self.mu_class_loss:
             logits, _ = self._sample_path(states, mu_logits)
-            ce = -(self._mu_two_hot(target_trav[..., 0]) * logits.log_softmax(-1)).sum(-1)
+            ce = adaptations.class3_ce(logits, target_trav[..., 0], self.mu_class_thresholds, self.mu_class_log_priors)
+            train_error = torch.stack([ce, error[..., 1]], dim=-1)
+        elif self.mu_head_bins:
+            logits, _ = self._sample_path(states, mu_logits)
+            ce = adaptations.binned_ce(logits, target_trav[..., 0], self.mu_head_bins)
             train_error = torch.stack([ce, error[..., 1]], dim=-1)
         elif self.evidential:
             aux, _ = self._sample_path(states, mu_logits)
-            nig = self._evidential_loss(traversability[..., 0], target_trav[..., 0], aux)
+            nig = adaptations.evidential_loss(traversability[..., 0], target_trav[..., 0], aux, self.evidential_lambda)
             train_error = torch.stack([nig, error[..., 1]], dim=-1)
-        # Asymmetric penalty: optimistic errors (predicting traversable where the
-        # label says slippery) cost overpred_weight times more. For the binned head
-        # the indicator uses the expected mu.
-        if self.overpred_weight != 1.0:
-            over = (traversability > target_trav).detach().to(error.dtype)
-            train_error = train_error * (1 + (self.overpred_weight - 1) * over)
+        # ADAPTATION: asymmetric penalty on optimistic (over-)predictions
+        train_error = adaptations.overpred_weight(train_error, traversability, target_trav, self.overpred_weight)
         weight = target_weights * gamma
-        # Weighted average, not weighted sum/count: keeps the loss scale (and its
-        # gradient norm) independent of how much low-mu weight mass a batch happens
-        # to contain, so gradient_clip_val doesn't disproportionately clip the rare
-        # high-weight batches back down to the common ones.
         if self.bmc_sigma is not None:
-            # Balanced MSE replaces the mu term; nu keeps its weighted smooth-L1
-            mu_loss = self._bmc_loss(
-                traversability[..., 0], target_trav[..., 0], weight[..., 0] * mask
-            )
-            nu_weight = weight[..., 1][mask]
-            nu_loss = (train_error[..., 1][mask] * nu_weight).sum() / (nu_weight.sum() + self.eps)
+            # ADAPTATION: balanced MSE replaces the mu term; nu keeps its weighted smooth-L1
+            mu_loss = adaptations.bmc_loss(
+                traversability[..., 0], target_trav[..., 0], weight[..., 0] * mask,
+                self.bmc_sigma, self.eps)
+            nu_loss = adaptations.reduce_trav_loss(train_error[..., 1], weight[..., 1], mask, "weighted", self.eps)
             loss = mu_loss + nu_loss
         else:
-            weighted_error = (train_error * weight)[mask, :]
-            loss = weighted_error.sum() / (weight[mask, :].sum() + self.eps)
+            # ADAPTATION: LOSS_NORM selects weighted-average (adapted) vs plain mean (original)
+            loss = adaptations.reduce_trav_loss(train_error, weight, mask, self.loss_norm, self.eps)
 
         # Error stays smooth-L1 on (mu, nu) in both modes, comparable across runs
         error = torch.mean(error[mask,:])
 
         return loss, error
-
-    def _mu_two_hot(self, mu):
-        """Soft two-hot encoding of continuous mu over the K bin centers."""
-        K = self.mu_head_bins
-        x = (mu * K - 0.5).clamp(0, K - 1)
-        lo = x.floor()
-        frac = (x - lo).unsqueeze(-1)
-        lo = lo.long().unsqueeze(-1)
-        hi = (lo + 1).clamp(max=K - 1)
-        target = torch.zeros(*mu.shape, K, device=mu.device, dtype=mu.dtype)
-        target.scatter_(-1, lo, 1 - frac)
-        target.scatter_add_(-1, hi, frac)
-        return target
-
-    def _evidential_loss(self, gamma, y, aux):
-        """Deep Evidential Regression loss (Amini et al. 2020) for a Normal-Inverse-
-        Gamma prediction (gamma, v, alpha, beta) of the mu label y. NLL marginalizes
-        the unknown Gaussian mean/variance under the NIG prior; the regularizer
-        penalizes high evidence (v, alpha) on samples where gamma is still wrong,
-        which is what makes the evidence shrink on OOD/hard inputs instead of just
-        anywhere the residual is nonzero."""
-        v, alpha, beta = aux[..., 0], aux[..., 1], aux[..., 2]
-        omega = 2 * beta * (1 + v)
-        nll = (
-            0.5 * torch.log(math.pi / v)
-            - alpha * torch.log(omega)
-            + (alpha + 0.5) * torch.log((y - gamma).square() * v + omega)
-            + torch.lgamma(alpha) - torch.lgamma(alpha + 0.5)
-        )
-        reg = (y - gamma).abs() * (2 * v + alpha)
-        return nll + self.evidential_lambda * reg
-
-    def _bmc_loss(self, pred, target, weight):
-        """Balanced MSE, BMC variant (Ren et al. 2022): cross-entropy between each
-        prediction and all batch targets under a learnable Gaussian noise scale.
-        The batch targets serve as a Monte Carlo sample of the label distribution,
-        which corrects the mean-seeking bias of plain (smooth) L1/L2 without a
-        precomputed density."""
-        sel = weight > 0
-        pred, target, weight = pred[sel], target[sel], weight[sel]
-        if pred.numel() == 0:
-            return pred.sum()
-        noise_var = self.bmc_sigma.square().clamp_min(1e-4)
-        logits = -(pred[:, None] - target[None, :]).square() / (2 * noise_var)
-        ce = F.cross_entropy(
-            logits, torch.arange(len(pred), device=pred.device), reduction="none"
-        )
-        # detached 2*sigma^2 keeps the loss on the MSE scale as sigma adapts
-        ce = ce * (2 * noise_var).detach()
-        return (ce * weight).sum() / (weight.sum() + self.eps)
 
     def _sample_path(self, states, trav_map):
         """Sample the predicted traversability map along the path states.
@@ -574,25 +472,6 @@ class TrainingModule(pl.LightningModule):
         traversability = traversability.permute((0,2,3,1)).squeeze(1)
 
         return traversability, mask.squeeze(1)
-    
-    @torch.no_grad()
-    def _depth_mae(self, pred_depth, depth_target, depth_mask):
-        """Masked MAE in metres between argmax-bin and target-bin depth. The depth CE
-        can rise from overconfidence alone; this says whether depth itself drifts."""
-        db = self.grid_bounds['dbound']
-        pred_m = pred_depth.argmax(1).float() * db[2] + db[0]
-        target_m = depth_target.float() * db[2] + db[0]
-        mask = depth_mask > 0
-        if not mask.any():
-            return torch.zeros((), device=pred_depth.device)
-        return (pred_m - target_m).abs()[mask].mean()
-
-    @torch.no_grad()
-    def _mu_spread(self, trav_map):
-        """Scalar measuring spatial variation of the predicted mu maps (B, 2, X, Y).
-        Collapse to a constant output shows up here as ~0, epochs before the per-bin
-        calibration metrics flatten."""
-        return trav_map[:, 0].std(dim=(1, 2)).mean()
 
     def depth_criterion(self, prediction, target, mask):
         """
@@ -608,327 +487,3 @@ class TrainingModule(pl.LightningModule):
         """
         loss = F.cross_entropy(prediction, target, reduction='none') * mask
         return torch.mean(loss)
-
-    @torch.no_grad()
-    def _voxelize_for_vis(self, color_img, depth_voxel, intrinsics_full, extrinsics):
-        """Rebuild the occupancy grid (B, T, Z, X, Y) for visualization only."""
-        B, T = color_img.shape[:2]
-        pcloud = self.model.voxelize(
-            depth_voxel.view(B * T, *depth_voxel.shape[2:]) * 1e-3,
-            intrinsics_full.view(B * T, 3, 3),
-            extrinsics.view(B * T, 4, 4))
-        return pcloud.view(B, T, *pcloud.shape[1:])
-
-    @torch.no_grad()
-    def _draw_bev_path(self, rgb, path):
-        """Draw the base-frame path (H, >=2) onto a BEV RGB image (in place).
-        Harvested extras past the horizon slots are scattered points, not path."""
-        path = path[: self.path_horizon]
-        p = path[torch.isfinite(path[:, 0])].cpu().numpy()
-        if len(p) == 0:
-            return
-        u = np.round(self.map_origin[0] - p[:, 0] / self.map_resolution[0]).astype(np.int32)
-        v = np.round(self.map_origin[1] - p[:, 1] / self.map_resolution[1]).astype(np.int32)
-        pts = np.stack([v, u], -1).reshape(-1, 1, 2)
-        cv2.polylines(rgb, [pts], False, PATH_LINE, 1, cv2.LINE_AA)
-        cv2.circle(rgb, (int(v[0]), int(u[0])), 2, PATH_START, -1)
-        cv2.circle(rgb, (int(v[-1]), int(u[-1])), 2, PATH_END, -1)
-
-    @torch.no_grad()
-    def _bev_overlays(self, bev, path, normalize=False):
-        """Grayscale BEV maps (N,1,X,Y) -> N RGB uint8 tensors with the path drawn on top.
-        The per-sample path (B,H,>=2) is repeated to cover temporal stacks (N = B*T)."""
-        bev = bev[:, 0].detach().float().cpu().numpy()
-        reps = max(1, bev.shape[0] // path.shape[0])
-        overlays = []
-        for n in range(bev.shape[0]):
-            m = bev[n]
-            if normalize:
-                m = (m - m.min()) / (m.max() - m.min() + 1e-6)
-            else:
-                m = np.clip(m, 0, 1)
-            rgb = np.repeat((m * 255).astype(np.uint8)[..., None], 3, 2).copy()
-            self._draw_bev_path(rgb, path[n // reps])
-            overlays.append(torch.from_numpy(rgb))
-        return overlays
-
-    @torch.no_grad()
-    def _bev_label_overlays(self, trav_map, path, target_trav, trav_weights):
-        """Predicted mu BEV colorized red-green, with each labelled path cell drawn
-        on top in its label color; gated (zero-weight) cells as gray outlines."""
-        mu = trav_map[:, 0].detach().float().cpu().numpy()
-        out = []
-        for b in range(mu.shape[0]):
-            rgb = np.ascontiguousarray(colorize_mu(mu[b])[..., ::-1])
-            p = path[b].detach().float().cpu().numpy()
-            keep = np.isfinite(p[:, 0])
-            t = target_trav[b, keep, 0].detach().float().cpu().numpy()
-            w = trav_weights[b, keep, 0].detach().float().cpu().numpy()
-            u = np.round(self.map_origin[0] - p[keep, 0] / self.map_resolution[0]).astype(int)
-            v = np.round(self.map_origin[1] - p[keep, 1] / self.map_resolution[1]).astype(int)
-            colors = colorize_mu(t)[..., ::-1]
-            h_map, w_map = rgb.shape[:2]
-            for ui, vi, ci, wi in zip(u, v, colors, w):
-                if 0 <= ui < h_map and 0 <= vi < w_map:
-                    if wi > 0:
-                        cv2.circle(rgb, (vi, ui), 2, tuple(int(x) for x in ci), -1)
-                    else:
-                        cv2.circle(rgb, (vi, ui), 2, (128, 128, 128), 1)
-            out.append(rgb)
-        return out
-
-    @torch.no_grad()
-    def _depth_cam_overlays(self, image, depth_target, depth_mask):
-        """Anchor frame with the input depth target blended on top (JET, masked)."""
-        B, T = image.shape[:2]
-        n_d = int((self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0]) / self.grid_bounds['dbound'][2])
-        out = []
-        for b in range(B):
-            idx = (b + 1) * T - 1  # anchor frame in the flattened (B*T) stack
-            if self.predict_depth:
-                d = depth_target[idx].float().cpu().numpy() / (n_d - 1)
-            else:
-                d = depth_target[idx].argmax(0).float().cpu().numpy() / (n_d - 1)
-            m = depth_mask[idx].float().cpu().numpy() > 0
-            rgb = self._frame_rgb(image, b, -1)
-            h, w = rgb.shape[:2]
-            col = cv2.applyColorMap((np.clip(d, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)[..., ::-1]
-            col = cv2.resize(col, (w, h), interpolation=cv2.INTER_NEAREST)
-            m = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-            blend = rgb.copy()
-            blend[m] = (0.55 * col[m] + 0.45 * rgb[m]).astype(np.uint8)
-            out.append(blend)
-        return out
-
-    @staticmethod
-    def _ground_plane(path):
-        """Plane z = a*x + b*y + c fitted to the path's ground points near the grid,
-        the surface the BEV grid cells are drawn on. Only points within 10 m enter
-        the fit (the 30 s path can climb far outside the grid and would tilt it),
-        the slope is ridge-regularized against ill-conditioned point layouts, and
-        the plane is clamped to the observed z range so extrapolation to the grid
-        corners cannot leave the terrain. 0.0 (the base origin) when the path has
-        no ground column or no valid points."""
-        finite = torch.isfinite(path[:, 0])
-        if path.shape[1] <= 5 or not finite.any():
-            return 0.0
-        p = path[finite].float().cpu().numpy()
-        near = np.hypot(p[:, 0], p[:, 1]) <= 10.0
-        if near.sum() >= 3:
-            p = p[near]
-        if len(p) < 3:
-            return float(p[0, 5])
-        A = np.column_stack([p[:, 0], p[:, 1], np.ones(len(p))])
-        AtA = A.T @ A + np.diag([4.0, 4.0, 0.0])
-        a, b, c = np.linalg.solve(AtA, A.T @ p[:, 5])
-        margin = 0.3
-        return (a, b, c, p[:, 5].min() - margin, p[:, 5].max() + margin)
-
-    @torch.no_grad()
-    def _project_path_to_cam(self, path, K, extrinsics):
-        """Base-frame path (H,>=2) -> anchor-camera pixels (inverse of read_pcloud).
-        State column 5 is the ground height under each state; without it the
-        points would sit at base height, half a meter above the ground."""
-        p = path[torch.isfinite(path[:, 0])]
-        z = p[:, 5] if p.shape[1] > 5 else torch.zeros_like(p[:, 0])
-        pts = torch.stack([p[:, 0], p[:, 1], z], 1)
-        cam = (pts - extrinsics[:3, 3]) @ extrinsics[:3, :3]
-        front = cam[:, 2] > 1e-3
-        pix = cam @ K.T
-        uv = pix[:, :2] / pix[:, 2:3].clamp(min=1e-3)
-        return uv.float().cpu().numpy(), front.cpu().numpy()
-
-    @staticmethod
-    def _gray_to_rgb(img):
-        """(1,H,W) float in [0,1] -> (H,W,3) uint8, for combining with BEV/cam overlays."""
-        arr = (img.squeeze(0).clamp(0, 1) * 255).to(torch.uint8)
-        return arr.unsqueeze(-1).expand(-1, -1, 3).contiguous()
-
-    @staticmethod
-    def _hstack(*overlay_lists, sep=4):
-        """Concatenate matching (H,W,3) uint8 tensors from each list side by side."""
-        combined = []
-        for imgs in zip(*overlay_lists):
-            h = max(im.shape[0] for im in imgs)
-            padded = [F.pad(im, (0, 0, 0, 0, 0, h - im.shape[0])) if im.shape[0] != h else im for im in imgs]
-            separator = torch.zeros(h, sep, 3, dtype=padded[0].dtype)
-            row = padded[0]
-            for im in padded[1:]:
-                row = torch.cat([row, separator, im], dim=1)
-            combined.append(row)
-        return combined
-
-    @torch.no_grad()
-    def _frame_rgb(self, image, b, t):
-        """(B, T, 3, H, W) float [0,1] -> one (H, W, 3) uint8 frame."""
-        img = image[b, t].detach().float().cpu().clamp(0, 1).numpy()
-        return (img.transpose(1, 2, 0) * 255).astype(np.uint8).copy()
-
-    @torch.no_grad()
-    def _draw_path_on_frame(self, img, path, K, extrinsics):
-        """Project the base-frame path into one frame and draw it (in place)."""
-        uv, front = self._project_path_to_cam(path, K, extrinsics)
-        h, w = img.shape[:2]
-        inside = front & (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
-        idx = np.flatnonzero(inside)
-        if len(idx):
-            pts = uv.round().astype(np.int32)
-            # split at gaps so exits/re-entries are not bridged with straight lines
-            for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
-                cv2.polylines(img, [pts[run].reshape(-1, 1, 2)], False, PATH_LINE, 2, cv2.LINE_AA)
-            cv2.circle(img, tuple(pts[idx[0]]), 4, PATH_START, -1)
-            cv2.circle(img, tuple(pts[idx[-1]]), 4, PATH_END, -1)
-        return img
-
-    @torch.no_grad()
-    def _cam_overlays(self, image, path, K, extrinsics):
-        """Anchor RGB frame per batch element with the future path projected on top."""
-        overlays = []
-        for b in range(image.shape[0]):
-            img = self._frame_rgb(image, b, -1)
-            self._draw_path_on_frame(img, path[b], K[b, -1], extrinsics[b, -1])
-            overlays.append(torch.from_numpy(img))
-        return overlays
-
-    @staticmethod
-    def _stride_batch(n, cap):
-        """Evenly-spaced indices into [0, n) capped at `cap`."""
-        return np.linspace(0, n - 1, min(cap, n)).round().astype(int)
-
-    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, target_trav=None, trav_weights=None, mu_logits=None, depth_voxel=None, intrinsics_full=None, prefix='train'):
-        """
-        Visualize the training/validation results.
-
-        Args:
-            image (torch.Tensor): Tensor containing the images.
-            pcloud (torch.Tensor): Tensor containing the point clouds.
-            trav_map (torch.Tensor): Tensor containing the traversability map.
-            pred_depth (torch.Tensor): Tensor containing the predicted depth.
-            depth_target (torch.Tensor): Tensor containing the target depth.
-            depth_mask (torch.Tensor): Tensor containing the depth mask.
-            debug (torch.Tensor): Tensor containing the debug information.
-            path (torch.Tensor): Tensor containing the path states (B, H, >=2).
-            intrinsics (torch.Tensor): Input-size camera K (B, T, 3, 3).
-            extrinsics (torch.Tensor): Cam-to-base per frame (B, T, 4, 4).
-            target_trav (torch.Tensor): Label (mu, nu) along the path (B, H, 2).
-            trav_weights (torch.Tensor): Loss weights along the path (B, H, 2).
-            mu_logits (torch.Tensor): Auxiliary mu head output (see TravNet.forward).
-            depth_voxel (torch.Tensor): Full-res depth stack (B, T, H, W) in int16 mm.
-            intrinsics_full (torch.Tensor): Full-res camera K matching depth_voxel.
-            prefix (str): Prefix for the log keys.
-        """
-        # Batch elements are 1-frame-apart sliding windows (near-duplicate scenes),
-        # so stride through the batch dim to spread the logged panel across it
-        # instead of showing self.vis_batch_size consecutive near-identical frames.
-        B_full, T = image.shape[:2]
-        b_idx = self._stride_batch(B_full, self.vis_batch_size)
-        flat_idx = (b_idx[:, None] * T + np.arange(T)[None, :]).ravel()
-
-        image, pcloud, trav_map, path, intrinsics, extrinsics = (
-            t[b_idx] for t in (image, pcloud, trav_map, path, intrinsics, extrinsics))
-        if target_trav is not None:
-            target_trav = target_trav[b_idx]
-        if trav_weights is not None:
-            trav_weights = trav_weights[b_idx]
-        if mu_logits is not None:
-            mu_logits = mu_logits[b_idx]
-        if depth_voxel is not None:
-            depth_voxel = depth_voxel[b_idx]
-        if intrinsics_full is not None:
-            intrinsics_full = intrinsics_full[b_idx]
-        pred_depth, depth_target, depth_mask, debug = (
-            t[flat_idx] for t in (pred_depth, depth_target, depth_mask, debug))
-
-        # Camera input (anchor frame) with the future path projected on top
-        self.logger.log_image(
-            key=prefix + "/images",
-            images=[im.numpy() for im in self._cam_overlays(image, path, intrinsics, extrinsics)],
-        )
-
-        # Predicted mu splatted onto the anchor frame (red = slippery, green = grippy)
-        mu = trav_map[:, 0].detach().float().cpu().numpy()
-        mu_cam = []
-        for b in range(image.shape[0]):
-            img = image[b, -1].detach().float().cpu().clamp(0, 1).numpy()
-            bgr = np.ascontiguousarray((img.transpose(1, 2, 0)[..., ::-1] * 255).astype(np.uint8))
-            K = intrinsics[b, -1].float().cpu().numpy()
-            ext = extrinsics[b, -1].float().cpu().numpy()
-            depth_m = depth_voxel[b, -1].float().cpu().numpy() * 1e-3 if depth_voxel is not None else None
-            K_full = intrinsics_full[b, -1].float().cpu().numpy() if intrinsics_full is not None else None
-            mu_cam.append(np.ascontiguousarray(overlay_bev_on_image(
-                bgr, mu[b], K, ext, self.grid_bounds,
-                ground_z=self._ground_plane(path[b]),
-                depth=depth_m, depth_K=K_full)[..., ::-1]))
-        self.logger.log_image(key=prefix + "/mu_cam", images=mu_cam)
-
-        B, T = image.shape[:2]
-
-        if self.debug_vis_labels and target_trav is not None:
-            # Supervision as the loss sees it: label mu (red-green) at weighted path
-            # cells, gray outlines where the visibility/observability gates zeroed it
-            label_cam = []
-            for b in range(B):
-                bgr = np.ascontiguousarray(self._frame_rgb(image, b, -1)[..., ::-1])
-                out = overlay_path_on_image(
-                    bgr, path[b].detach().float().cpu(), target_trav[b].detach().float().cpu(),
-                    trav_weights[b].detach().float().cpu(), intrinsics[b, -1].float().cpu().numpy(),
-                    extrinsics[b, -1].float().cpu().numpy(), show_gated=True)
-                label_cam.append(np.ascontiguousarray(out[..., ::-1]))
-            self.logger.log_image(key=prefix + "/label_cam", images=label_cam)
-            # Predicted mu BEV in color with the label cells drawn on top:
-            # prediction vs supervision in one map
-            self.logger.log_image(
-                key=prefix + "/bev_label",
-                images=self._bev_label_overlays(trav_map, path, target_trav, trav_weights))
-
-        if self.debug_vis_geom:
-            # Path reprojected into every input frame with that frame's own
-            # extrinsics: ego-motion or extrinsics errors show as the path
-            # detaching from the ground in the older frames
-            frame_cols = []
-            for t in range(T):
-                col = []
-                for b in range(B):
-                    img = self._frame_rgb(image, b, t)
-                    self._draw_path_on_frame(img, path[b], intrinsics[b, t], extrinsics[b, t])
-                    col.append(torch.from_numpy(img))
-                frame_cols.append(col)
-            self.logger.log_image(
-                key=prefix + "/geom_frames",
-                images=[im.numpy() for im in self._hstack(*frame_cols)])
-
-        if self.debug_vis_depth:
-            # Input depth (JET colormap) blended over the anchor frame: checks
-            # depth-RGB alignment, the border crop, and the K scaling
-            self.logger.log_image(
-                key=prefix + "/depth_cam",
-                images=self._depth_cam_overlays(image, depth_target, depth_mask))
-
-        # BEV inputs: point-cloud occupancy density | lift-splat feature density (both sanity checks)
-        pcloud = torch.mean(pcloud, dim=2).view(-1, 1, *pcloud.shape[3:])
-        pcloud_overlays = self._bev_overlays(pcloud, path, normalize=True)
-        debug_overlays = self._bev_overlays(torch.sum(debug, dim=1, keepdim=True), path, normalize=True)
-        self.logger.log_image(key=prefix + "/bev_inputs", images=[im.numpy() for im in self._hstack(pcloud_overlays, debug_overlays)])
-
-        # BEV outputs: predicted mu | nu (| epistemic uncertainty when evidential)
-        columns = [self._bev_overlays(trav_map[:, :1], path), self._bev_overlays(trav_map[:, 1:], path)]
-        if self.evidential and mu_logits is not None:
-            # NIG variance of the mean, beta / (v * (alpha - 1)); per-image normalized
-            v, alpha, beta = mu_logits[:, 0:1], mu_logits[:, 1:2], mu_logits[:, 2:3]
-            unc = beta / (v * (alpha - 1).clamp_min(self.eps))
-            columns.append(self._bev_overlays(unc, path, normalize=True))
-        self.logger.log_image(key=prefix + "/bev_outputs", images=[im.numpy() for im in self._hstack(*columns)])
-
-        # Depth (camera frame, no BEV path): predicted | target | validity mask
-        n_d = (self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0])/self.grid_bounds['dbound'][2]
-        depth_pred = torch.argmax(pred_depth, dim=1, keepdim=True)/(n_d-1)
-
-        if self.predict_depth:
-            depth_target = depth_target.unsqueeze(1)/(n_d-1)
-        else:
-            depth_target = depth_target.argmax(1).unsqueeze(1)/(n_d-1)
-
-        pred_overlays = [self._gray_to_rgb(t) for t in depth_pred.float().cpu()]
-        target_overlays = [self._gray_to_rgb(t) for t in depth_target.float().cpu()]
-        mask_overlays = [self._gray_to_rgb(t) for t in depth_mask.unsqueeze(1).float().cpu()]
-        self.logger.log_image(key=prefix + "/depth", images=[im.numpy() for im in self._hstack(pred_overlays, target_overlays, mask_overlays)])

@@ -33,11 +33,24 @@ _C.TRAINING.DEPTH_WEIGHT = 0.1
 # slippery terrain traversable costlier than the reverse, pushing uncertain
 # predictions down instead of onto the high-mu mean.
 _C.TRAINING.TRAV_OVERPRED_WEIGHT = 1.0
+# smooth-L1 transition point for the mu/nu term. WayFASTER uses 0.1 (L1-like,
+# sharp). Larger beta is more quadratic/MSE-like and compresses toward the mean.
+_C.TRAINING.SMOOTH_L1_BETA = 0.1
+# trav_loss normalization (adaptations.reduce_trav_loss): "weighted" (adapted)
+# divides by weight mass so the loss scale is batch-independent; "mean" (original
+# WayFASTER) is the plain mean of error*weight over the masked cells.
+_C.TRAINING.LOSS_NORM = "weighted"
 # Mu loss selector. None = infer from the legacy MU_BINS/BMC_SIGMA_INIT/EVIDENTIAL
 # flags (back-compat). When set it is authoritative: one of "regression"
 # (smooth-L1), "bmc" (needs BMC_SIGMA_INIT > 0), "binned_ce" (needs MU_BINS > 0),
-# or "evidential".
+# "class3" (needs MU_BINS == number of classes), or "evidential".
 _C.TRAINING.LOSS_TYPE = None
+# 3-class mu head ("class3"): hard classes from thresholding label mu, trained with
+# logit-adjusted CE (Menon et al. 2021) - log-priors added to the logits only in the
+# training loss, so raw argmax at inference is already imbalance-corrected. Priors
+# are the class frequencies over gated train cells (extract_mu_predictions).
+_C.TRAINING.MU_CLASS_THRESHOLDS = [0.3, 0.6]
+_C.TRAINING.MU_CLASS_PRIORS = [0.0153, 0.026, 0.9587]
 # Balanced MSE (BMC, Ren et al. 2022) on the mu term: initial noise sigma of the
 # learnable scale; 0 = off (plain smooth-L1). Changes the trav_loss scale.
 _C.TRAINING.BMC_SIGMA_INIT = 0.0
@@ -72,9 +85,30 @@ _C.MODEL.FUSE_PCLOUD = True
 # Higher = cheaper voxelize, but thins far-field occupancy (see check_voxel_downscale.py).
 _C.MODEL.VOXEL_DEPTH_DOWNSAMPLE = 1
 _C.MODEL.INPUT_SIZE = [480, 360]  # (W, H); Alphasense native is 1440x1080 (4:3)
+# Freeze the ImageNet-pretrained encoder stages (requires_grad=False, BN held in
+# eval): only the fresh neck + heads train. Stronger than BACKBONE_LR_FACTOR.
+_C.MODEL.FREEZE_BACKBONE = False
+# Image backbone: "resnet34" (trainable, WayFASTER default) or "dino" (frozen
+# patch features precomputed by grandtour_extraction's cache_dino_features.py,
+# read from DATASET.DINO_CACHE_ROOT; only a small neck trains).
+# NB: DINOv3 features must be L2-normalized, not per-dim standardized (drops AUROC
+# to chance) - the DinoNeck does this. See side_experiments/dino_mu_probe.
+_C.MODEL.BACKBONE = "resnet34"
+_C.MODEL.DINO_MODEL = "facebook/dinov3-vitb16-pretrain-lvd1689m"
+_C.MODEL.DINO_FEAT_DIM = 768
+# (W, H) fed to DINO at cache time; must be a patch-size multiple. 480x352 gives
+# a 30x22 patch grid (patch 16), upsampled to the stride-8 45x60 grid by the neck.
+_C.MODEL.DINO_INPUT_SIZE = [480, 352]
+_C.MODEL.DINO_NECK_DIM = 256
 # Mu head: 0 = sigmoid regression (WayFASTER default); K > 0 = categorical
 # distribution over K mu bins trained with soft two-hot CE, expectation readout.
 _C.MODEL.MU_BINS = 0
+# Probe-as-layer mu path: linear per-pixel MU_BINS-class readout on the L2-normed
+# frozen DINO features, lifted to BEV geometrically (detached depth weights,
+# mass-normalized mean over frames/z); no learnable mu decoder, BEV head emits nu
+# only. Tests whether the linear image-space signal survives the geometry with
+# no network capacity in the mu path.
+_C.MODEL.MU_PIXEL_LINEAR = False
 # Evidential mu head: predicts a Normal-Inverse-Gamma (gamma, v, alpha, beta)
 # instead of a point estimate, trained with the DER NLL + regularizer. Mutually
 # exclusive with MU_BINS and BMC_SIGMA_INIT. gamma is the point estimate (still
@@ -99,6 +133,13 @@ _C.OPTIMIZER.WEIGHT_DECAY = 1e-4
 _C.OPTIMIZER.BACKBONE_LR_FACTOR = 1.0
 
 _C.DATASET = EasyDict()
+# "grandtour" (GrandTourDataset, mission layout) or "wayfaster" (the original
+# CSV-based WayFASTER dataset via network/dataloader.py, architecture control).
+_C.DATASET.NAME = "grandtour"
+_C.DATASET.CSV_FILE = "rosbags.csv"
+# Data directories for NAME=wayfaster (each holds CSV_FILE + one dir per bag).
+_C.DATASET.TRAIN_DIRS = []
+_C.DATASET.VALID_DIRS = []
 # Directory holding one sub-directory per mission (images, depth, odom, intrinsics, ...).
 _C.DATASET.DATA_ROOT = str(EXTRACTED_ROOT)
 # Directory holding one sub-directory per mission with rhe/ and simple/ label outputs.
@@ -108,6 +149,8 @@ _C.DATASET.LABELS_ROOT = str(LABELS_ROOT)
 # None = read native-res images from DATA_ROOT (slow over NFS).
 _C.DATASET.RESIZED_ROOT = str(DATALOCAL_ROOT / "grand_tour_dataset_resized")
 _C.DATASET.DEPTH_CACHE_ROOT = str(DATALOCAL_ROOT / "grand_tour_dataset_depth")
+# Per-mission frozen DINO patch-feature cache (features.npy + meta.npz), see MODEL.BACKBONE.
+_C.DATASET.DINO_CACHE_ROOT = str(DATALOCAL_ROOT / "grand_tour_dataset_dino")
 _C.DATASET.TRAIN_MISSIONS = []
 _C.DATASET.VALID_MISSIONS = []
 # Held-out ID test set and OOD-detection benchmark sets (consumed by eval, not training).
@@ -138,6 +181,11 @@ _C.DATASET.HARVEST_TIME_WINDOW = 0.0
 # frustum. Invisible cells are unpredictable from the input; supervising them only
 # pulls predictions toward the label mean (~45% of low-mu cells are invisible).
 _C.DATASET.VISIBILITY_GATE = False
+# Strengthen the visibility gate with a depth-based occlusion test: a frame only
+# counts as seeing a state if the input depth at the projected pixel is not clearly
+# in front of it (18% of frustum-gated states are occluded in every viewing frame).
+# Only active together with VISIBILITY_GATE.
+_C.DATASET.OCCLUSION_GATE = False
 
 _C.AUGMENTATIONS = EasyDict()
 _C.AUGMENTATIONS.HORIZ_FLIP = 0.5

@@ -1,0 +1,80 @@
+TAG: 'grandtour_dino_probelayer'
+
+# Probe-as-layer: grandtour_dino_class3.yaml with the mu path replaced by a linear
+# per-pixel 3-class readout on the frozen DINO features, lifted to BEV purely
+# geometrically (MU_PIXEL_LINEAR); logit-adjusted CE unchanged. The class3 run
+# (jjnyyq8y) fit train (untrav recall 0.95) but transferred nothing (valid 0.00)
+# while the linear pixel probe transfers (0.53): this removes the capacity that
+# memorizes, keeping only probe + geometry. Success: valid argmax untrav recall > 0.
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 12
+    DEVICES: [0]
+    EPOCHS: 50
+    VERBOSE: False
+    GAMMA: 0.998
+    DEPTH_WEIGHT: 0.05
+    HORIZON: 300
+    DT: 0.1
+    VIS_INTERVAL: 500
+    LOSS_TYPE: 'class3'
+    MU_CLASS_THRESHOLDS: [0.3, 0.6]
+    # class frequencies over gated train cells (1p2plyn0 dump, 2026-07-17)
+    MU_CLASS_PRIORS: [0.0153, 0.026, 0.9587]
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+MODEL:
+    BACKBONE: 'dino'
+    DINO_MODEL: 'facebook/dinov3-vitb16-pretrain-lvd1689m'
+    DINO_FEAT_DIM: 768
+    DINO_INPUT_SIZE: [480, 352]
+    DINO_NECK_DIM: 256
+    MU_BINS: 3
+    MU_PIXEL_LINEAR: True
+    TIME_LENGTH: 4
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
+    DINO_CACHE_ROOT: '/datalocal/lmertens/grand_tour_dataset_dino'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    LDS_ALPHA: 0.0           # imbalance handled by logit adjustment, not loss weights
+    OVERSAMPLE_FRACTION: 0.0 # natural sampling keeps MU_CLASS_PRIORS exact
+    VISIBILITY_GATE: True
+    OCCLUSION_GATE: True
+
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'HOEB-1', 'LMB-1', 'RIV-1', 'TRIM-1', 'HIL-1', 'KAEB-2', 'KAEB-3', ]
+    VALID_MISSIONS: ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    TEST_MISSIONS:  ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    NEAR_OOD_MISSIONS: ['KAEB-1', 'ROOT-1', 'EIG-1', 'EIG-2', 'PIL-2']
+    FAR_OOD_MISSIONS: ['SNOW-1', 'SNOW-2', 'SNOW-3', 'ARC-1', 'ARC-2', 'ARC-3', 'ARC-4']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.5
+    MAX_ROTATION: 0.2
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]

@@ -1,37 +1,8 @@
-"""GrandTour dataset for the WayFASTER network.
-
-Subclasses WayFASTER's ``Dataset`` and only replaces data loading: instead of
-reading ``states.csv`` / ``images.csv`` per bag, it builds the same
-``rosbag_dict`` schema from the RHE label outputs and the offline-extracted
-camera data. Everything downstream (``get_states``, ``get_extrinsics``,
-``read_pcloud``, ``__getitem__``) is inherited unchanged, so ``TrainingModule``
-sees the exact same sample tuple as upstream WayFASTER.
-
-Per-mission files expected in ``<DATA_ROOT>/<mission>/``:
-    cam2base.npy         (4, 4)  front_center, from extract_alphasense.py
-    intrinsics.npy       (3, 3)  front_center K, from extract_alphasense.py
-    dlio_odom.npy        (M, 8)  t, x, y, z, qx, qy, qz, qw (base in dlio_map, ground-truth pose), from extract_dlio.py
-    ground_z.npy         (M, 2)  t, gravity-aligned base-to-ground offset (~-0.55), from extract_feet.py
-    image_manifest.npz   front_center structured array {ts_ns, path}
-    depth_manifest.npz   structured array {ts_ns, path} (FoundationStereo output)
-
-Per-mission files expected in ``<LABELS_ROOT>/<mission>/rhe/``:
-    rhe_timestamp.npy    (N,)    RHE timestamps (seconds), the reference time grid
-    rhe_trav_labels.npy  (N, >=2) columns LABEL_COLUMNS = (mu, nu)
-
-Pose (position, orientation, action) comes from the dlio ground-truth odometry
-interpolated to the RHE timestamps, NOT from rhe_states.npy (the RHE state
-estimate, an optimization byproduct).
-
-Mapping to WayFASTER's rosbag_dict:
-    position       <- dlio (x, y, z) interpolated to RHE timestamps
-    quaternion     <- dlio orientation slerped to RHE timestamps (x, y, z, w)
-    action         <- finite-difference (v, omega) from dlio position and yaw
-    traversability <- trav_labels[:, LABEL_COLUMNS]
-"""
+"""GrandTour dataset for the WayFASTER network: swaps in RHE labels and offline-extracted camera/odometry data, everything else inherited from WayFASTER's Dataset."""
 
 import os
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
@@ -81,6 +52,12 @@ class GrandTourDataset(Dataset):
         self.labels_root = configs.DATASET.LABELS_ROOT
         self.resized_root = configs.DATASET.RESIZED_ROOT
         self.depth_cache_root = getattr(configs.DATASET, "DEPTH_CACHE_ROOT", None)
+        # Frozen-DINO mode: samples carry cached patch features instead of running
+        # an image backbone (see MODEL.BACKBONE and cache_dino_features.py).
+        self.use_dino_cache = getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino"
+        self.dino_cache_root = getattr(configs.DATASET, "DINO_CACHE_ROOT", None)
+        self.dino_model = getattr(configs.MODEL, "DINO_MODEL", None)
+        self.dino_input_size = list(getattr(configs.MODEL, "DINO_INPUT_SIZE", []))
         self.label_columns = list(configs.MODEL.LABEL_COLUMNS)
         self.time_tolerance = configs.DATASET.TIME_TOLERANCE
         self.max_time_gap = configs.DATASET.MAX_TIME_GAP
@@ -92,6 +69,7 @@ class GrandTourDataset(Dataset):
         self.os_obs_min = configs.DATASET.OVERSAMPLE_OBSERVABILITY_THRESH
         self.lds_alpha = configs.DATASET.LDS_ALPHA
         self.visibility_gate = getattr(configs.DATASET, "VISIBILITY_GATE", False)
+        self.occlusion_gate = getattr(configs.DATASET, "OCCLUSION_GATE", False)
         self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
         self.harvest_time_window = getattr(configs.DATASET, "HARVEST_TIME_WINDOW", 0.0)
 
@@ -137,9 +115,16 @@ class GrandTourDataset(Dataset):
         inside the BEV grid, i.e. one _sample_path would actually score. A cell can be
         within the time horizon yet outside the xbound/ybound footprint (grid is only
         10m x 10m), in which case grid_sample masks it out and oversampling it is
-        wasted. The time-based check below is only a cheap upper-bound prefilter."""
+        wasted. The time-based check below is only a cheap upper-bound prefilter.
+
+        With the visibility gate on, the flag additionally requires the low-mu cell to
+        be camera-visible (same frustum test as the loss gate, ORed over the input
+        frames): an invisible low-mu cell scores zero loss weight, so oversampling its
+        window would just replicate dead supervision."""
         n_flag = min(self.horizon, 300)  # only count low-mu cells in the near horizon
         xb, yb = self.grid_bounds["xbound"], self.grid_bounds["ybound"]
+        use_vis = getattr(self, "visibility_gate", False)
+        native = {}  # id(bag) -> (W, H) native depth dims, for the frustum test
         flags = []
         for bag in self.rosbags:
             n_windows = len(bag["image_timestamp"]) - self.n_frames + 1
@@ -175,14 +160,51 @@ class GrandTourDataset(Dataset):
                         (rel[:, 0] >= xb[0]) & (rel[:, 0] < xb[1])
                         & (rel[:, 1] >= yb[0]) & (rel[:, 1] < yb[1])
                     )
-                    if getattr(self, "visibility_gate", False):
-                        # match the loss gate approximately: cells far outside the
-                        # anchor camera's ~107 deg forward FOV score zero weight, so
-                        # oversampling such windows would replicate dead supervision
-                        inside &= np.abs(np.arctan2(rel[:, 1], rel[:, 0])) < 0.9
-                    bag_flags[w] = inside.any()
+                    if use_vis and inside.any():
+                        # keep only windows whose low-mu cell is actually camera-visible
+                        vis = self._lowmu_window_visible(
+                            bag, w, idxs[inside], rel[inside], native
+                        )
+                        bag_flags[w] = bool(vis.any())
+                    else:
+                        bag_flags[w] = bool(inside.any())
             flags.append(bag_flags)
         return np.concatenate(flags)
+
+    def _lowmu_window_visible(self, bag, w, idxs, rel, native):
+        """True per given low-mu cell if it is camera-visible in window ``w`` (the same
+        frustum test as ``visible_states``, ORed over the input frames). ``rel`` are the
+        cells' positions in the anchor heading frame (x, y, z); projecting in native
+        pixels against native image bounds is equivalent to the loss gate's input-size
+        scaling. Cells with unknown native dims are kept, not dropped."""
+        key = id(bag)
+        if key not in native:
+            img = cv2.imread(bag["depth_image"][0], -1)
+            native[key] = None if img is None else (img.shape[1], img.shape[0])
+        if native[key] is None:
+            return np.ones(len(idxs), dtype=bool)
+        nat_w, nat_h = native[key]
+        n = self.n_frames
+        img_ts = [bag["image_timestamp"][w + t] for t in range(n)]
+        cam2base = [bag["cam2base"][w + t].copy() for t in range(n)]
+        extr = self.get_extrinsics(bag, img_ts, cam2base, False)
+        if "ground_z" in bag:
+            gz = rel[:, 2] + np.asarray(bag["ground_z"])[idxs]
+        else:
+            gz = rel[:, 2]
+        pts = np.column_stack([rel[:, 0], rel[:, 1], gz])
+        d0, d1 = self.grid_bounds["dbound"][0], self.grid_bounds["dbound"][1]
+        vis = np.zeros(len(pts), dtype=bool)
+        for t in range(min(n, len(extr))):
+            K = np.asarray(bag["intrinsics"][w + t])
+            ext = extr[t]
+            cam = (pts - ext[:3, 3]) @ ext[:3, :3]
+            z = cam[:, 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                u = K[0, 0] * cam[:, 0] / z + K[0, 2]
+                v = K[1, 1] * cam[:, 1] / z + K[1, 2]
+            vis |= (z > d0) & (z < d1) & (u >= 0) & (u < nat_w) & (v >= 0) & (v < nat_h)
+        return vis
 
     def _oversampled_indices(self):
         """Replicate flagged-window indices until they reach OVERSAMPLE_FRACTION of the
@@ -311,10 +333,14 @@ class GrandTourDataset(Dataset):
         manifest = np.load(os.path.join(mission_dir, "image_manifest.npz"))
         fc = manifest["front_center"]
         img_ts = fc["ts_ns"].astype(np.float64) / 1e9
-        # Prefer the local pre-resized copy (same relative paths as the manifest)
+        # Prefer the local pre-resized copy (same relative paths as the manifest),
+        # falling back to mission_dir for missions the resize step hasn't covered
+        # (e.g. OOD-only missions never used in training).
         img_root = mission_dir
         if self.resized_root:
-            img_root = os.path.join(self.resized_root, os.path.basename(mission_dir))
+            candidate = os.path.join(self.resized_root, os.path.basename(mission_dir))
+            if os.path.isdir(candidate):
+                img_root = candidate
         img_paths = [os.path.join(img_root, p) for p in fc["path"]]
         img_order = np.argsort(img_ts)
         img_ts = img_ts[img_order]
@@ -332,12 +358,26 @@ class GrandTourDataset(Dataset):
         # ---- depth (nearest-neighbour to front_center timestamps) ----
         depth_paths = self._match_depth(mission_dir, img_ts)
 
+        # ---- cached DINO features (exact int64 ts_ns match) ----
+        if self.use_dino_cache:
+            img_ts_ns = fc["ts_ns"].astype(np.int64)[img_order][keep]
+            feat_file, feat_idx = self._match_dino_cache(mission_dir, img_ts_ns)
+
         # split into contiguous segments so a temporal window never bridges a gap
         breaks = np.flatnonzero(np.diff(img_ts) > self.max_time_gap) + 1
         bounds = np.concatenate(([0], breaks, [len(img_ts)]))
         segments = []
         for lo, hi in zip(bounds[:-1], bounds[1:]):
+            if self.use_dino_cache:
+                extra = {
+                    "dino_feat_file": feat_file,
+                    "dino_feat_file_flip": feat_file.replace("features.npy", "features_flip.npy"),
+                    "dino_feat_idx": feat_idx[lo:hi],
+                }
+            else:
+                extra = {}
             segments.append({
+                **extra,
                 "image_timestamp": list(img_ts[lo:hi]),
                 "color_image": img_paths[lo:hi],
                 "depth_image": depth_paths[lo:hi],
@@ -354,6 +394,36 @@ class GrandTourDataset(Dataset):
             })
         return segments
 
+    def _match_dino_cache(self, mission_dir, img_ts_ns):
+        """Map each kept frame's int64 ts_ns to its row in the mission's cached
+        DINO feature memmap; fails fast on a missing or stale cache."""
+        mission = os.path.basename(mission_dir)
+        cache_dir = os.path.join(self.dino_cache_root, mission)
+        meta_path = os.path.join(cache_dir, "meta.npz")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(
+                f"{meta_path} missing. Precompute with grandtour_extraction's "
+                f"cache_dino_features.py for mission {mission}."
+            )
+        meta = np.load(meta_path, allow_pickle=True)
+        assert str(meta["model"]) == self.dino_model, (
+            f"{mission}: cached DINO model {meta['model']} != configured {self.dino_model}"
+        )
+        assert list(meta["input_size"]) == self.dino_input_size, (
+            f"{mission}: cached input_size {list(meta['input_size'])} != configured {self.dino_input_size}"
+        )
+        ts = meta["ts_ns"]
+        idx = np.searchsorted(ts, img_ts_ns)
+        found = (idx < len(ts)) & (ts[np.minimum(idx, len(ts) - 1)] == img_ts_ns)
+        assert found.all(), (
+            f"{mission}: {int((~found).sum())}/{len(img_ts_ns)} frames missing from the "
+            f"DINO cache; re-run cache_dino_features.py"
+        )
+        assert os.path.exists(os.path.join(cache_dir, "features_flip.npy")), (
+            f"{mission}: features_flip.npy missing (old cache version); re-run cache_dino_features.py"
+        )
+        return os.path.join(cache_dir, "features.npy"), idx.astype(np.int64)
+
     def _match_depth(self, mission_dir, img_ts):
         depth_manifest_path = os.path.join(mission_dir, "depth_manifest.npz")
         if not os.path.exists(depth_manifest_path):
@@ -368,7 +438,9 @@ class GrandTourDataset(Dataset):
         
         depth_root = mission_dir
         if self.depth_cache_root:
-            depth_root = os.path.join(self.depth_cache_root, os.path.basename(mission_dir))
+            candidate = os.path.join(self.depth_cache_root, os.path.basename(mission_dir))
+            if os.path.isdir(candidate):
+                depth_root = candidate
         
         d_paths = [os.path.join(depth_root, p) for p in depth["path"]]
         d_order = np.argsort(d_ts)

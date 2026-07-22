@@ -1,10 +1,4 @@
-"""Sanity checks tiers 1-3 for the GrandTour traversability training pipeline.
-
-Run by tier:
-    uv run --project training/traversability_network pytest -m tier1 -s
-    uv run --project training/traversability_network pytest -m tier2 -s
-    uv run --project training/traversability_network pytest -m tier3 -s
-"""
+"""Sanity checks tiers 1-3 (geometry, gradients/labels, robustness) for the GrandTour traversability training pipeline."""
 
 import bisect
 import os
@@ -19,7 +13,7 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from torch.utils.data import DataLoader, Subset
 from traversability_network.config import get_cfg
-from traversability_network.data.grandtour_dataset import BORDER_CROP, GrandTourDataset
+from traversability_network.adaptations.grandtour_dataset import BORDER_CROP, GrandTourDataset
 from traversability_network.network.trainer import TrainingModule
 
 DATA_ROOT = str(EXTRACTED_ROOT)
@@ -122,7 +116,7 @@ def test_path_in_map_coverage():
         f"  in-map steps : {mean_map * 100:.1f}% mean "
         f"({np.min(fracs) * 100:.0f}–{np.max(fracs) * 100:.0f}%)"
     )
-    # diagnostic only — no threshold assert; result informs HORIZON / xbound tuning
+    # diagnostic only, no threshold assert; result informs HORIZON / xbound tuning
 
 
 @pytest.mark.tier1

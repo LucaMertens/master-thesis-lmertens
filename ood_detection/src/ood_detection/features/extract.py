@@ -1,14 +1,4 @@
-"""Step 1 of the OOD pipeline: run a trained checkpoint over every mission tier
-(id_train, id_heldout, near_forest, near_gravel, far_snow, far_arc) and cache, per
-window: the WayFASTER penultimate BEV feature, a DINO frame feature, the RGB+D and
-RGB-only mu predictions (for the modality-disagreement score), the evidential
-uncertainty (if the checkpoint has an evidential head), and the true-mu error over
-visible+observable path cells (for the RQ3 failure-mode handoff).
-
-One .npz per tier written to --out-dir; ood_detection.eval.run reads them back.
-With --max-cell-maps > 0, also writes a {tier}_cellmaps.npz of raw per-cell BEV
-feature grids for a few windows, for eval.run's per-cell spatial score maps.
-"""
+"""Step 1 of the OOD pipeline: extracts and caches per-window features from a checkpoint."""
 
 import argparse
 import os
@@ -17,7 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from traversability_network.data.grandtour_dataset import GrandTourDataset
+from traversability_network.adaptations.grandtour_dataset import GrandTourDataset
 
 from ood_detection.common.checkpoint import BEVFeatureHook, load_checkpoint
 from ood_detection.common.dino import dino_pooled_features, load_dino, patch_size
@@ -33,10 +23,7 @@ FIELDS = (
 
 @torch.no_grad()
 def extract_mission(configs, model, dino, dino_patch, mission, device, batch_size, workers, max_cell_maps=0):
-    """Returns (per-window rows, per-cell BEV feature maps for up to max_cell_maps
-    windows). The maps let eval.run score a fitted detector per grid cell instead
-    of pooled, for RQ3 spatial failure-mode plots; 0 skips them (they're
-    (X, Y, latent_dim) each, too big to save for every window)."""
+    """Extracts features and predictions for one mission."""
     ds = GrandTourDataset(configs, [mission], train=False)
     if len(ds) == 0:
         return None, None
@@ -47,13 +34,14 @@ def extract_mission(configs, model, dino, dino_patch, mission, device, batch_siz
 
     idx0 = 0
     for batch in loader:
-        color, depth_voxel, K_full, K, ext, states, target_trav, trav_weights, depth_target, _ = (
+        color, depth_voxel, K_full, K, ext, states, target_trav, trav_weights, depth_target, _, *extra = (
             x.to(device) for x in batch
         )
-        trav_map, aux, _, _ = model.model(color, depth_voxel, K_full, K, ext, depth_target)
+        image_feats = extra[0] if extra else None  # cached backbone features, DINO mode only
+        trav_map, aux, _, _ = model.model(color, depth_voxel, K_full, K, ext, depth_target, image_feats=image_feats)
         bev = hook.features.mean(dim=(2, 3))
 
-        trav_map_rgbonly, aux_rgbonly, _, _ = model.model(color, torch.zeros_like(depth_voxel), K_full, K, ext, depth_target)
+        trav_map_rgbonly, aux_rgbonly, _, _ = model.model(color, torch.zeros_like(depth_voxel), K_full, K, ext, depth_target, image_feats=image_feats)
         bev_rgbonly = hook.features.mean(dim=(2, 3))
 
         pred, mask = model._sample_path(states, trav_map)

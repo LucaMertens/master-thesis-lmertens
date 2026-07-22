@@ -1,8 +1,4 @@
-# Adapted from wayfaster repository (https://github.com/matval/wayfaster) wayfaster/train.py
-# Modifications:
-#   - Dataset -> GrandTourDataset, config loader -> traversability_network.config.
-#   - Train/valid sets built from configs.DATASET.TRAIN_MISSIONS / VALID_MISSIONS.
-#   - TrainingModule (trainer.py) is reused unchanged.
+# Training entrypoint, adapted from wayfaster's train.py (https://github.com/matval/wayfaster).
 import argparse
 import os
 import tempfile
@@ -11,7 +7,6 @@ import pytorch_lightning as pl
 import torch
 import torchvision.transforms as transforms
 from pytorch_lightning.callbacks import (
-    EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
     RichProgressBar,
@@ -20,11 +15,10 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 
+from .adaptations.grandtour_dataset import GrandTourDataset
 from .config import get_cfg
-from .data.grandtour_dataset import GrandTourDataset
 from .network.trainer import TrainingModule
 
-# Big-storage volume; home NFS is small and shared, it fills up mid-run.
 CKPT_BASE = "/datahome/lmertens/checkpoints"
 
 
@@ -59,20 +53,39 @@ def main():
     # Tensor-mode transforms applied to the stacked (T, C, H, W) window in the
     # dataloader: parameters are drawn once per window, not per frame.
     steps = [
-        transforms.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue),
+        transforms.ColorJitter(
+            brightness=brightness, contrast=contrast, saturation=saturation, hue=hue
+        ),
     ]
     if configs.AUGMENTATIONS.BLUR_PROB > 0:
-        steps.append(transforms.RandomApply(
-            [transforms.GaussianBlur(5, sigma=(0.1, 1.5))], p=configs.AUGMENTATIONS.BLUR_PROB
-        ))
+        steps.append(
+            transforms.RandomApply(
+                [transforms.GaussianBlur(5, sigma=(0.1, 1.5))],
+                p=configs.AUGMENTATIONS.BLUR_PROB,
+            )
+        )
     transform = transforms.Compose(steps)
+    if getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino":
+        # Photometric augs cannot reach the precomputed frozen features; jittering
+        # only the viz images would misrepresent what the network sees.
+        transform = None
 
-    train_dataset = GrandTourDataset(
-        configs, configs.DATASET.TRAIN_MISSIONS, transform=transform, train=True
-    )
-    valid_dataset = GrandTourDataset(
-        configs, configs.DATASET.VALID_MISSIONS, weights=train_dataset.weights
-    )
+    if getattr(configs.DATASET, "NAME", "grandtour") == "wayfaster":
+        from .network.dataloader import Dataset as WayfasterDataset
+
+        train_dataset = WayfasterDataset(
+            configs, configs.DATASET.TRAIN_DIRS, transform=transform, train=True
+        )
+        valid_dataset = WayfasterDataset(
+            configs, configs.DATASET.VALID_DIRS, weights=train_dataset.weights
+        )
+    else:
+        train_dataset = GrandTourDataset(
+            configs, configs.DATASET.TRAIN_MISSIONS, transform=transform, train=True
+        )
+        valid_dataset = GrandTourDataset(
+            configs, configs.DATASET.VALID_MISSIONS, weights=train_dataset.weights
+        )
 
     # forkserver workers are forked from a single-threaded server started before
     # any CUDA use, so they sidestep the fork-after-CUDA deadlock that plain fork
@@ -103,17 +116,25 @@ def main():
         # Normalize torch.compile's "._orig_mod" prefix to match this run's keys
         # (COMPILE can differ between the saved run and this one): strip it, then
         # re-add it if this run's own model is the one that's compiled.
-        pretrained_dict = {k.replace("._orig_mod", ""): v for k, v in pretrained_dict.items()}
+        pretrained_dict = {
+            k.replace("._orig_mod", ""): v for k, v in pretrained_dict.items()
+        }
         own = model.state_dict()
         if any("._orig_mod" in k for k in own):
             pretrained_dict = {
-                k.replace("model.", "model._orig_mod.", 1) if k.startswith("model.") else k: v
+                k.replace("model.", "model._orig_mod.", 1)
+                if k.startswith("model.")
+                else k: v
                 for k, v in pretrained_dict.items()
             }
         # Warm start across head changes (e.g. plain -> evidential/binned mu head):
         # drop shape-mismatched keys so the new head keeps its fresh init, since
         # load_state_dict raises on those regardless of strict=False.
-        mismatched = [k for k, v in pretrained_dict.items() if k in own and own[k].shape != v.shape]
+        mismatched = [
+            k
+            for k, v in pretrained_dict.items()
+            if k in own and own[k].shape != v.shape
+        ]
         for k in mismatched:
             del pretrained_dict[k]
         if mismatched:
@@ -138,7 +159,9 @@ def main():
                 ["git", "rev-parse", "--show-toplevel"], text=True
             ).strip()
             diff = subprocess.check_output(["git", "diff", "HEAD"], cwd=root, text=True)
-            patch = os.path.join(ckpt_tmp, f"uncommitted_{wandb_logger.experiment.id}.patch")
+            patch = os.path.join(
+                ckpt_tmp, f"uncommitted_{wandb_logger.experiment.id}.patch"
+            )
             with open(patch, "w") as fh:
                 fh.write(diff)
             wandb_logger.experiment.save(patch, base_path=ckpt_tmp, policy="now")
@@ -153,18 +176,14 @@ def main():
         save_top_k=-1,  # Save every nth checkpoint, do not check for best.
         every_n_epochs=5,  # Save every 5 epochs
     )
-    # valid/trav_loss stays flat straight through mean collapse (dominated by the
-    # common high-mu mass), so it can't see the failure it's meant to catch.
-    # valid/balanced_mae macro-averages MAE per true-mu bin (equal weight per bin),
-    # which degrades monotonically as low-mu predictions collapse toward the mean.
     best_callback = ModelCheckpoint(
         dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",
         filename="best_{epoch}-{step}",
-        monitor="valid/balanced_mae",
+        monitor="valid/loss",
         mode="min",
         save_top_k=1,
     )
-    early_stopping = EarlyStopping(monitor="valid/balanced_mae", mode="min", patience=10)
+    # balanced_mae rewards hedging toward the mean, not a useful early-stop signal.
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     trainer = pl.Trainer(
@@ -177,17 +196,25 @@ def main():
         logger=wandb_logger,
         default_root_dir=CKPT_BASE,
         max_epochs=configs.TRAINING.EPOCHS,
-        min_epochs=20,  # early stopping (patience 10) can't fire before this many epochs
+        min_epochs=20,
         check_val_every_n_epoch=1,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
-        callbacks=[checkpoint_callback, best_callback, early_stopping, lr_monitor, RichProgressBar(leave=True)],
+        callbacks=[
+            checkpoint_callback,
+            best_callback,
+            lr_monitor,
+            RichProgressBar(leave=True),
+        ],
     )
 
     # weights_only=False: our own checkpoints carry EasyDict hparams (see LOAD_NETWORK above).
     trainer.fit(
-        model, train_loader, valid_loader,
-        ckpt_path=configs.MODEL.RESUME_CHECKPOINT, weights_only=False,
+        model,
+        train_loader,
+        valid_loader,
+        ckpt_path=configs.MODEL.RESUME_CHECKPOINT,
+        weights_only=False,
     )
 
 

@@ -6,14 +6,14 @@ from traversability_network.network.trainer import TrainingModule
 
 
 def load_checkpoint(cfg_file, checkpoint_path, device="cuda"):
-    """Same pattern as visualize_predictions.load_model, plus COMPILE=False: eager
-    mode is what lets BEVFeatureHook see a plain nn.Module, and inference here runs
-    with varying batch sizes/missions where torch.compile would just recompile."""
+    """Loads a checkpoint into an eager (uncompiled) model for inference."""
     configs = get_cfg(cfg_file)
     configs.TRAINING.COMPILE = False
     model = TrainingModule(configs)
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    missing, unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)
+    # compiled-model checkpoints prefix keys with "._orig_mod"; strip it for the eager model
+    state_dict = {k.replace("._orig_mod", ""): v for k, v in ckpt["state_dict"].items()}
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
         print(f"non-strict load: missing={missing} unexpected={unexpected}")
     model.eval().to(device)
@@ -21,8 +21,7 @@ def load_checkpoint(cfg_file, checkpoint_path, device="cuda"):
 
 
 class BEVFeatureHook:
-    """Captures TravNet's penultimate BEV feature map (B, latent_dim, X, Y), the
-    input to travmap_head, on every forward call without touching TravNet itself."""
+    """Captures TravNet's penultimate BEV feature map on every forward call."""
 
     def __init__(self, model):
         self.features = None

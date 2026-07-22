@@ -1,11 +1,9 @@
-"""Unit tests for the low-mu oversampler (GrandTourDataset._flagged_windows /
-_oversampled_indices). Builds bare instances via object.__new__ so no dataset on
-disk is needed; only numpy is exercised."""
+"""Unit tests for the low-mu oversampler (GrandTourDataset._flagged_windows / _oversampled_indices) on bare object.__new__ instances, no dataset on disk needed."""
 
 import numpy as np
 import pytest
 
-from traversability_network.data.grandtour_dataset import GrandTourDataset
+from traversability_network.adaptations.grandtour_dataset import GrandTourDataset
 
 
 def make_ds(rosbags, *, n_frames=1, horizon=5, dt=0.1,
