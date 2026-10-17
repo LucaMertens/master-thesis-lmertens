@@ -9,7 +9,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from ood_detection.eval.metrics import auroc
+from ood_detection.eval.metrics import auroc, fpr_at_tpr
 from ood_detection.eval.run import OOD_TIERS, build_detectors, load_tier, score
 from ood_detection.evidential.score import has_evidential
 
@@ -20,8 +20,7 @@ def finite(scores, mission):
 
 
 def pairwise_null_aurocs(scores, mission):
-    """Folded pairwise AUROC between same-domain missions: the score separation
-    that session identity alone produces."""
+    """Folded pairwise AUROC between same-domain missions (separation from session identity alone)."""
     ms = np.unique(mission)
     pairs = [
         auroc(scores[mission == a], scores[mission == b])
@@ -30,14 +29,23 @@ def pairwise_null_aurocs(scores, mission):
     return np.array([max(a, 1 - a) for a in pairs])
 
 
+def pairwise_null_fpr95(scores, mission):
+    """FPR95 counterpart of pairwise_null_aurocs, taking the better-separating direction."""
+    ms = np.unique(mission)
+    return np.array([
+        min(fpr_at_tpr(scores[mission == a], scores[mission == b]),
+            fpr_at_tpr(scores[mission == b], scores[mission == a]))
+        for i, a in enumerate(ms) for b in ms[i + 1:]
+    ])
+
+
 def per_mission_aurocs(id_scores, ood_scores, ood_mission):
     """Directed AUROC of each OOD mission against the pooled ID set."""
     return {m: auroc(id_scores, ood_scores[ood_mission == m]) for m in np.unique(ood_mission)}
 
 
 def beats_null(mission_aurocs, null_aurocs):
-    """P(an OOD mission's AUROC exceeds an ID-vs-ID session pair's AUROC).
-    0.5 = the tier shift is indistinguishable from session fingerprint."""
+    """P(an OOD mission's AUROC exceeds an ID-vs-ID pair's). 0.5 means indistinguishable from fingerprint."""
     if len(null_aurocs) == 0 or len(mission_aurocs) == 0:
         return float("nan")
     a = np.asarray(mission_aurocs)[:, None]
@@ -46,7 +54,7 @@ def beats_null(mission_aurocs, null_aurocs):
 
 
 def centered(scores, mission):
-    """Remove each recording's level: subtract the per-mission median."""
+    """Subtract the per-mission median."""
     out = scores.astype(np.float64).copy()
     for m in np.unique(mission):
         idx = mission == m
@@ -55,7 +63,7 @@ def centered(scores, mission):
 
 
 def level_auroc(id_scores, id_mission, ood_scores, ood_mission):
-    """AUROC over per-mission median scores only (one number per recording)."""
+    """AUROC over per-mission median scores."""
     id_med = [np.median(id_scores[id_mission == m]) for m in np.unique(id_mission)]
     ood_med = [np.median(ood_scores[ood_mission == m]) for m in np.unique(ood_mission)]
     return auroc(np.array(id_med), np.array(ood_med))
@@ -136,7 +144,8 @@ def main(argv=None):
     id_heldout = load_tier(args.features_dir, "id_heldout")
     tiers = {t: d for t in OOD_TIERS if (d := load_tier(args.features_dir, t)) is not None}
     detectors, feat_keys = build_detectors(id_train)
-    names = ["mahalanobis_wayfaster", "mahalanobis_dino", "modality_disagreement"]
+    names = ["mahalanobis_wayfaster", "kmeans_wayfaster", "mahalanobis_dino", "kmeans_dino",
+             "viewpoint_disagreement", "modality_disagreement", "predicted_trav"]
     if has_evidential(id_train):
         names.append("evidential")
 

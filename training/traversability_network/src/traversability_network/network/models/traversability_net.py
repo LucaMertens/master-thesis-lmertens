@@ -5,7 +5,8 @@ import torch.nn.functional as F
 
 from .temporal_fusion import TemporalModel
 from .encoder_decoder import Decoder
-from ...adaptations import build_encoder
+from ...adaptations import build_encoder, head_dropout
+from ...adaptations import capacity, wrizz_arch
 
 class TravNet(nn.Module):
     """
@@ -25,7 +26,8 @@ class TravNet(nn.Module):
             image_dim=64, temporal_length=3, predict_depth=True,
             fuse_pcloud=True, voxel_downsample=1, mu_bins=0, evidential=False,
             freeze_backbone=False, backbone="resnet34", dino_feat_dim=768,
-            dino_neck_dim=256, mu_pixel_linear=False
+            dino_neck_dim=256, dino_noise=0.0, mu_pixel_linear=False, head_drop=0.0,
+            slim_decoder=False, wrizz_decoder=False
         ):
         super(TravNet, self).__init__()
 
@@ -74,18 +76,16 @@ class TravNet(nn.Module):
         else:
             pcloud_dim = 0
         
-        # ADAPTATION: image encoder select (trainable ResNet, or frozen-DINO neck
-        # on precomputed patch features passed to forward() as image_feats).
+        # ADAPTATION: trainable ResNet, or frozen-DINO neck on precomputed image_feats
         self.backbone = backbone
         self.encoder = build_encoder(
             backbone, self.D + self.camC, self.downsample, self.input_size,
-            freeze_backbone, dino_feat_dim, dino_neck_dim)
+            freeze_backbone, dino_feat_dim, dino_neck_dim, dino_noise)
 
-        # Bird's eye view compressor        
-        self.bev_compressor = nn.Sequential(
-            nn.Conv2d(self.camC * self.nx[2] + pcloud_dim, self.camC, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(self.camC),
-            nn.ReLU(inplace=True))
+        # Bird's eye view compressor
+        # ADAPTATION: 1x1 in the slim variant (see adaptations/capacity.py)
+        self.bev_compressor = capacity.bev_compressor(
+            self.camC * self.nx[2] + pcloud_dim, self.camC, slim_decoder)
 
         # Temporal Model
         self.temporal_model = TemporalModel(
@@ -94,17 +94,16 @@ class TravNet(nn.Module):
             input_shape=(self.int_nx[0], self.int_nx[1]))
 
         # Bird's eye view decoder
-        self.decoder = Decoder(in_channels=self.latent_dim)
+        # ADAPTATION: wrizz_decoder swaps the upsampling blocks (adaptations/wrizz_arch.py)
+        self.decoder = Decoder(in_channels=self.latent_dim, slim=slim_decoder)
+        if wrizz_decoder:
+            wrizz_arch.apply(self.decoder)
         
-        # Traversability map head, one of three mutually exclusive mu parameterizations:
-        # plain sigmoid regression (2 ch: mu, nu), a categorical distribution over
-        # mu_bins bins (mu_bins+1 ch: bin logits + sigmoid nu), or an evidential
-        # Normal-Inverse-Gamma over mu (5 ch: gamma, v, alpha, beta + sigmoid nu).
+        # Map head, one mu parameterization: sigmoid regression (2 ch), mu_bins logits + nu,
+        # or evidential NIG (5 ch)
         assert not (self.mu_bins and self.evidential), "mu_bins and evidential are mutually exclusive"
-        # Probe-as-layer mu path: linear per-pixel classifier on the L2-normalized
-        # frozen DINO features, lifted to BEV geometrically (depth-weighted
-        # sample2bev, mass-normalized mean over frames/z). No learnable mu decoder;
-        # the BEV head then only outputs nu.
+        # Linear per-pixel mu probe on frozen DINO features, lifted to BEV with the depth
+        # splat; the BEV head then only outputs nu.
         self.mu_pixel_linear = mu_pixel_linear
         if mu_pixel_linear:
             assert backbone == "dino" and self.mu_bins, "mu_pixel_linear needs BACKBONE=dino and MU_BINS>0"
@@ -117,10 +116,13 @@ class TravNet(nn.Module):
             out_ch = self.mu_bins + 1
         else:
             out_ch = 2
+        # ADAPTATION: head_drop injects Dropout2d for regularized ablations
         head_layers = [
+            *head_dropout(head_drop),
             nn.Conv2d(self.latent_dim, self.latent_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(self.latent_dim),
             nn.ReLU(inplace=True),
+            *head_dropout(head_drop),
             nn.Conv2d(self.latent_dim, out_ch, kernel_size=1, padding=0)]
         if self.mu_pixel_linear or (not self.mu_bins and not self.evidential):
             head_layers.append(nn.Sigmoid())
@@ -227,8 +229,7 @@ class TravNet(nn.Module):
         with torch.autocast(device_type=dev.type, enabled=False):
             depth = depth.float()
             if downsample > 1:
-                # strided subsample keeps occupied voxels a strict subset (no phantoms);
-                # u = s*u' so K's first two rows scale by 1/s to reproduce the same rays.
+                # strided subsample adds no phantom voxels; K scales by 1/s for the same rays
                 depth = depth[:, ::downsample, ::downsample]
                 intrinsics = intrinsics.clone()
                 intrinsics[:, :2, :] = intrinsics[:, :2, :] / downsample
@@ -313,9 +314,7 @@ class TravNet(nn.Module):
         mu_pixel_logits = None
         if self.mu_pixel_linear:
             assert image_feats is not None
-            # Linear probe on L2-normalized patch features; the depth weights are
-            # detached so the mu loss cannot shape the depth path (mu stays a pure
-            # linear image-space readout plus fixed geometry).
+            # Depth weights are detached so the mu loss cannot shape the depth path
             pl = self.mu_pixel_head(F.normalize(image_feats.view(B*T, *image_feats.shape[2:]).float(), p=2, dim=1))
             pl = F.interpolate(pl, size=depth_logits.shape[-2:], mode="bilinear", align_corners=False)
             pl = torch.cat([pl, torch.ones_like(pl[:, :1])], dim=1)

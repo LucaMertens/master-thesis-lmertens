@@ -1,10 +1,7 @@
-"""Caches frozen DINO patch features per mission as fp16 memmaps.
+"""Cache frozen DINO patch features (fp16 memmaps) per mission, plus features of flipped frames.
 
-Also caches features of horizontally flipped frames: DINO isn't flip-equivariant
-(flip(feat) vs feat(flip) cosine ~0.81), so flip augmentation reads this cache
-instead of flipping the feature map. Machine-local training cache, like
-cache_depth.py, not a pipeline.py step. Needs a GPU and, for gated DINOv3
-weights, a logged-in HF token.
+DINO is not flip-equivariant (cosine ~0.81), so flip augmentation reads the flipped cache.
+Machine-local cache, not a pipeline.py step. Needs a GPU and an HF token for gated weights.
 """
 
 import argparse
@@ -15,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
 import torch
-from config.paths import DATALOCAL_ROOT, EXTRACTED_ROOT, ensure_datalocal_root
+from shared_utils.paths import DATALOCAL_ROOT, EXTRACTED_ROOT, ensure_datalocal_root
 from data_labeling_pipeline.pipeline_step import is_step_done, log_step, write_step_done
 from ood_detection.common.dino import dino_patch_features, load_dino, patch_size
 from tqdm import tqdm

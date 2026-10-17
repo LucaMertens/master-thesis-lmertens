@@ -1,27 +1,25 @@
+"""Compare ANYmal command twist against the cpt7 odometry twist in the base frame."""
+
 import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from config.paths import ROS1_ROOT
+from shared_utils.paths import ROS1_ROOT
 from scipy.spatial.transform import Rotation as R
 
-# Add src to path if needed
 sys.path.append(str(Path(__file__).parent.parent / "preprocessing" / "data_labeling_pipeline" / "src"))
 
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
 from data_labeling_pipeline.ros1_transforms import get_static_transform
 
-# The /boxi/inertial_explorer/tc/odometry twist is expressed in NED (North-East-Down),
-# not in ENU or body frame, despite what the header frames suggest.
-# The NovAtel Inertial Explorer TC exporter outputs velocity in its native NED navigation
-# frame. Angular velocity is not exported (always zero); it is derived here from the
-# pose orientation time series.
+# The inertial_explorer/tc/odometry twist is in NED, not ENU or body frame, despite the
+# header frames. Angular velocity is always zero there, so it is derived from the pose.
 _R_NED_TO_ENU = R.from_matrix(np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]], dtype=float))
 
 
 def ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base):
-    """Convert odom linear velocity from NED -> ENU -> cpt7_imu -> base."""
+    """NED -> ENU -> cpt7_imu -> base."""
     x = odom_linear
     R_enu_to_cpt7 = R.from_quat(odom_orien).inv()
     R_cpt7_to_base = T_cpt7_to_base.rotation
@@ -34,15 +32,11 @@ def ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base):
 
 
 def derive_angular_velocity_base(odom_ts, odom_orien, T_cpt7_to_base):
-    """Numerically differentiate pose orientation to get angular velocity in base frame.
-
-    Returns (ts_mid, omega_base) where ts_mid are midpoint timestamps.
-    """
+    """Angular velocity in base frame from differentiated orientation; returns (ts_mid, omega_base)."""
     rots = R.from_quat(odom_orien)
     dt = np.diff(odom_ts)
     valid = dt > 1e-9
 
-    # Body-frame angular velocity: dR_body = R(t).inv() * R(t+dt), rotvec / dt
     R_prev = rots[:-1][valid]
     R_next = rots[1:][valid]
     dR_body = R_prev.inv() * R_next
@@ -67,15 +61,13 @@ def compare_twist(mission_shortname):
     T_cpt7_to_base = get_static_transform(mission_path, "cpt7_imu", "base")
     print("Found static transform cpt7_imu -> base")
 
-    # NED -> ENU -> cpt7_imu -> base
     odom_linear_base = ned_twist_to_base(odom_linear, odom_orien, T_cpt7_to_base)
 
-    # Angular velocity derived from pose differentiation (TC odom has none)
     ang_ts, odom_angular_base = derive_angular_velocity_base(
         odom_ts, odom_orien, T_cpt7_to_base
     )
 
-    # Quick stats
+    # Forward velocity agreement while commanded to move
     t0 = max(cmd_ts[0], odom_ts[0])
     t1 = min(cmd_ts[-1], odom_ts[-1])
     mask = (odom_ts >= t0) & (odom_ts <= t1)
@@ -89,7 +81,6 @@ def compare_twist(mission_shortname):
             f"\nForward velocity (moving samples): MSE_x={mse_x:.4f}, Corr_x={corr_x:.4f}"
         )
 
-    # Plotting
     _, axes = plt.subplots(5, 3, figsize=(18, 10), sharex=True)
     t_ref = cmd_ts[0]
 
@@ -120,7 +111,6 @@ def compare_twist(mission_shortname):
 
     curr_row = 2
 
-    # Raw NED odom
     for i, label in enumerate(["X (forward)", "Y (lateral)", "Z (vertical)"]):
         axes[curr_row, i].plot(
             odom_ts - t_ref,

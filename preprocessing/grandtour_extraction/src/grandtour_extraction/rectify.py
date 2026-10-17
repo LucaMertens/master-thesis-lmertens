@@ -1,7 +1,6 @@
 """Fisheye stereo rectification for Alphasense front_center (ref, colour) and front_right (mono).
 
-front_center sits left of front_right, so disparity is positive and depth lands directly in the
-front_center frame. Single source of truth for maps and intrinsics used across extraction steps.
+front_center is the left camera, so depth lands directly in its frame.
 """
 
 import pathlib
@@ -19,7 +18,7 @@ PARTNER_CAM = "front_right"   # mono partner, mounted to the right of the refere
 CAMERAS = (REF_CAM, PARTNER_CAM)
 FRAME = {c: f"alphasense_{c}" for c in CAMERAS}
 
-# Rectification zoom. Identical values must be used everywhere; keep them here.
+# Rectification zoom, shared by all steps.
 DEFAULT_BALANCE = 0.0
 DEFAULT_FOV_SCALE = 1.0
 

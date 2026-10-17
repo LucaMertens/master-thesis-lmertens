@@ -1,16 +1,12 @@
-"""Download *ap20_prism_position* and *zed2i_vio* bags for every mission that has ap20 GT.
+"""Download ap20_prism_position and zed2i_vio bags for missions with ap20 GT (odometry_eval.ipynb).
 
-Used by odometry_eval.ipynb to benchmark dlio/zed2i against the ap20 total-station GT
-across the whole dataset. Run as a single instance: concurrent runs race on the same files.
-
-  uv run python download_odometry_eval.py            # show plan
-  uv run python download_odometry_eval.py --download  # verify existing, then fetch missing
+Lists missing files by default; pass --download to fetch.
 """
 
 import sys
 
 import kleinkram
-from config.paths import ROS1_ROOT
+from shared_utils.paths import ROS1_ROOT
 from data_labeling_pipeline.grandtour_missions import missions
 from rosbags.rosbag1 import Reader
 
@@ -37,7 +33,7 @@ def local_file(short_name, key):
 
 
 def is_valid(path, expected_size):
-    """Cheap integrity check: correct size and a readable bag index (catches partial / corrupt)."""
+    """Size matches and bag index is readable (catches partial or corrupt files)."""
     if path.stat().st_size != expected_size:
         return False
     try:
@@ -54,7 +50,7 @@ def plan():
         sn = m["short_name"]
         remote = remote_files(sn, m["timestamp"])
         if "ap20_prism" not in remote:
-            continue  # no GT for this mission, nothing to benchmark
+            continue  # no GT
         for k, f in remote.items():
             local = local_file(sn, k)
             if local is None:
@@ -82,7 +78,7 @@ def download():
             local = local_file(sn, k)
             if local is not None and is_valid(local, f.size):
                 continue
-            if local is not None:  # corrupt / partial: remove so it is re-fetched
+            if local is not None:  # corrupt or partial
                 print(f"deleting corrupt {local.name}", flush=True)
                 local.unlink()
             dest = ROS1_ROOT / sn

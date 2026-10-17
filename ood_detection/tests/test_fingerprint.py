@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from conftest import FAR_TIER, NEAR_TIER
 from ood_detection.eval.fingerprint import (
     beats_null,
     centered,
@@ -68,9 +69,7 @@ def test_level_auroc_hand_case():
 
 
 def test_session_fingerprint_only_shift_is_not_credited():
-    """OOD missions whose level offsets come from the same session-noise
-    distribution as ID missions must not beat the null. The null is folded
-    (>= 0.5) while tier AUROCs are directed, so this lands at or below 0.5."""
+    """OOD missions drawn from the ID session-noise distribution must not beat the folded null."""
     rng = np.random.default_rng(3)
     id_scores, id_mission = sessions(rng, 8, 300, offset_scale=0.3, noise=1.0, prefix="ID")
     ood_scores, ood_mission = sessions(rng, 8, 300, offset_scale=0.3, noise=1.0, prefix="OOD")
@@ -154,14 +153,14 @@ def test_main_end_to_end(features_dir):
     assert os.path.exists(os.path.join(out, "fingerprint_per_mission.csv"))
     assert os.path.exists(os.path.join(out, "fingerprint_corrected.png"))
 
-    assert set(df["tier"]) == {"near_forest", "far_snow"}
-    assert len(df) == 6  # 3 detectors x 2 tiers
-    # far_snow features shifted 3 sigma: mahalanobis detectors must beat the null
-    snow = df[(df["tier"] == "far_snow") & (df["detector"] == "mahalanobis_wayfaster")].iloc[0]
+    assert set(df["tier"]) == {NEAR_TIER, FAR_TIER}
+    assert len(df) == len(set(df["detector"])) * 2
+    # the far tier's features are shifted 3 sigma: mahalanobis must beat the null
+    snow = df[(df["tier"] == FAR_TIER) & (df["detector"] == "mahalanobis_wayfaster")].iloc[0]
     assert snow["beats_null"] > 0.9
     assert snow["excess"] > 0.1
     # per-mission csv covers every (detector, tier, mission) combo
     per_mission = pd.read_csv(os.path.join(out, "fingerprint_per_mission.csv"))
-    assert len(per_mission) == 6 * 2
+    assert len(per_mission) == len(df) * 2
     assert per_mission["auroc"].between(0, 1).all()
-    assert set(ranks["tier"]) == {"near_forest", "far_snow"}
+    assert set(ranks["tier"]) == {NEAR_TIER, FAR_TIER}

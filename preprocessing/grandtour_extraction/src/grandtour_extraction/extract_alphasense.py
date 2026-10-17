@@ -1,8 +1,6 @@
-"""Extract everything derivable from the *_alphasense.bag in one pass.
+"""Extract rectified images, intrinsics and stereo extrinsics from *_alphasense.bag.
 
-Writes intrinsics.npy, intrinsics_<cam>.npy, images/<cam>/<ts_ns>.png,
-image_manifest.npz (if images), and cam2base.npy, stereo_extrinsics.npz
-(if extrinsics).
+Writes images/<cam>/<ts_ns>.png, image_manifest.npz, intrinsics*.npy, cam2base.npy, stereo_extrinsics.npz.
 """
 
 import argparse
@@ -22,7 +20,7 @@ from . import rectify
 
 CAMERAS = list(rectify.CAMERAS)
 
-# Bump to invalidate outputs from older versions of these steps.
+# Bump to invalidate older outputs.
 EXTRINSICS_VERSION = 1
 IMAGES_VERSION = 1
 
@@ -101,8 +99,7 @@ def extract(
         if bag is None:
             raise FileNotFoundError(f"No *_alphasense.bag in {mission_dir}")
 
-        # Each cv2 call would otherwise spawn its own thread pool, oversubscribing
-        # the machine on top of our worker threads.
+        # Avoid cv2 thread pools on top of our worker threads.
         cv2.setNumThreads(1)
 
         np.save(output_dir / "intrinsics.npy", rect.ref.K)
@@ -119,7 +116,7 @@ def extract(
         # Bound in-flight futures to limit RAM usage.
         max_in_flight = n_workers * 4
         pending: set = set()
-        # Keep submission-ordered references for deterministic manifest construction.
+        # Submission order keeps the manifest deterministic.
         all_futures: list[tuple[str, object]] = []
 
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
@@ -157,7 +154,6 @@ def extract(
                         all_futures.append((cam, fut))
                         counts[cam] += 1
 
-                    # Drain whatever is still running.
                     if pending:
                         wait(pending)
                         bar.update(len(pending))

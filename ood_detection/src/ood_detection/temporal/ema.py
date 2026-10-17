@@ -1,14 +1,10 @@
-"""Optional RQ6: temporal aggregation of per-window OOD scores. Continuous-time
-EMA (not a fixed-alpha update) since windows are unevenly spaced across segment
-boundaries within a mission; half_life sets the smoothing timescale in the same
-units as `timestamp` (seconds)."""
+"""RQ6: continuous-time EMA of per-window scores (windows are unevenly spaced); half_life in seconds."""
 
 import numpy as np
 
 
 def ema_by_mission(scores, mission, timestamp, half_life=1.0):
-    """NaN entries (e.g. n_visible=0 windows in mu_pred-derived scores) are
-    treated as missing observations: skipped in the update, not propagated."""
+    """NaN scores are skipped in the update, not propagated."""
     out = np.full(len(scores), np.nan, dtype=np.float64)
     decay = np.log(2) / half_life
     for m in np.unique(mission):

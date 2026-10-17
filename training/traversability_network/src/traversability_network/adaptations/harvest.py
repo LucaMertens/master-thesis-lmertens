@@ -7,8 +7,7 @@ from .geometry import ground_height
 
 def harvest_lowmu(rosbag_dict, timestamps, curr_position, heading_rot, aug, horizontal_flip,
                    harvest_extra, harvest_time_window, grid_bounds):
-    """Low-mu states outside this window's horizon, in the anchor frame and filtered to the
-    grid; the visibility gate downstream still decides whether an input frame sees them."""
+    """Low-mu states outside this window's horizon, in the anchor frame, filtered to the grid."""
     st = np.asarray(rosbag_dict["states_timestamp"])
     idx = rosbag_dict["lowmu_idx"]
     on_path = (st[idx] >= timestamps[0]) & (st[idx] <= timestamps[-1])

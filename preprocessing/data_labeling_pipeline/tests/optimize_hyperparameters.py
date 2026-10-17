@@ -1,23 +1,7 @@
-"""
-Hyperparameter optimizer for the RHE data labeling pipeline.
+"""Differential-evolution search for RHE cost weights on a realistic synthetic scenario.
 
-Uses derivative-free optimization (differential evolution) to find
-hyperparameters that minimize estimation error on a realistic synthetic
-scenario: linear command non-zero most of the time, angular velocity
-often zero — typical quadruped behavior.
-
-Optimized parameters:
-  - P_x diagonal (3 values): initial state trust
-  - P_m diagonal (3 values): parameter smoothness trust
-  - P_w diagonal (3 values): measurement trust
-    - lambda_max (max_tie_strengh): maximum tie strength
-
-Fixed (not optimized):
-    - v_thresh, w_thresh: confidence thresholds
-
-Usage:
-cd data_labeling_pipeline
-nohup uv run python -u -c "from tests.optimize_hyperparameters import main; main()" > output.log 2>&1 &
+Optimizes P_x, P_m, P_w diagonals and max_tie_strengh; v_thresh/w_thresh stay fixed.
+Usage: cd data_labeling_pipeline && uv run python -u -c "from tests.optimize_hyperparameters import main; main()"
 """
 
 import json
@@ -46,7 +30,6 @@ def generate_realistic_scenario(
         noise_sigma=noise_sigma,
         seed=seed,
     )
-    # return scenario_mixed_excitation(dt=dt, N_total=N_total, noise_sigma=noise_sigma)
 
 
 # Parameter layout in the optimization vector (reduced DOF):
@@ -68,8 +51,7 @@ PARAM_NAMES = [
     "lambda_max",
 ]
 
-# Bounds for each parameter.
-# These are quadratic weights in the cost function, so they span orders of magnitude.
+# Bounds per parameter (quadratic weights, so wide ranges)
 PARAM_BOUNDS = [
     (1e-3, 5),  # P_x[0] - sets P_x[0] & P_x[1]
     (1e-3, 5),  # P_x[2]
@@ -83,7 +65,7 @@ PARAM_BOUNDS = [
 
 
 def unpack_params(x: np.ndarray) -> Dict:
-    """Convert flat optimization vector → RHE constructor kwargs."""
+    """Flat optimization vector to RHE constructor kwargs."""
     # tie P_x[0]==P_x[1] and P_w[0]==P_w[1]
     x = np.asarray(x).ravel()
     return {
@@ -95,7 +77,7 @@ def unpack_params(x: np.ndarray) -> Dict:
 
 
 def pack_current_params() -> np.ndarray:
-    """Pack current hyperparameters into a flat vector (for reference)."""
+    """Current hyperparameters as a flat vector."""
 
     from data_labeling_pipeline.hyperparameters import P_m as cur_P_m
     from data_labeling_pipeline.hyperparameters import P_w as cur_P_w
@@ -226,20 +208,7 @@ def optimize_hyperparameters(
     noise_sigma: float = 0.01,
     param_weight: float = 0.7,
 ) -> Tuple[np.ndarray, float]:
-    """Run differential evolution to find optimal hyperparameters.
-
-    Args:
-        popsize: population size multiplier for DE
-        maxiter: maximum DE iterations
-        tol: convergence tolerance
-        seed: DE random seed
-        workers: parallel workers (-1 = all cores)
-        scenario_seed: seed for synthetic scenario
-        noise_sigma: measurement noise level
-
-    Returns:
-        (optimal_params, best_cost)
-    """
+    """Run differential evolution, returns (optimal_params, best_cost)."""
     scenario = generate_realistic_scenario(
         dt=dt,
         noise_sigma=noise_sigma,
@@ -247,12 +216,11 @@ def optimize_hyperparameters(
     )
 
     print(f"Scenario: {scenario.N_total} steps, dt={scenario.dt}")
-    print("Terrain segments: good(0-300) → degraded(300-550) → recovered(550-800)")
+    print("Terrain segments: good(0-300), degraded(300-550), recovered(550-800)")
     print("Angular excitation: ~30% of timesteps + sustained turn sections")
     print(f"Noise σ = {noise_sigma}")
     print()
 
-    # Evaluate current params as baseline
     current_params = pack_current_params()
     current_cost = objective(
         current_params,
@@ -352,10 +320,8 @@ def format_results(optimal_params: np.ndarray, best_cost: float) -> str:
 
 
 def save_results(optimal_params: np.ndarray, best_cost: float, output_dir: Path):
-    """Save optimization results to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save as JSON
     params = unpack_params(optimal_params)
     result_dict = {
         "best_cost": best_cost,
@@ -373,13 +339,11 @@ def save_results(optimal_params: np.ndarray, best_cost: float, output_dir: Path)
         json.dump(result_dict, f, indent=2)
     print(f"\nJSON saved: {json_path}")
 
-    # Save as Python
     py_path = output_dir / "optimized_hyperparameters.py"
     with open(py_path, "w") as f:
         f.write(format_results(optimal_params, best_cost))
     print(f"Python saved: {py_path}")
 
-    # Print comparison table
     current = pack_current_params()
     print("\nParameter comparison:")
     print(f"{'Parameter':<15} {'Current':>10} {'Optimized':>10} {'Change':>10}")

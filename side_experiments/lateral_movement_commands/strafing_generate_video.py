@@ -1,9 +1,11 @@
+"""Video of zed2i left frames with the lateral (y) twist command and optional IMU traces."""
+
 import imageio_ffmpeg
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import zarr
-from config.paths import DATASET_ROOT, OUTPUT_ROOT
+from shared_utils.paths import DATASET_ROOT, OUTPUT_ROOT
 from matplotlib.animation import FFMpegWriter, PillowWriter
 from PIL import Image
 from tqdm.auto import tqdm
@@ -38,10 +40,9 @@ data_dir = mission_dir / "data"
 images_dir = mission_dir / "images" / "zed2i_left_images"
 output_dir = OUTPUT_ROOT / "side_experiments"
 
-# Output controls
 fps = 10
 max_width = 960
-max_frames = None  # Set int to limit frames; None keeps full sequence.
+max_frames = None  # None keeps all frames
 output_mode = "mp4"  # "mp4" (fast) or "gif" (slow)
 
 if output_mode == "mp4":
@@ -49,7 +50,7 @@ if output_mode == "mp4":
 else:
     output_file = output_dir / f"{mission_dir.name}_zed2i_left_custom.gif"
 
-# Use packaged ffmpeg binary when available (no system ffmpeg needed).
+# Packaged ffmpeg, else fall back to GIF
 if output_mode == "mp4":
     try:
         mpl.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
@@ -58,7 +59,6 @@ if output_mode == "mp4":
         output_mode = "gif"
         output_file = output_dir / f"{mission_dir.name}_zed2i_left_custom.gif"
 
-# Content controls
 include_camera = True
 include_stim_imu = False
 include_anymal_imu = False

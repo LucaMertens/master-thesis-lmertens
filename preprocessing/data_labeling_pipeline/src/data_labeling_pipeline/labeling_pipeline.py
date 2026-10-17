@@ -1,3 +1,5 @@
+"""Runs the RHE over a mission and saves the per-timestep traversability labels."""
+
 import datetime
 import json
 import pathlib
@@ -11,18 +13,12 @@ from .hyperparameters import STEP_SIZE, N, P_m, P_w, P_x, dt
 from .pipeline_step import is_step_done, log_step, write_step_done
 from .rhe import RecedingHorizonEstimator
 
-# Bump to invalidate labels from older versions of this step.
+# Bump to redo labels from older versions
 LABELS_VERSION = 6
 
 
 def _center_on_window(a, offset):
-    """Place each per-window estimate at the window center instead of its start.
-
-    The RHE fits a constant parameter over the whole horizon, so its estimate
-    describes the terrain at the window center (~(N-1)/2 steps in), not its first
-    step. Shift forward so index i refers to the window centered there; pad the
-    leading gap with the first estimate.
-    """
+    """Shift per-window estimates forward by offset (window center, not start); pad the front with the first value."""
     if offset == 0:
         return a
     shifted = np.empty_like(a)
@@ -38,12 +34,12 @@ def run_labels(mission_path, extraction_dir, labels_dir, force: bool = False) ->
 
 
 class DataLabelingPipeline:
-    def __init__(self, mission_path, extraction_dir, labels_dir):
+    def __init__(self, mission_path, extraction_dir, labels_dir, loader=None):
         self.mission_path = mission_path
         self.out_path = pathlib.Path(labels_dir)
         self.dt = dt
         self.N = N
-        self.loader = GrandTourLoader(
+        self.loader = loader or GrandTourLoader(
             mission_path, extracted_dir=pathlib.Path(extraction_dir)
         )
 
@@ -66,11 +62,6 @@ class DataLabelingPipeline:
         )
 
     def process_mission(self, force: bool = False):
-        """Process the entire mission and save labels.
-
-        All data is loaded in ENU convention by GrandTourLoader, which aligns
-        with the unicycle kinematic model used by the RHE (see rhe.py).
-        """
         out_path = self.out_path
         out_path.mkdir(parents=True, exist_ok=True)
 
@@ -98,7 +89,7 @@ class DataLabelingPipeline:
         self.rhe.reset()
 
         print("Running Receding Horizon Estimator ...")
-        # disable=None turns the bar off when stdout is not a tty (e.g. log files)
+        # disable=None: no bar when stdout is not a tty
         for i in trange(
             0, total_steps - self.N + 1, STEP_SIZE, desc="RHE Progress", disable=None
         ):
@@ -109,7 +100,6 @@ class DataLabelingPipeline:
                 self.rhe.estimate(U_window, Z_window, step_size=STEP_SIZE)
             )
 
-            # Fill the block with the optimized values
             optimized_states[i : i + STEP_SIZE] = X_optimized[:STEP_SIZE]
             optimized_labels[i : i + STEP_SIZE] = m_optimized[0:3]
             optimized_mu_obs[i : i + STEP_SIZE] = mu_obs
@@ -120,7 +110,7 @@ class DataLabelingPipeline:
             if i % (100 * STEP_SIZE) == 0:
                 print(f"Processed step {i}/{total_steps - self.N}", flush=True)
 
-        # Fill remaining steps if any
+        # Tail steps not covered by a full window
         last_processed_idx = ((total_steps - self.N) // STEP_SIZE) * STEP_SIZE
         remaining_start = last_processed_idx + STEP_SIZE
         if remaining_start < total_steps:
@@ -132,8 +122,7 @@ class DataLabelingPipeline:
             v_means[remaining_start:] = v_mean
             omega_means[remaining_start:] = omega_mean
 
-        # rhe_states stays aligned with timestamps (per-step pose); only the
-        # per-window estimates are recentered onto the window midpoint.
+        # rhe_states stays per-step; only the per-window estimates are centered
         offset = (self.N - 1) // 2
         optimized_labels = _center_on_window(optimized_labels, offset)
         optimized_mu_obs = _center_on_window(optimized_mu_obs, offset)
@@ -150,7 +139,6 @@ class DataLabelingPipeline:
         np.save(out_path / "rhe_v_means.npy", v_means)
         np.save(out_path / "rhe_omega_means.npy", omega_means)
 
-        # Save hyperparameters used for this run as JSON
         hyperparams = {
             "collection_time": datetime.datetime.now().isoformat(),
             "P_x": hp.P_x.tolist(),

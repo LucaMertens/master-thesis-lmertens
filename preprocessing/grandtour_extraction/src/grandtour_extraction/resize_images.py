@@ -1,13 +1,6 @@
-"""Pre-resize front_center color images for the training dataloader.
+"""Pre-resize front_center images to the model input size into a local cache (DATASET.RESIZED_ROOT).
 
-Training reads image_manifest.npz's native-res PNGs (~1440x1080) over NFS
-only to immediately shrink them to the model's input size, which caps the
-dataloader at a couple of iterations/s. This writes a same-relative-paths
-copy at the target size into a local (non-NFS) root that
-traversability_network.config.DATASET.RESIZED_ROOT points at.
-
-Not part of pipeline.py: this is a machine-local training cache derived from
-the canonical extracted/ output, not a step that mutates that output.
+Avoids reading native-res PNGs over NFS in the dataloader. Not a pipeline.py step.
 """
 
 import argparse
@@ -18,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
-from config.paths import DATALOCAL_ROOT, ensure_datalocal_root
+from shared_utils.paths import DATALOCAL_ROOT, ensure_datalocal_root
 from data_labeling_pipeline.pipeline_step import is_step_done, log_step, write_step_done
 from tqdm import tqdm
 
@@ -27,10 +20,7 @@ CAM = "front_center"
 
 
 def _resize_one(src: pathlib.Path, dst: pathlib.Path, size: tuple[int, int], png_compression: int) -> None:
-    # Runs in a worker thread (cv2 releases the GIL) and possibly a concurrent
-    # process (train.py's preflight runs per-DDP-rank, unsynchronized). Resize
-    # to a PID-unique temp file and atomically rename, so two writers racing on
-    # the same dst can never produce a torn/corrupt PNG.
+    # PID-unique temp file + atomic rename: concurrent DDP ranks may write the same dst.
     img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
     if img is None:
         raise IOError(f"failed to read {src}")
@@ -41,8 +31,7 @@ def _resize_one(src: pathlib.Path, dst: pathlib.Path, size: tuple[int, int], png
 
 
 def _source_fingerprint(mission_dir: pathlib.Path) -> dict:
-    """Metadata of the upstream steps that produce or mutate the source images.
-    correct_tint overwrites PNGs in place, so its state must be part of the cache key."""
+    """Upstream step metadata; includes tint_correction since it overwrites PNGs in place."""
     fp = {}
     for step in ("images", "tint_correction"):
         meta = mission_dir / f"{step}_metadata.json"

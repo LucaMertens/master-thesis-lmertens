@@ -4,7 +4,6 @@ version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
     "shared-utils",
-    "config",
     "zarr==3.*",
     "jupyter",
     "pathlib",
@@ -19,7 +18,9 @@ dependencies = [
     "plotly",
     "scikit-learn>=1.9.0",
     "transformers>=4.56.0",
+    "gtsam>=4.3a2",
+    "kornia>=0.8.3",
 ]
 
 [tool.uv.sources]
-config = { workspace = true }
+shared-utils = { workspace = true }

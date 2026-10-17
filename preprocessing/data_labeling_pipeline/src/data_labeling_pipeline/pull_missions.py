@@ -1,4 +1,4 @@
-"""Download missions metadata from the Grand Tour website"""
+"""Download mission metadata from the Grand Tour website."""
 
 import argparse
 import json
@@ -19,7 +19,6 @@ def short_filter(data: dict) -> dict:
 
 
 def replace_umlauts(text: str) -> str:
-    """Replace German umlauts in the text with their ASCII equivalents."""
     replacements = {
         "ä": "ae",
         "ö": "oe",

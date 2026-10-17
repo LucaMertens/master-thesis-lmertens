@@ -1,9 +1,5 @@
 #!/usr/bin/env python
-"""Render depth-overlay videos for GrandTour missions.
-
-Colorizes depth maps and alpha-blends them over the matching RGB frames.
-Writes <mission>/depth_overlay.mp4 (or --out for a single mission).
-"""
+"""Render depth-overlay videos (<mission>/depth_overlay.mp4) by blending colorized depth over RGB."""
 
 import argparse
 import os

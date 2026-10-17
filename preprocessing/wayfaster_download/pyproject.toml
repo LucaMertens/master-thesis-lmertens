@@ -1,0 +1,14 @@
+[project]
+name = "data-download"
+version = "0.1.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "kleinkram>=0.59.0",
+    "data_labeling_pipeline",
+    "jupyter",
+    "shared-utils",
+]
+
+[tool.uv.sources]
+data_labeling_pipeline = { workspace = true }
+shared-utils = { workspace = true }

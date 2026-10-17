@@ -26,8 +26,7 @@ class SpatioTemporalPooling(nn.Module):
         #     nn.BatchNorm3d(reduction_channels),
         #     nn.ReLU(inplace=True))
 
-        # The AvgPool3d is folded into forward (see below): with a full-map window it is
-        # just a global spatial mean + temporal avg-pool, so only conv/bn/relu remain here.
+        # The AvgPool3d is folded into forward (see below)
         self.feature = nn.Sequential(
             nn.Conv3d(in_channels, reduction_channels, kernel_size=1, bias=False),
             nn.BatchNorm3d(reduction_channels),
@@ -43,10 +42,8 @@ class SpatioTemporalPooling(nn.Module):
         # x_pool = x_pool.view(b, c, t, h, w)
         # return x_pool
 
-        # The pool window covers the whole HxW map, so AvgPool3d == global spatial mean
-        # then a temporal avg-pool, and the 1x1->HxW bilinear upsample == a broadcast.
-        # Identical to the original to fp precision (see check_pool_equiv.py) but avoids the
-        # costly avg_pool3d / upsample_bilinear2d backward kernels.
+        # Full-map pool window: AvgPool3d == spatial mean + temporal avg-pool, bilinear
+        # upsample from 1x1 == broadcast. Same result as the original, cheaper backward.
         assert self.pool_size[1] == h and self.pool_size[2] == w, \
             "SpatioTemporalPooling rewrite assumes the pool window covers the full map"
         s = x.mean(dim=(-1, -2))                                  # (b, C, t) spatial mean
@@ -55,9 +52,7 @@ class SpatioTemporalPooling(nn.Module):
         s = s.unsqueeze(-1).unsqueeze(-1)                        # (b, C, t+1, 1, 1)
         x_pool = self.feature(s)[:, :, :-1].contiguous()         # conv/bn/relu, drop last frame
         c = x_pool.shape[1]
-        # 1x1 -> HxW nearest upsample == broadcast (the original's bilinear-from-1x1). nearest
-        # keeps the output contiguous (an expand()'s stride-0 view breaks torch.compile's
-        # backward tangent coercion) and its backward is a cheap gather, not the bilinear kernel.
+        # nearest instead of expand(): a stride-0 view breaks torch.compile's backward
         x_pool = F.interpolate(x_pool.view(b * t, c, 1, 1), (h, w), mode='nearest')
         return x_pool.view(b, c, t, h, w)
 

@@ -1,0 +1,65 @@
+TAG: 'bisect_M2_dino_orig'
+
+# Midpoint: frozen DINO backbone but original loss/data bundle (plain-mean norm,
+# alpha=1 weights, no visibility gate). Isolates the loss/data dimension.
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 12
+    DEVICES: [3]
+    EPOCHS: 12
+    VERBOSE: False
+    GAMMA: 0.998
+    DEPTH_WEIGHT: 0.05
+    HORIZON: 300
+    DT: 0.1
+    SMOOTH_L1_BETA: 0.1
+    LOSS_NORM: 'mean'
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+MODEL:
+    BACKBONE: 'dino'
+    DINO_MODEL: 'facebook/dinov3-vitb16-pretrain-lvd1689m'
+    DINO_FEAT_DIM: 768
+    DINO_INPUT_SIZE: [320, 176]
+    DINO_NECK_DIM: 256
+    TIME_LENGTH: 4
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [320, 176]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    NAME: 'wayfaster'
+    CSV_FILE: 'rosbags.csv'
+    TRAIN_DIRS: ['/datahome/lmertens/wayfaster_dataset/realsense/data_train']
+    VALID_DIRS: ['/datahome/lmertens/wayfaster_dataset/realsense/data_valid']
+    DINO_CACHE_ROOT: '/datalocal/lmertens/wayfaster_dino'
+    RESIZED_ROOT: null
+    DEPTH_CACHE_ROOT: null
+    LDS_ALPHA: 1.0
+    VISIBILITY_GATE: False
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.5
+    MAX_ROTATION: 0.2
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from config.paths import EXTRACTED_ROOT, ROS1_ROOT
+from shared_utils.paths import EXTRACTED_ROOT, ROS1_ROOT
 from data_labeling_pipeline.dataset_loader import GrandTourLoader
 from data_labeling_pipeline.ros1_transforms import get_static_transform
 from scipy.spatial.transform import Rotation as R
@@ -16,10 +16,7 @@ def sample_mission_path():
 
 
 def test_cpt7_yaw_inversion_via_transforms(sample_mission_path):
-    """
-    Sanity check to prove that applying the explicit SE(3) transform
-    T_cpt7_to_base correctly accounts for the 'yaw negation' issue.
-    """
+    """T_cpt7_to_base accounts for the yaw negation of the upside-down cpt7 mount."""
     tf_bags = list(sample_mission_path.glob("*tf*.bag"))
     if not tf_bags:
         pytest.skip(f"Reference dataset not available at {sample_mission_path}")
@@ -62,22 +59,18 @@ def _expect_180_deg_rotation_around_x(T, description=""):
         f"{description} Rotation not near 180° around x: diff {np.rad2deg(angle_diff):.2f} deg"
     )
 
-    # Expect no rotation around y or z, which would indicate a misinterpretation of the transform as a non-180° rotation.
+    # No residual rotation around y/z
     R_yz = R.from_matrix(T.rotation.as_matrix() @ R_expected.inv().as_matrix().T)
     angle_yz = R_yz.magnitude()
     assert angle_yz < np.deg2rad(5.0), (
         f"{description} Unexpected rotation around y/z axes: {np.rad2deg(angle_yz):.2f} deg"
     )
 
-    # Assert that the rotation is not identity, which would indicate a misinterpretation of the transform as a pure translation.
+    # Not identity
     angle_total = T.rotation.magnitude()
     assert angle_total > np.deg2rad(175.0), (
         f"{description} Rotation too small, expected ~180° around x: got {np.rad2deg(angle_total):.2f} deg"
     )
-
-    # assert np.linalg.norm(T.translation) > 0.01, (
-    #     f"{description} Expected non-trivial translation, got {T.translation}"
-    # )
 
 
 def test_cpt7_imu_to_base_has_180_x_rotation_and_translation(sample_mission_path):

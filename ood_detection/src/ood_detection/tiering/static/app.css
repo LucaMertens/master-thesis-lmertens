@@ -1,0 +1,49 @@
+:root { --bg:#15171c; --fg:#e6e8ec; --dim:#8b93a1; --line:#2b2f38; --card:#1d2027; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* the editor's own display:flex outranks the UA rule */
+body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, sans-serif; }
+header { position:sticky; top:0; z-index:5; display:flex; gap:10px; align-items:center;
+         padding:8px 12px; background:#11131799; backdrop-filter:blur(6px); border-bottom:1px solid var(--line); }
+.grow { flex:1; }
+.dim { color:var(--dim); }
+.mono { font-family:ui-monospace, monospace; }
+button, select, input { background:var(--card); color:var(--fg); border:1px solid var(--line);
+                        border-radius:5px; padding:3px 7px; font:inherit; }
+button:hover { border-color:#4a556b; cursor:pointer; }
+label { display:flex; align-items:center; gap:4px; color:var(--dim); }
+
+#board { display:flex; gap:10px; align-items:flex-start; padding:12px; overflow-x:auto; height:calc(100vh - 44px); }
+.col { flex:0 0 250px; display:flex; flex-direction:column; background:#191c22;
+       border:1px solid var(--line); border-radius:8px; max-height:100%; }
+.col.over { border-color:#6f8cff; background:#1b2130; }
+.col > .head { display:flex; gap:4px; align-items:center; padding:6px 8px; border-bottom:1px solid var(--line); }
+.col > .head .swatch { width:8px; height:8px; border-radius:2px; }
+.col > .head .name { font-weight:600; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.col > .head button { padding:0 5px; border-color:transparent; color:var(--dim); }
+.col > .body { display:flex; flex-wrap:wrap; gap:6px; padding:6px; overflow-y:auto; min-height:60px; }
+
+.card { position:relative; width:110px; background:var(--card); border:1px solid var(--line);
+        border-radius:6px; overflow:hidden; cursor:grab; }
+.card.auto { border-style:dashed; }
+.card.stale video { filter:grayscale(0.7); }
+.card video { display:block; width:100%; aspect-ratio:4/3; object-fit:cover; background:#000; }
+.card .meta { padding:3px 5px; font-size:11px; }
+.card .name { font-weight:600; }
+.card .span { color:var(--dim); font-family:ui-monospace, monospace; font-size:10px; }
+.card .tools { position:absolute; top:2px; right:2px; display:none; gap:2px; }
+.card:hover .tools { display:flex; }
+.card .tools button { padding:0 4px; font-size:11px; background:#000a; }
+.card .badge { position:absolute; top:2px; left:2px; font-size:9px; padding:0 3px; border-radius:3px;
+               background:#000a; color:var(--dim); }
+
+#editor { position:fixed; inset:0; background:#000b; display:flex; align-items:center; justify-content:center; z-index:10; }
+#editor .panel { width:min(860px, 94vw); background:#181b21; border:1px solid var(--line);
+                 border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+#editor .row { display:flex; gap:8px; align-items:center; }
+#ed-video { width:100%; max-height:46vh; object-fit:contain; background:#000; border-radius:6px; }
+#ed-strip { position:relative; height:26px; border-radius:4px; overflow:hidden; background:#0e1014; }
+#ed-strip .band { position:absolute; top:0; bottom:0; border-right:1px solid #0e1014; font-size:10px;
+                  color:#0009; overflow:hidden; padding:2px 3px; cursor:pointer; }
+#ed-strip .band.sel { outline:2px solid #fff8; outline-offset:-2px; }
+#ed-strip .head { position:absolute; top:0; bottom:0; width:2px; background:#fff; pointer-events:none; }
+#ed-scrub { width:100%; padding:0; }

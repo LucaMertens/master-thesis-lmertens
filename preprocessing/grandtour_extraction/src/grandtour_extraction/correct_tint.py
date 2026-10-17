@@ -1,14 +1,7 @@
-"""Post-extraction red-tint correction for the front_center color images.
+"""Correct red tint (failed auto-white-balance, e.g. ARC-5/6/7, SPX-3) in front_center images.
 
-Some missions (e.g. ARC-5/6/7, SPX-3) have a strong red tint from failed
-camera auto-white-balance in dark scenes. The mission's own non-tinted (clean)
-frames define the true color balance; we map each tinted frame onto that guide
-and match its brightness to the clean frames.
-
-Corrected images overwrite the originals in-place. Originals are backed up to
-extracted_raw/<mission>/ before the first overwrite, so re-runs with different
-parameters always work from pristine data, never from a previously-corrected file.
-Statistics ignore the black borders left by fisheye rectification.
+Tinted frames are mapped to the color balance and brightness of the mission's clean frames.
+Images are overwritten in place; originals are backed up to extracted_raw/<mission>/ first.
 """
 
 import argparse
@@ -47,7 +40,7 @@ def correct(output_dir: pathlib.Path, threshold: float, local_window: float, for
     ts_ns = fc["ts_ns"][order]
     rel_paths = [str(fc["path"][i]) for i in order]
 
-    # Pristine originals live here; sibling of the extracted/ root.
+    # Pristine originals, sibling of the extracted/ root.
     backup_dir = output_dir.parent.parent / "extracted_raw" / output_dir.name
 
     def src(p: str) -> pathlib.Path:

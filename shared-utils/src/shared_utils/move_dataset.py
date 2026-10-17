@@ -11,14 +11,9 @@ def move_dataset(cache, dataset_folder, allow_patterns=["*"]):
     def convert_glob_patterns_to_regex(glob_patterns):
         regex_parts = []
         for pat in glob_patterns:
-            # Escape regex special characters except for * and ?
-            pat = re.escape(pat)
-            # Convert escaped glob wildcards to regex equivalents
-            pat = pat.replace(r"\*", ".*").replace(r"\?", ".")
-            # Make sure it matches full paths
+            pat = re.escape(pat).replace(r"\*", ".*").replace(r"\?", ".")
             regex_parts.append(f".*{pat}$")
 
-        # Join with |
         combined = "|".join(regex_parts)
         return re.compile(combined)
 

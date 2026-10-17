@@ -1,0 +1,407 @@
+{
+ "tiers": [
+  "id_train",
+  "id_heldout",
+  "near_roots",
+  "near_undergrowth",
+  "near_meadow",
+  "medium_alpine",
+  "far_construction_outdoor",
+  "far_indoor",
+  "far_urban",
+  "far_snow"
+ ],
+ "missions": {
+  "ALB-3": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "id_heldout"
+   }
+  ],
+  "ARC-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "ARC-2": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "ARC-3": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "ARC-4": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "ARC-5": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "ARC-6": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "ARC-7": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "CON-3": [
+   {
+    "start": 0,
+    "end": 76,
+    "tier": "far_construction_outdoor"
+   },
+   {
+    "start": 76,
+    "end": 453,
+    "tier": null
+   },
+   {
+    "start": 453,
+    "end": null,
+    "tier": "far_construction_outdoor"
+   }
+  ],
+  "CON-4": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_construction_outdoor"
+   }
+  ],
+  "CYN-1": [
+   {
+    "start": 0,
+    "end": 59,
+    "tier": null
+   },
+   {
+    "start": 59,
+    "end": 75,
+    "tier": null
+   },
+   {
+    "start": 75,
+    "end": null,
+    "tier": "id_train"
+   }
+  ],
+  "EIG-1": [
+   {
+    "start": 0,
+    "end": 31,
+    "tier": "medium_alpine"
+   },
+   {
+    "start": 31,
+    "end": 40,
+    "tier": null
+   },
+   {
+    "start": 40,
+    "end": 66,
+    "tier": "medium_alpine"
+   },
+   {
+    "start": 66,
+    "end": 164,
+    "tier": null
+   },
+   {
+    "start": 164,
+    "end": 178,
+    "tier": null
+   },
+   {
+    "start": 178,
+    "end": 200,
+    "tier": null
+   },
+   {
+    "start": 200,
+    "end": null,
+    "tier": "medium_alpine"
+   }
+  ],
+  "EIG-2": [
+   {
+    "start": 0,
+    "end": 126,
+    "tier": "medium_alpine"
+   },
+   {
+    "start": 126,
+    "end": null,
+    "tier": null
+   }
+  ],
+  "ETH-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_urban"
+   }
+  ],
+  "ETH-2": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_indoor"
+   }
+  ],
+  "ETH-3": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_urban"
+   }
+  ],
+  "GRI-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_urban"
+   }
+  ],
+  "HAUS-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_indoor"
+   }
+  ],
+  "HEAP-1": [
+   {
+    "start": 0,
+    "end": 126,
+    "tier": "far_construction_outdoor"
+   },
+   {
+    "start": 126,
+    "end": null,
+    "tier": null
+   }
+  ],
+  "HIL-1": [
+   {
+    "start": 0,
+    "end": 35,
+    "tier": null
+   },
+   {
+    "start": 35,
+    "end": 48,
+    "tier": "unused"
+   },
+   {
+    "start": 48,
+    "end": 150,
+    "tier": "near_meadow"
+   },
+   {
+    "start": 150,
+    "end": 211,
+    "tier": "unused"
+   },
+   {
+    "start": 211,
+    "end": 377,
+    "tier": "id_heldout"
+   },
+   {
+    "start": 377,
+    "end": null,
+    "tier": null
+   }
+  ],
+  "KAEB-1": [
+   {
+    "start": 0,
+    "end": 91,
+    "tier": "near_undergrowth"
+   },
+   {
+    "start": 91,
+    "end": 148,
+    "tier": "near_meadow"
+   },
+   {
+    "start": 148,
+    "end": 161,
+    "tier": null
+   },
+   {
+    "start": 161,
+    "end": 290,
+    "tier": "near_undergrowth"
+   },
+   {
+    "start": 290,
+    "end": 342,
+    "tier": "near_meadow"
+   },
+   {
+    "start": 342,
+    "end": 360,
+    "tier": null
+   },
+   {
+    "start": 360,
+    "end": null,
+    "tier": "near_undergrowth"
+   }
+  ],
+  "KAEB-2": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "id_heldout"
+   }
+  ],
+  "KAEB-3": [
+   {
+    "start": 0,
+    "end": 22,
+    "tier": null
+   },
+   {
+    "start": 22,
+    "end": null,
+    "tier": "id_train"
+   }
+  ],
+  "LEE-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_indoor"
+   }
+  ],
+  "LEICA-2": [
+   {
+    "start": 0,
+    "end": 28,
+    "tier": null
+   },
+   {
+    "start": 28,
+    "end": null,
+    "tier": "far_indoor"
+   }
+  ],
+  "PIL-2": [
+   {
+    "start": 0,
+    "end": 22,
+    "tier": null
+   },
+   {
+    "start": 22,
+    "end": null,
+    "tier": "medium_alpine"
+   }
+  ],
+  "RIV-1": [
+   {
+    "start": 0,
+    "end": 53,
+    "tier": null
+   },
+   {
+    "start": 53,
+    "end": 101,
+    "tier": "id_heldout"
+   },
+   {
+    "start": 101,
+    "end": 231,
+    "tier": null
+   },
+   {
+    "start": 231,
+    "end": 293,
+    "tier": "id_heldout"
+   },
+   {
+    "start": 293,
+    "end": 403,
+    "tier": null
+   },
+   {
+    "start": 403,
+    "end": 434,
+    "tier": "id_heldout"
+   },
+   {
+    "start": 434,
+    "end": null,
+    "tier": null
+   }
+  ],
+  "ROOT-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "near_roots"
+   }
+  ],
+  "SNOW-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_snow"
+   }
+  ],
+  "SNOW-2": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_snow"
+   }
+  ],
+  "SNOW-3": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "far_snow"
+   }
+  ],
+  "SPX-1": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": "unused"
+   }
+  ],
+  "SPX-2": [
+   {
+    "start": 0,
+    "end": null,
+    "tier": null
+   }
+  ]
+ }
+}

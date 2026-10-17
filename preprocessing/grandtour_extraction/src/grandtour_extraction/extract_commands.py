@@ -14,7 +14,7 @@ from rosbags.typesys import Stores, get_typestore
 
 COMMAND_TOPIC = "/anymal/twist_command"
 
-# Bump to invalidate command.npy from older versions of this step.
+# Bump to invalidate older command.npy.
 COMMAND_VERSION = 1
 
 

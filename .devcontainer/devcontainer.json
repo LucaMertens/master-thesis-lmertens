@@ -24,6 +24,8 @@
     "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
     // Enable full NVIDIA GPU forwarding
     "runArgs": [
+        "--name",
+        "master-thesis-lmertens-devcontainer",
         "--gpus",
         "all",
         "--shm-size=32gb",
@@ -37,7 +39,7 @@
         // SSH agent socket — forwards the agent from local machine via SSH ForwardAgent.
         // Requires a stable symlink on the server: ln -sf $SSH_AUTH_SOCK ~/.ssh/ssh_auth_sock
         // (add to ~/.bashrc on the remote server)
-        "source=${localEnv:HOME}/.ssh/ssh_auth_sock,target=/ssh-agent,type=bind",
+        // "source=${localEnv:HOME}/.ssh/ssh_auth_sock,target=/ssh-agent,type=bind",
         // TODO: Remove this
         "source=${localEnv:HOME}/git-repos,target=/home/${localEnv:USER}/git-repos,type=bind,consistency=cached",
         // Data home — read/write
@@ -57,11 +59,14 @@
         "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     ],
     "remoteEnv": {
-        "SSH_AUTH_SOCK": "/ssh-agent"
+        // "SSH_AUTH_SOCK": "/ssh-agent"
     },
     "containerEnv": {
         "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}",
-        "HF_TOKEN": "${localEnv:HF_TOKEN}"
+        "HF_TOKEN": "${localEnv:HF_TOKEN}",
+        // UTF-8 locale so terminal UIs (e.g. Claude Code TUI) render box-drawing/unicode chars correctly
+        "LANG": "C.utf8",
+        "LC_ALL": "C.utf8"
     },
     "customizations": {
         "vscode": {
@@ -73,6 +78,7 @@
                 "percy.vscode-numpy-viewer",
                 "tamasfe.even-better-toml",
                 "anthropic.claude-code",
+                "myriad-dreamin.tinymist"
             ],
             "settings": {
                 // Use fish as the default integrated terminal shell
@@ -89,7 +95,15 @@
     // Run as the mapped host user
     "remoteUser": "${localEnv:USER}",
     // Use 'forwardPorts' to make a list of ports inside the container available locally.
-    // "forwardPorts": [],
+    "forwardPorts": [3034],
+    "portsAttributes": {
+        "3034": {
+            "label": "Slidev",
+            "onAutoForward": "openPreview"
+        }
+    },
     // Post-create: sync dependencies and register the venv as a Jupyter kernel
-    "postCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /workspaces/master-thesis-lmertens/.venv /home/${localEnv:USER}/.local && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'"
+    "postCreateCommand": "sudo chown -R ${localEnv:USER}:${localEnv:USER} /workspaces/master-thesis-lmertens/.venv /home/${localEnv:USER}/.local && uv sync && python3 -m ipykernel install --user --name python3 --display-name 'Python 3 (container)'",
+    // Cron isn't started by an init system in a container, so kick it on every boot.
+    "postStartCommand": "sudo service cron start"
 }

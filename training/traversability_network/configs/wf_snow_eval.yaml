@@ -1,0 +1,71 @@
+TAG: 'wf_snow_eval'
+
+# Snow-held-out OOD split. Identical to wayfaster_origmatch (paper recipe, all
+# adaptations off, both cameras) except that the three snowy RealSense recordings
+# (Feb 2022) are removed from train and valid. Snow is then a held-out domain,
+# scored offline with wf_snow_eval.yaml. Control is yqd58a88 (fix_lower_alloff),
+# the same recipe trained WITH snow.
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 8
+    WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 1.0
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 10
+    DEVICES: [0]
+    EPOCHS: 20
+    CHECKPOINT_EVERY_N_EPOCHS: 2
+    VERBOSE: False
+    GAMMA: 1.0
+    DEPTH_WEIGHT: 0.1
+    HORIZON: 300
+    DT: 0.1
+    SMOOTH_L1_BETA: 0.1
+    LOSS_NORM: 'mean'
+    TRAV_OVERPRED_WEIGHT: 1.0
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+MODEL:
+    BACKBONE: 'resnet34'
+    TIME_LENGTH: 6
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [320, 176]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.0, 2.0, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    NAME: 'wayfaster'
+    CSV_FILE: 'rosbags.csv'
+    TRAIN_DIRS: [
+        '/datahome/lmertens/wayfaster_ood/nosnow/realsense/data_train',
+        '/datahome/lmertens/wayfaster_dataset/zed2/data_train']
+    VALID_DIRS: ['/datahome/lmertens/wayfaster_ood/snow/all']
+    DINO_CACHE_ROOT: '/datalocal/lmertens/wayfaster_dino'
+    RESIZED_ROOT: null
+    DEPTH_CACHE_ROOT: null
+    LDS_ALPHA: 1.0
+    VISIBILITY_GATE: False
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.0
+    MAX_ROTATION: 0.0
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]
+
+SEED: 42

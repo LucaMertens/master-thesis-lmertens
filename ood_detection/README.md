@@ -1,41 +1,18 @@
 # ood_detection
 
-Post-hoc OOD detection pipeline for WayFASTER/GrandTour checkpoints (RQ2/RQ3/optional
-RQ4-RQ6). Two steps, run from the repo root:
+Post-hoc OOD detection on the BEV features of a trained WayFASTER/GrandTour checkpoint. Features are cached once per checkpoint, then each detector is scored against each tier in `shared-utils/src/shared_utils/tiers.json`.
+
+- `features/extract.py` caches a uniform sample of 512 observed BEV cells per window, with predictions, for every tier. `features/extract_image.py` adds the image-space features (encoder output before the frustum lift).
+- Detectors: `mahalanobis/` (Mahalanobis++, Mueller & Hein 2025, on BEV, encoder and DINO features), depth-head entropy (cached in `features/extract.py`), `common/viewpoint.py` (disagreement across viewpoints), `ensemble/modality_disagreement.py` (RGB+D vs RGB-only).
+- `ensemble/mean_z.py`: equally weighted mean of member z-scores, standardized on ID training windows. `temporal/ema.py`: EMA of window scores. `evidential/`: evidential score, needs a checkpoint trained with `MODEL.EVIDENTIAL`.
+- `eval/run.py` computes AUROC / FPR95 / AUPR per detector and tier with 30 s block bootstrap CIs. The first `--modes` value is the headline k, the rest form the ablation.
+- `id_train` and `id_heldout` follow the config's `TRAIN_MISSIONS` / `VALID_MISSIONS`, so the ID split matches the checkpoint's fold.
+- `tiering/`: browser editor for `tiers.json`, which also drives training (`DATASET.TIER_TIME_RANGES`) and extraction. Missions can be split at a timestamp across tiers.
+- `report/`: typst report and plots. Thesis figures are built from the eval CSVs in the companion repo (`figures/ood/`).
+
+## Usage
 
 ```bash
-# 1. Extract cached features/scores for every mission tier (id_train, id_heldout,
-#    near_forest, near_gravel, far_snow, far_arc). ~10-20 min per tier on one GPU.
-uv run --project ood_detection python -m ood_detection.features.extract \
-    --cfg training/traversability_network/configs/grandtour.yaml \
-    --checkpoint /datahome/lmertens/checkpoints/hxf3z45m/best_epoch=33-step=32334.ckpt \
-    --out-dir /datahome/lmertens/ood_cache/hxf3z45m \
-    --device cuda:0
-
-# 2. AUROC/FPR95 table + plots across every detector x tier combination.
-uv run --project ood_detection python -m ood_detection.eval.run \
-    --features-dir /datahome/lmertens/ood_cache/hxf3z45m --plots
+uv run python -m ood_detection.features.extract --cfg <cfg> --checkpoint <ckpt> --out-dir <cache_dir>
+uv run python -m ood_detection.eval.run --features-dir <cache_dir> --modes 3 1 5 8
 ```
-
-For DINOv3 instead of the default `dinov2_vitb14_reg`, pass
-`--dino-model dinov3_<variant> --dino-weights /path/to/local.pth` (gated weights
-must be downloaded manually; see the facebookresearch/dinov3 hub repo).
-
-For a checkpoint trained with `MODEL.EVIDENTIAL: True`
-(`configs/grandtour_evidential.yaml`), step 2 automatically adds the `evidential`
-detector; nothing else changes.
-
-## Layout
-
-- `common/` — checkpoint loading, DINO loading, tier/mission definitions, window metadata
-- `features/` — step 1, one script
-- `mahalanobis/` — post-hoc feature-distance detector (Mahalanobis++, Ren et al. 2021),
-  used on both the WayFASTER penultimate feature and a DINO feature (optional RQ4)
-- `evidential/` — Deep Evidential Regression OOD score (the head/loss itself lives in
-  `training/traversability_network`, not here)
-- `ensemble/` — optional RQ5, RGB+D vs RGB-only prediction disagreement
-- `temporal/` — optional RQ6, EMA smoothing of per-window scores
-- `eval/` — step 2, AUROC/FPR95 + plots
-
-See `agents/rq3_failure_modes.md` for the failure-mode analysis plan built on top
-of this pipeline's cached outputs.

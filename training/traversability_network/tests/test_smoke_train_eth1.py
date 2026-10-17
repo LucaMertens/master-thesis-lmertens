@@ -1,4 +1,6 @@
-"""Overfit smoke test: trains on a small ETH-1 subset through the full pipeline and asserts traversability error drops; skips without a dataset or GPU."""
+"""Overfit smoke test: small ETH-1 subset, traversability error must drop."""
+
+# ruff: noqa: E402
 
 import os
 import subprocess
@@ -31,12 +33,7 @@ CFG = os.path.join(os.path.dirname(__file__), "..", "configs", "grandtour.yaml")
 
 
 class _SilentModule(TrainingModule):
-    """TrainingModule without wandb logging and with a flat LR.
-
-    The default CosineAnnealingLR(T_max=10) decays the LR to its minimum
-    mid-run, which distorts a short overfit. A flat optimizer isolates whether
-    the pipeline can fit the data.
-    """
+    """TrainingModule without wandb logging and with a flat LR (cosine decay distorts short overfits)."""
 
     def visualize(self, *args, **kwargs):
         pass
@@ -83,7 +80,7 @@ def _mean_trav_error(model, loader, device):
     total, n = 0.0, 0
     for batch in loader:
         batch = [x.to(device) for x in batch]
-        color, pcloud, K_full, K, ext, path, target, weights, depth_t, depth_m = batch
+        color, pcloud, K_full, K, ext, path, target, weights, depth_t, depth_m, *_extra = batch
         trav_map, _, _, _ = model.model(color, pcloud, K_full, K, ext, depth_t)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)

@@ -1,0 +1,78 @@
+TAG: 'gt_lowmu_split'
+DESCRIPTION: 'Low-mu-density split over all of GrandTour (train 2.69 pct / valid 1.95 pct low mu), regularized recipe, 20 epochs.'
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12   # effective batch (BATCHSIZE * GPUs) LR was tuned at; sqrt-scaled from here
+    WEIGHT_DECAY: 0.001
+    BACKBONE_LR_FACTOR: 0.1   # the pretrained encoder is where recording identity gets memorized
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 12         # per DDP process (per GPU); halve to ~6 to use half the machine
+    DEVICES: [2]
+    EPOCHS: 20          # cosine T_max = EPOCHS; this split is ~480 steps/epoch, so 4 is far too few
+    VAL_CHECK_INTERVAL: 0.5     # 2 validations per epoch
+    CHECKPOINT_EVERY_N_EPOCHS: 5
+    VERBOSE: False
+    GAMMA: 1.0
+    LOSS_NORM: 'mean'
+    DEPTH_WEIGHT: 0.05  # was 0.1: depth CE dominates the shared encoder gradient ~5x
+    HORIZON: 300        # 30 s at 10 Hz; for 50s, the  tail mostly supervises invisible cells
+    DT: 0.1             # matches RHE timestep
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True  # label mu + gates on camera/BEV panels
+    DEBUG_VIS_GEOM: True    # path reprojected into every input frame
+    DEBUG_VIS_DEPTH: True   # input depth blended over the anchor RGB
+
+MODEL:
+    TIME_LENGTH: 6   # WayFASTER's; with FRAME_STRIDE 5 the window spans its 2.5 s
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]   # Alphasense native 1440x1080 (4:3), /3 -> 480x360, /8 divisible
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1  # nearest-subsample depth for voxelize (1 = full res)
+    LABEL_COLUMNS: [0, 1]    # (mu, nu) columns of rhe_trav_labels.npy
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],   # ANYmal is lower, uneven terrain
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    # local-SSD copy of INPUT_SIZE color images (grandtour_extraction's resize_images.py);
+    # avoids the NFS bottleneck. /datalocal persists across container rebuilds, unlike /home.
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    # WayFASTER temporal sampling. Its recordings run at 2.02 Hz, the GrandTour camera at
+    # 10 Hz: stride 5 puts the stacked frames 0.5 s apart (WayFASTER 0.495 s) and starts a
+    # window every 0.5 s, which also drops the all-but-one-frame window overlap.
+    FRAME_STRIDE: 5
+    WINDOW_STRIDE: 5
+    LDS_ALPHA: 1.0
+    VISIBILITY_GATE: False
+    OVERSAMPLE_FRACTION: 0.0
+
+    # Low-mu split over the whole GrandTour, not the forest ID set. GrandTour holds
+    # 974 low-mu observable states in total, so WayFASTER's 12.5% is unreachable; these
+    # ten missions carry 780 of them. Missions contributing no low mu are left out
+    # entirely rather than diluting the fraction. Both halves span forest, industrial
+    # (ARC) and mountain (EIG) terrain.
+    # train 2.69% low mu, valid 1.95%, every valid mission contains low mu.
+    TRAIN_MISSIONS: ['ALB-2', 'LMB-1', 'ARC-3', 'ARC-2', 'KAEB-1']
+    VALID_MISSIONS: ['RIV-1', 'ALB-3', 'ARC-1', 'LMB-2', 'EIG-2']
+    TEST_MISSIONS:  ['RIV-1', 'ALB-3', 'ARC-1', 'LMB-2', 'EIG-2']
+    NEAR_OOD_MISSIONS: ['ROOT-1', 'EIG-1', 'PIL-2']
+    FAR_OOD_MISSIONS: ['SNOW-1', 'SNOW-2', 'SNOW-3', 'ARC-4']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.5     # WayFASTER's own values
+    MAX_ROTATION: 0.2
+    COLOR_JITTER: [0.25, 0.25, 0.25, 0.03]

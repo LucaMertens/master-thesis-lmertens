@@ -320,10 +320,7 @@ def scenario_mixed_excitation(
     delta_theta: float = 0.04,
     noise_sigma: float = 0.02,
 ) -> SyntheticScenario:
-    """
-    Alternates: serpentine → straight → turning in place → serpentine.
-    Tests transitions between excitation modes.
-    """
+    """Alternates serpentine, straight, turning in place, serpentine (transitions between excitation modes)."""
     rng = np.random.default_rng(42)
     phase_len = N_total // 4
 
@@ -380,10 +377,7 @@ def scenario_realistic_mission_profile(
     noise_sigma: float = 0.02,
     seed: int = 42,
 ) -> SyntheticScenario:
-    """
-    Tries to mimic real mission command stats with piecewise terrain.
-    Stats used as guidance: v mean ~0.56, v zero ~0.15, ω zero ~0.6, ω biased negative.
-    """
+    """Mimics real mission command stats: v mean ~0.56, v zero ~0.15, omega zero ~0.6, omega biased negative."""
     rng = np.random.default_rng(seed)
 
     U = _generate_segmented_commands(rng, N_total)

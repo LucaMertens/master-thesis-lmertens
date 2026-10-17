@@ -1,0 +1,95 @@
+TAG: 'mixed_forent_affine_d8'
+
+# GrandTour forest + ForEnt (Unitree Go2 forest entrapment) as one train set, ResNet
+# backbone, smooth-L1 mu regression. grandtour.yaml is the control: everything here
+# except the ForEnt keys and VOXEL_DEPTH_SIZE is copied from it, so the comparison
+# isolates the effect of adding ForEnt.
+#
+# Motive: collapse binds on the low-mu FRACTION, not the count. GrandTour forest is
+# ~2.8% low-mu where WayFASTER trains at ~12.5%. ForEnt is 19.2% low-mu (10.7% below
+# 0.3) and contributes 58059 of 106114 windows (54.7%), so the mixed fraction lands
+# near 11.8%, i.e. inside the regime that trains without collapsing.
+#
+# ForEnt is train-only: valid/test stay pure GrandTour forest so the numbers remain
+# comparable with every earlier run.
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 0.1
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 12  # see mixed_forent.yaml
+    DEVICES: [1]
+    EPOCHS: 20  # no early stopping, so this is the whole run
+    VERBOSE: False
+    GAMMA: 0.998
+    DEPTH_WEIGHT: 0.05
+    HORIZON: 300
+    DT: 0.1
+    VIS_INTERVAL: 500
+    LOSS_TYPE: 'regression'
+    # Per-dataset mu calibration: ForEnt gets a learned scale+offset on the
+    # predicted mu before the loss, GrandTour pinned to identity. Two parameters
+    # total, so the shared head still has to fit both datasets' low-mu cells.
+    # Watch affine/scale_1: drifting toward 0 is the degenerate solution where
+    # ForEnt's gradient gets neutralised and the run silently becomes GrandTour-only.
+    PER_DATASET_AFFINE: True
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+MODEL:
+    TIME_LENGTH: 4
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    # Mixed batches stack the voxelization depth, and the two datasets differ natively
+    # (1440x1080 vs 640x480). Pinning GrandTour's native size keeps its samples
+    # bit-identical to grandtour.yaml and upsamples ForEnt instead.
+    VOXEL_DEPTH_SIZE: [1440, 1080]
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    LDS_ALPHA: 0.75
+    VISIBILITY_GATE: True
+    OVERSAMPLE_FRACTION: 0.25
+
+    # ForEnt sequences with a raw bag and RHE labels. seq_3/8/11 have no bag in any
+    # source. seq_4 and seq_10 carry zero labelled entrapment events (near-constant
+    # mu ~0.99) and act as negative controls.
+    # Local SSD copy of the extraction. ForEnt is >half the batches and has no
+    # pre-resized cache, so streaming it from NFS starves the GPU. Labels stay on
+    # /datahome since they are read once at dataset construction.
+    FORENT_DATA_ROOT: '/datalocal/lmertens/forent_extracted'
+    FORENT_SEQUENCES: ['seq_1', 'seq_2', 'seq_4', 'seq_5', 'seq_6', 'seq_7', 'seq_9', 'seq_10']
+    FORENT_REPEAT: 1  # ForEnt is already ~43% of the windows at 6 sequences
+
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'HOEB-1', 'LMB-1', 'RIV-1', 'TRIM-1', 'HIL-1', 'KAEB-2', 'KAEB-3', ]
+    VALID_MISSIONS: ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    TEST_MISSIONS:  ['ALB-3', 'LMB-2', 'HOEB-2', 'CYN-2']
+    NEAR_OOD_MISSIONS: ['KAEB-1', 'ROOT-1', 'EIG-1', 'EIG-2', 'PIL-2']
+    FAR_OOD_MISSIONS: ['SNOW-1', 'SNOW-2', 'SNOW-3', 'ARC-1', 'ARC-2', 'ARC-3', 'ARC-4']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.5
+    MAX_ROTATION: 0.2
+    COLOR_JITTER: [0.1, 0.1, 0.05, 0.02]

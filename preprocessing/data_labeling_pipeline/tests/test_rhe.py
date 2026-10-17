@@ -168,7 +168,6 @@ def test_simulate_with_different_parameters():
     x0 = np.array([0.0, 0.0, 0.0])
     U = _commands(50, v=1.0, omega=1.0)
 
-    # Test with different parameter combinations
     param_sets = [
         np.array([1.0, 1.0, 0.0]),  # ideal
         np.array([0.5, 1.0, 0.0]),  # degraded longitudinal
@@ -196,7 +195,6 @@ def test_simulate_trajectory_distance_scales_with_velocity():
     dist_low = np.linalg.norm(X_low[-1, :2] - x0[:2])
     dist_high = np.linalg.norm(X_high[-1, :2] - x0[:2])
 
-    # Distance should approximately double when velocity doubles
     assert np.isclose(dist_high / dist_low, 2.0, rtol=0.01)
 
 
@@ -229,7 +227,6 @@ def test_cost_function_with_perfect_measurement():
     X = estimator.simulate(x0, U, m)
     Z = X.copy()
 
-    # Cost should be zero with perfect match
     opt_vars = np.concatenate((x0, m))
     cost = estimator.cost(opt_vars, U, Z, x0, m)
 

@@ -1,3 +1,5 @@
+"""SE(3) helpers and static/dynamic tf lookup from ROS1 bags."""
+
 import pathlib
 from dataclasses import dataclass
 from typing import Any
@@ -43,15 +45,9 @@ class SE3Transform:
     def apply_to_twist(
         self, linear_vel: np.ndarray, angular_vel: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Transform twist from parent frame to child frame.
-        v_child = R_child_parent * (v_parent + omega_parent x r_parent_child_in_parent)
-        omega_child = R_child_parent * omega_parent
-        """
+        """Parent-frame twist to child frame (translation is r_parent_child in parent)."""
         rot_inv = self.rotation.inv()
-        # Angular velocity transformation
         omega_child = rot_inv.apply(angular_vel)
-        # Linear velocity transformation
-        # self.translation is r_parent_child_in_parent
         v_rel = np.cross(angular_vel, self.translation)
         v_child = rot_inv.apply(linear_vel + v_rel)
         return v_child, omega_child
@@ -135,7 +131,7 @@ def get_static_transform(mission_path, parent, child) -> SE3Transform:
     if parent == child:
         return SE3Transform(R.identity(), np.zeros(3, dtype=np.float64))
 
-    # BFS to find path from parent to child
+    # BFS from parent to child
     queue = [(parent, np.eye(4))]
     visited = {parent}
 
@@ -188,9 +184,7 @@ def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
     translations = []
     rotations = []
 
-    # Note: For now, we assume a direct parent->child or child->parent edge in the /tf topic
-    # A full tree search for dynamic transforms at every timestamp is much more complex
-    # and usually not needed for direct sensor-to-base or sensor-to-world transforms.
+    # Only direct parent->child or child->parent edges in /tf (no tree search)
 
     invert = False
     found_edge = False
@@ -209,24 +203,13 @@ def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
                         p_frame = tr.header.frame_id.lstrip("/")
                         c_frame = tr.child_frame_id.lstrip("/")
 
-                        if p_frame == parent and c_frame == child:
+                        is_direct = p_frame == parent and c_frame == child
+                        is_reverse = (
+                            not is_direct and p_frame == child and c_frame == parent
+                        )
+                        if is_direct or is_reverse:
                             found_edge = True
-                            t = tr.header.stamp.sec + tr.header.stamp.nanosec * 1e-9
-                            times.append(t)
-                            translations.append([
-                                tr.transform.translation.x,
-                                tr.transform.translation.y,
-                                tr.transform.translation.z,
-                            ])
-                            rotations.append([
-                                tr.transform.rotation.x,
-                                tr.transform.rotation.y,
-                                tr.transform.rotation.z,
-                                tr.transform.rotation.w,
-                            ])
-                        elif p_frame == child and c_frame == parent:
-                            found_edge = True
-                            invert = True
+                            invert = invert or is_reverse
                             t = tr.header.stamp.sec + tr.header.stamp.nanosec * 1e-9
                             times.append(t)
                             translations.append([
@@ -250,13 +233,12 @@ def get_transform_series(mission_path, parent, child) -> TransformInterpolator:
     translations = np.array(translations)
     rotations = np.array(rotations)
 
-    # Sort by time
     sort_idx = np.argsort(times)
     times = times[sort_idx]
     translations = translations[sort_idx]
     rotations = rotations[sort_idx]
 
-    # Handle duplicates by taking the first one
+    # Drop duplicate timestamps (keep first)
     unique_times, unique_idx = np.unique(times, return_index=True)
     times = unique_times
     translations = translations[unique_idx]

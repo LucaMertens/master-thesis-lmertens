@@ -1,0 +1,73 @@
+TAG: 'fix_data_35pct'
+
+# Maximal match to the original WayFASTER temporal_model.yaml through OUR pipeline,
+# to rule out a residual pipeline bug. All adaptations off (resnet34, mean loss
+# norm, no LDS tempering, no gates, smooth-L1 beta 0.1), original hyperparameters
+# (GAMMA 1.0, DEPTH_WEIGHT 0.1, TIME_LENGTH 6, zbound [-1,2], no translation/rot
+# aug, no color jitter), and BOTH sensors (zed2 + realsense) like the paper.
+# Known unavoidable deltas: input 320x176 vs 180 (net divisibility), bf16 vs fp16,
+# LR scheduler T_max=EPOCHS vs 10, weight-smoothing sigma 2.0 vs 1.0.
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 8       # batchsize == ref -> LR used as-is (no sqrt scaling)
+    WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 1.0
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 16
+    DEVICES: [1]
+    EPOCHS: 20
+    VERBOSE: False
+    GAMMA: 1.0
+    DEPTH_WEIGHT: 0.1
+    HORIZON: 300
+    DT: 0.1
+    SMOOTH_L1_BETA: 0.1
+    LOSS_NORM: 'mean'
+    TRAV_OVERPRED_WEIGHT: 1.0
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+MODEL:
+    BACKBONE: 'resnet34'
+    TIME_LENGTH: 6
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [320, 176]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.0, 2.0, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    NAME: 'wayfaster'
+    CSV_FILE: 'rosbags.csv'
+    TRAIN_DIRS: [
+        '/datahome/lmertens/wayfaster_dataset/realsense/data_train',
+        '/datahome/lmertens/wayfaster_dataset/zed2/data_train']
+    VALID_DIRS: [
+        '/datahome/lmertens/wayfaster_dataset/realsense/data_valid',
+        '/datahome/lmertens/wayfaster_dataset/zed2/data_valid']
+    DINO_CACHE_ROOT: '/datalocal/lmertens/wayfaster_dino'
+    RESIZED_ROOT: null
+    DEPTH_CACHE_ROOT: null
+    LDS_ALPHA: 1.0
+    VISIBILITY_GATE: False
+    TRAIN_FRACTION: 0.35
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.0
+    MAX_ROTATION: 0.0
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]

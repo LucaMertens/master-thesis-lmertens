@@ -1,3 +1,5 @@
+"""Quantify left/right strafing per mission from command twist and IMU."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import zarr
-from config.paths import DATASET_ROOT
+from shared_utils.paths import DATASET_ROOT
 
 TWIST_DIR = "anymal_command_twist"
 IMU_DIR = "stim320_imu"
@@ -30,16 +32,16 @@ class MissionResult:
 
 
 def _as_seconds(timestamps: np.ndarray) -> np.ndarray:
-    """Convert common integer timestamp scales to seconds."""
+    """ns, us or ms timestamps to seconds, guessed from magnitude."""
     if timestamps.size == 0:
         return timestamps
     max_abs = np.nanmax(np.abs(timestamps))
     if max_abs > 1e14:
-        return timestamps * 1e-9  # nanoseconds
+        return timestamps * 1e-9
     if max_abs > 1e11:
-        return timestamps * 1e-6  # microseconds
+        return timestamps * 1e-6
     if max_abs > 1e8:
-        return timestamps * 1e-3  # milliseconds
+        return timestamps * 1e-3
     return timestamps
 
 
@@ -130,7 +132,7 @@ def compute_imu_strafing(source_path: Path, default_dt: float) -> StrafeMetrics:
     ay = ay[:n]
     dt = dt[:n]
 
-    # Remove DC offset to reduce integration drift.
+    # Remove DC offset against integration drift
     ay = ay - np.nanmedian(ay)
     vy = np.cumsum(ay * dt)
     return _integrate_signed(vy, dt)
@@ -246,6 +248,7 @@ def main() -> None:
     )
     parser.add_argument(
         "dataset_folder",
+        nargs="?",
         type=Path,
         default=DATASET_ROOT,
         help="Root dataset folder containing mission subfolders.",

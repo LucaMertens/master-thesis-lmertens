@@ -1,24 +1,25 @@
-"""OOD tier definitions, matching documentation/ood_split.md and the missions
-baked into configs/grandtour*.yaml. Kept explicit here (rather than only reading
-the config's flat NEAR_OOD_MISSIONS/FAR_OOD_MISSIONS lists) so tier-level AUROC
-(near_forest vs near_gravel, far_snow vs far_arc) is always available, with an
-assertion that catches drift if a config's split is ever edited."""
+"""Extraction-side view of shared_utils/tiers.json. ID tiers come from the checkpoint config and are checked against the file."""
 
-TIER_MISSIONS = {
-    "near_forest": ["KAEB-1", "ROOT-1"],
-    "near_gravel": ["EIG-1", "EIG-2", "PIL-2"],
-    "far_snow": ["SNOW-1", "SNOW-2", "SNOW-3"],
-    "far_arc": ["ARC-1", "ARC-2", "ARC-3", "ARC-4"],
-}
+from shared_utils.tiers import ID_TRAIN, tier_missions, time_ranges
+
+HELDOUT_TIER = "id_heldout"
+
+
+def tier_time_ranges(tier):
+    """mission -> absolute-second spans to extract, empty for a whole tier."""
+    return time_ranges(tier)
 
 
 def all_tiers(configs):
-    near = set(configs.DATASET.NEAR_OOD_MISSIONS)
-    far = set(configs.DATASET.FAR_OOD_MISSIONS)
-    expected_near = set(TIER_MISSIONS["near_forest"]) | set(TIER_MISSIONS["near_gravel"])
-    expected_far = set(TIER_MISSIONS["far_snow"]) | set(TIER_MISSIONS["far_arc"])
-    assert near == expected_near, f"config NEAR_OOD_MISSIONS {near} != expected {expected_near}"
-    assert far == expected_far, f"config FAR_OOD_MISSIONS {far} != expected {expected_far}"
-    tiers = {"id_train": list(configs.DATASET.TRAIN_MISSIONS), "id_heldout": list(configs.DATASET.VALID_MISSIONS)}
-    tiers.update(TIER_MISSIONS)
+    """tier -> missions to extract, ID first and then near to far."""
+    tiers = tier_missions(configs.DATASET.TRAIN_MISSIONS)
+    for tier, missions in ((ID_TRAIN, configs.DATASET.TRAIN_MISSIONS),
+                           (HELDOUT_TIER, configs.DATASET.VALID_MISSIONS)):
+        assert set(tiers.get(tier, [])) == set(missions), (
+            f"config {tier} {sorted(missions)} != tiers.json {sorted(tiers.get(tier, []))}")
     return tiers
+
+
+# OOD tiers only, for callers without a checkpoint config
+TIER_MISSIONS = {t: ms for t, ms in tier_missions().items()
+                 if t not in (ID_TRAIN, HELDOUT_TIER)}

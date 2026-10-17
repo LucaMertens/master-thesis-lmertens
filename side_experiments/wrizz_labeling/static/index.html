@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>W-RIZZ labeling</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #1c1c1e; color: #ddd; }
+  /* wraps: the row carries a dozen readouts and without this the last ones are pushed
+     off the right edge instead of onto a second line */
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+         padding: 8px 14px; background: #2a2a2e; font-size: 14px; }
+  #bar .sp { margin-left: auto; }
+  #bar button { background: #3a3a3f; color: #ddd; border: 1px solid #555; border-radius: 4px;
+                padding: 1px 8px; margin-left: 3px; cursor: pointer; font-size: 14px; }
+  #bar button:hover { background: #4a4a50; }
+  #panels { display: flex; gap: 10px; justify-content: center; margin: 6px auto; }
+  .panel { display: flex; flex-direction: column; }
+  /* the caption used to sit on top of the image, where it covered the very ground the
+     lower-half sampling puts most points on */
+  .view { position: relative; background: #1c1c1e; overflow: hidden; }
+  .view canvas { position: absolute; left: 0; top: 0; display: block; }
+  .cap { font-size: 12px; color: #bbb; white-space: nowrap; overflow: hidden;
+         text-overflow: ellipsis; padding: 2px 2px 0; }
+  #reveal { text-align: center; height: 22px; font-size: 14px; }
+  .agree { color: #6c6; } .disagree { color: #e88; } .nocov { color: #888; }
+  #hint { text-align: center; color: #888; font-size: 13px; margin-top: 10px; line-height: 1.7; }
+  kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 0 5px; }
+  .warn { color: #f0b040; }
+  #hunt { color: #7ac; }
+  .sa { color: #22d3ee; font-weight: 600; } .sb { color: #ff4fa3; font-weight: 600; }
+  #lock { height: 3px; background: #2a2a2e; }
+  #lockbar { height: 3px; width: 0; background: #f0b040; }
+  #lockbar.reject { animation: none !important; width: 100% !important; background: #e05050; }
+  @keyframes fill { from { width: 0 } to { width: 100% } }
+  /* Slow answers are the dominant time sink and sit at the disagreement ceiling
+     anyway, so past NUDGE_MS the count-up is meant to be noticed. */
+  #timer { font-variant-numeric: tabular-nums; color: #666; }
+  #timer.warn { color: #f0b040; font-weight: 600; }
+  #timer.late { color: #e05050; font-weight: 600; }
+  /* amendments are retroactive, so what is on screen is not what they act on; the
+     chips are the only readback of what the last answer actually carries */
+  .chip { border: 1px solid #555; border-radius: 3px; padding: 0 5px; color: #666; }
+  .chip.on { border-color: #f0b040; color: #f0b040; font-weight: 600; }
+  .lbl { color: #666; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="split"></span>
+  <span id="prog"></span>
+  <span id="timer"></span>
+  <span id="rate"></span>
+  <span id="eta"></span>
+  <span id="hunt"></span>
+  <span id="sizes"></span>
+  <span id="amends"></span>
+  <button id="maskbtn">show region only</button>
+  <button id="keysbtn">keys</button>
+  <button id="pathbtn">hold: driven path</button>
+  <span>deadzone <span id="dzval"></span>
+    <button id="dzdown">&minus;</button><button id="dzup">+</button></span>
+  <span class="sp" id="status"></span>
+</div>
+<div id="lock"><div id="lockbar"></div></div>
+<div id="panels"></div>
+<div id="reveal"></div>
+<div id="hint">
+  <span class="sa">&#9679; A</span> is always the left point &nbsp;
+  <span class="sb">&#9679; B</span> the right &nbsp;
+  the tinted region is what that point propagates to
+  <br>
+  <kbd>f</kbd> <span class="sa">A</span> more traversable &nbsp;
+  <kbd>space</kbd> equal &nbsp;
+  <kbd>j</kbd> <span class="sb">B</span> more traversable &nbsp;
+  <kbd>&auml;</kbd> unsure/skip
+  <br>
+  left hand = <span class="sa">A</span>:
+  <kbd>a</kbd> no propagation &nbsp; <kbd>s</kbd> smaller &nbsp; <kbd>d</kbd> bigger
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  right hand = <span class="sb">B</span>:
+  <kbd>&ouml;</kbd> no propagation &nbsp; <kbd>k</kbd> smaller &nbsp; <kbd>l</kbd> bigger
+  <br>
+  hold <kbd>t</kbd> driven path &nbsp; <kbd>g</kbd> flag dynamic &nbsp; hold <kbd>w</kbd>/<kbd>o</kbd> isolate <span class='sa'>A</span>/<span class='sb'>B</span> &nbsp;
+  hold <kbd>e</kbd>/<kbd>i</kbd> zoom <span class='sa'>A</span>/<span class='sb'>B</span> &nbsp; hold <kbd>h</kbd> hide overlay &nbsp;
+  <kbd>u</kbd> undo &nbsp;
+  <kbd>c</kbd> clear region clicks &nbsp;
+  shift+click keep &nbsp; right-click cut &nbsp;
+  <br>
+  <kbd>x</kbd> no propagation either side &nbsp; <kbd>r</kbd> reset hunt points
+</div>
+<script>
+"use strict";
+let SCALE = 3, DISP = [480, 360], FULL_M = 99;
+let queue = [], cur = null, prev = null, shownAt = 0, busy = false, inflight = null;
+// render clears #panels then awaits image decodes, so overlapping calls must be chained
+let rendering = null;
+const draw = pair => (rendering = Promise.resolve(rendering).catch(() => {})
+                                        .then(() => render(pair)));
+// Every pair this page has POSTed. The server only learns a pair is answered when its
+// POST lands, and refill runs concurrently with it, so without this the pair just
+// answered comes back in the next batch and gets asked a second time.
+const dispatched = new Set();
+// resolves when the in-flight answer POST has landed, so undo cannot outrun it
+let settled = Promise.resolve(null);
+// Render failures are transient (a slow fetch, a canvas that would not allocate), so a
+// pair that fails to draw is retried rather than blacklisted. Putting it in dispatched
+// hid it for the whole session even though the server still had it unanswered.
+const failed = new Map();
+// Answered pairs, oldest first, so a misread can be walked back to and answered again.
+// Re-answering appends a fresh record; merge_amendments keeps the last one per pair, so
+// the correction wins without the first answer being erased from the log.
+// Input is dead until the image has been on screen this long, so a stray or buffered
+// keystroke cannot be attributed to a pair the annotator has not actually looked at.
+const NUDGE_MS = 10000, LATE_MS = 20000;
+let tick = null;
+let armedAt = 0, deadzone = +(localStorage.getItem("wrizz_deadzone") ?? 2000);
+let hideOverlay = false, maskBoth = false, maskHold = null;
+let hintsOn = localStorage.getItem("wrizz_hints") !== "0";
+const ZOOM = 3;
+// The panels are drawn at the resolution the frames are stored at and scaled to fit
+// with CSS. Sizing the backing store to the viewport instead meant every switch
+// between a one-panel and a two-panel pair reallocated four canvases, and past
+// Chrome's canvas budget the reallocated ones come back painting only their top half.
+const DRAW_S = 2;
+let zoomHold = null;
+// Where the robot actually walked, projected into the frame. Seeing it is a strong prior
+// on the answer, so any pair it was shown on is flagged and dropped from HDR.
+let pathHold = false, peeked = false;
+// promises in flight, and the arrays that have landed. render only ever reads the
+// landed ones, so a slow fetch can never stall a draw.
+const pathCache = new Map(), pathData = new Map();
+// Click-prompted regions. Per endpoint: the extra points the annotator placed, and the
+// mask SAM returned for them. The anchor is always the implicit first positive.
+let prompts = {a: [], b: []}, promptMask = {a: null, b: null};
+// the scale the panels were last drawn at; the zoom origin is in those same pixels
+let curS = 1;
+
+// How far each point label extends, set per endpoint: the two points usually sit on
+// different surfaces, so one size for both would be the wrong claim about one of them.
+// Index 0 is the whole segment, which is the default.
+// Reset on every pair rather than carried: a size chosen for one difficult photo is not
+// a judgement about the next one, and a sticky value would be stamped onto records the
+// annotator never considered.
+// 0 is the last step: keep the point, drop the SAM region entirely, for a click whose
+// segment is not one surface at any radius
+// The large steps are back: pruning them made the first press jump from the whole
+// segment straight to 1.5 m, which is a bigger cut than most endpoints want. Whole
+// segment stays the default, and 0 at the end drops the region entirely.
+const SIZES = [Infinity, 4, 3, 2, 1.5, 1, 0.7, 0.5, 0.35, 0.25, 0];
+// --no-regions pins both endpoints to the last step and stops the segment maps being
+// fetched at all: the label is then the point, which is what a tier without SAM gives.
+let NO_REGIONS = false;
+const defaultSize = () => NO_REGIONS ? SIZES.length - 1 : 0;
+const sizeIdx = {a: 0, b: 0};
+
+const imgCache = new Map(), segCache = new Map();
+
+// Endpoint identity. Cyan and pink because forest imagery is browns, greens and greys,
+// so neither reads as terrain. Deliberately NOT the blue/red of the readback sheet,
+// which encodes the answer (more/less traversable) rather than which point is which.
+const SIDE = {
+  a: {rgb: [34, 211, 238], css: "#22d3ee"},
+  b: {rgb: [255, 79, 163], css: "#ff4fa3"},
+};
+const SEG_ALPHA = 46;
+// Caches are bounded: a full session is 1727 pairs, and an unbounded decode cache both
+// leaks and slows the later blocks down.
+const IMG_CAP = 24, SEG_CAP = 16;
+
+const $ = id => document.getElementById(id);
+const sizeM = s => SIZES[sizeIdx[s]];
+const sizeLabel = s => sizeIdx[s] === 0 ? "full"
+  : sizeM(s) === 0 ? "no region" : SIZES[sizeIdx[s]].toFixed(2) + " m";
+
+function loadImage(src, cache, cap) {
+  if (cache.has(src)) return cache.get(src);
+  // ImageBitmap, not Image: a cached <img> keeps only a decode *hint*, and the browser
+  // is free to discard the decoded pixels under memory pressure. The next drawImage
+  // then re-decodes lazily and can paint a partial frame, which is the blocky patch and
+  // blank lower strip. An ImageBitmap owns its pixels and cannot be dropped underneath
+  // us. At 960x720 the cache is large enough for this to matter.
+  const p = (async () => {
+    const r = await fetch(src);
+    if (!r.ok) throw new Error(src);
+    return await createImageBitmap(await r.blob());
+  })();
+  cache.set(src, p.catch(e => { cache.delete(src); throw e; }));
+  // ImageBitmap holds native memory that the JS GC reclaims late, and the panels are
+  // now viewport-sized, so the budget is tighter than it was. Closed on a delay rather
+  // than immediately: a render still holding the bitmap would throw.
+  while (cache.size > cap) {
+    const k = cache.keys().next().value;
+    const gone = cache.get(k);
+    cache.delete(k);
+    Promise.resolve(gone).then(
+      b => setTimeout(() => { try { b.close(); } catch { } }, 5000), () => { });
+  }
+  return cache.get(src);
+}
+
+function dropImage(src) {
+  const gone = imgCache.get(src);
+  imgCache.delete(src);
+  Promise.resolve(gone).then(b => { try { b.close(); } catch { } }, () => { });
+}
+
+// After an opaque frame is drawn the bottom rows cannot still be transparent, and a
+// photo never ends in a flat white band. Either one means the panel painted only the
+// top of the image. Three rows, so this is cheap enough to run on every draw.
+function badStrip(ctx, W, H) {
+  const d = ctx.getImageData(0, H - 3, W, 3).data;
+  let flatWhite = d[0] >= 245 && d[1] >= 245 && d[2] >= 245;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] !== 255) return true;
+    if (d[i] !== d[0] || d[i + 1] !== d[1] || d[i + 2] !== d[2]) flatWhite = false;
+  }
+  return flatWhite;
+}
+
+async function paintBase(base, src, W, H) {
+  const ctx = base.getContext("2d");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const im = await loadImage(src, imgCache, IMG_CAP);
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(im, 0, 0, W, H);
+    if (!badStrip(ctx, W, H)) return true;
+    dropImage(src);   // second try decodes again rather than reusing the bad bitmap
+  }
+  return false;
+}
+
+function segIndex(segImg) {
+  // Decode the RGB-packed id map once per frame and invert it to id -> pixel list, so
+  // painting a segment costs its own area instead of a full-image scan every render.
+  if (!segImg._idx) {
+    const W = DISP[0], H = DISP[1];
+    const c = tmpCanvas("seg", W, H);
+    const ctx = c.getContext("2d", {willReadFrequently: true});
+    ctx.drawImage(segImg, 0, 0, W, H);
+    const d = ctx.getImageData(0, 0, W, H).data;
+    const ids = new Uint32Array(W * H), byId = new Map();
+    for (let i = 0; i < W * H; i++) {
+      const id = d[i*4] | (d[i*4+1] << 8) | (d[i*4+2] << 16);
+      ids[i] = id;
+      if (!id) continue;
+      let a = byId.get(id);
+      if (!a) { a = []; byId.set(id, a); }
+      a.push(i);
+    }
+    segImg._idx = {ids, byId, w: W, h: H};
+  }
+  return segImg._idx;
+}
+
+let scratch = null, segTmp = null, maskTmp = null;
+
+function tmpCanvas(which, W, H) {
+  // One canvas per role for the whole session. Chrome caps total canvas backing store,
+  // and a session allocates thousands of these; past the cap it silently hands back
+  // canvases that paint partially, which is the blank strip that a reload clears.
+  const c = which === "seg" ? (segTmp = segTmp || document.createElement("canvas"))
+                            : (maskTmp = maskTmp || document.createElement("canvas"));
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+  return c;
+}
+
+function panelAt(i, W, H) {
+  const panels = $("panels");
+  while (panels.children.length <= i) {
+    const wrap = document.createElement("div");
+    wrap.className = "panel";
+    const view = document.createElement("div");
+    view.className = "view";
+    const base = document.createElement("canvas");
+    const over = document.createElement("canvas");
+    over.className = "over";
+    const note = document.createElement("div");
+    note.className = "cap";
+    view.append(base, over);
+    wrap.append(view, note);
+    panels.appendChild(wrap);
+  }
+  const wrap = panels.children[i];
+  wrap.style.display = "";
+  const view = wrap.querySelector(".view");
+  view.style.width = W + "px";
+  view.style.height = H + "px";
+  const BW = DISP[0] * DRAW_S, BH = DISP[1] * DRAW_S;
+  const [base, over] = wrap.querySelectorAll("canvas");
+  for (const c of [base, over]) {
+    if (c.width !== BW || c.height !== BH) { c.width = BW; c.height = BH; }
+    c.style.width = W + "px";
+    c.style.height = H + "px";
+    c.getContext("2d").clearRect(0, 0, BW, BH);
+  }
+  return {base, over, note: wrap.querySelector(".cap")};
+}
+
+function overlapping(segImg, [p, q]) {
+  if (!segImg) return false;
+  const {ids, w: W} = segIndex(segImg);
+  const ia = ids[p.y * W + p.x];
+  if (!ia || ia !== ids[q.y * W + q.x]) return false;
+  // same segment: unclipped regions always collide, clipped ones only if the discs meet.
+  // In world metres, which is what export_labels.overlapping uses. The image disc is not
+  // a stand-in for it: on an oblique surface it understates the world extent by up to
+  // 3.6x, and the two tests then disagree on 7% of size combinations, so shrinking until
+  // the warning clears would not be what actually clears it.
+  if (!isFinite(p.rm) || !isFinite(q.rm)) return true;
+  if (!p.pw || !q.pw) return true;
+  const d = Math.hypot(p.pw[0] - q.pw[0], p.pw[1] - q.pw[1], p.pw[2] - q.pw[2]);
+  return d < p.rm + q.rm;
+}
+
+function paintSegments(ctx, segImg, marks, S) {
+  // One composite for both endpoints: allocating a full-frame ImageData per point was
+  // the per-render cost that showed up as lag.
+  const {ids, byId, w: W, h: H} = segIndex(segImg);
+  if (!scratch || scratch.canvas.width !== W) {
+    const canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    scratch = {canvas, ctx: canvas.getContext("2d"), img: new ImageData(W, H), dirty: []};
+  }
+  const d = scratch.img.data;
+  for (const i of scratch.dirty) d[i*4+3] = 0;
+  scratch.dirty = [];
+
+  let painted = 0;
+  for (const {x, y, rgb, radius, px: given} of marks) {
+    if (x < 0 || x >= W || y < 0 || y >= H) continue;
+    // a click-prompted region carries its own pixels; otherwise fall back to the mask id
+    const px = given || byId.get(ids[y * W + x]);
+    if (!px) continue;
+    const clip = isFinite(radius), r2 = radius * radius;
+    for (const i of px) {
+      if (clip) {
+        const dx = (i % W) - x, dy = ((i / W) | 0) - y;
+        if (dx*dx + dy*dy > r2) continue;
+      }
+      d[i*4] = rgb[0]; d[i*4+1] = rgb[1]; d[i*4+2] = rgb[2]; d[i*4+3] = SEG_ALPHA;
+      scratch.dirty.push(i);
+    }
+    painted++;
+  }
+  if (!painted) return;
+  scratch.ctx.putImageData(scratch.img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(scratch.canvas, 0, 0, W * S, H * S);
+}
+
+function maskSides(pair) {
+  // A cross pair puts its two points in different photos, so isolating one side would
+  // black out the other panel entirely and there is nothing to compare against. Either
+  // hold shows both.
+  if (maskHold) return pair.kind === "cross" ? ["a", "b"] : [maskHold];
+  return maskBoth ? ["a", "b"] : null;
+}
+
+function paintMask(ctx, marks, S) {
+  // Everything outside the regions is dimmed, so the annotator can check what the label
+  // actually covers without the tint hiding the texture underneath it.
+  const W = DISP[0], H = DISP[1];
+  const img = new ImageData(W, H), d = img.data;
+  const keep = new Uint8Array(W * H);
+  for (const {x, y, radius, seg, px: given} of marks) {
+    const px = given || (seg && seg.byId.get(seg.ids[y * W + x]));
+    if (!px) continue;
+    const clip = isFinite(radius), r2 = radius * radius;
+    for (const i of px) {
+      if (clip) {
+        const dx = (i % W) - x, dy = ((i / W) | 0) - y;
+        if (dx*dx + dy*dy > r2) continue;
+      }
+      keep[i] = 1;
+    }
+  }
+  for (let i = 0; i < W * H; i++) if (!keep[i]) d[i*4+3] = 216;
+  const off = tmpCanvas("mask", W, H);
+  off.getContext("2d").putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(off, 0, 0, W * S, H * S);
+}
+
+function crosshair(ctx, x, y, S, label, color) {
+  const px = x * S, py = y * S, r = 14;
+  ctx.lineWidth = 4; ctx.strokeStyle = "rgba(0,0,0,0.85)";
+  for (const pass of [0, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(px - r, py); ctx.lineTo(px - 5, py);
+    ctx.moveTo(px + 5, py); ctx.lineTo(px + r, py);
+    ctx.moveTo(px, py - r); ctx.lineTo(px, py - 5);
+    ctx.moveTo(px, py + 5); ctx.lineTo(px, py + r);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(px, py, r * 0.62, 0, 7); ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = color;
+  }
+  // filled badge, so the letter is findable at a glance rather than read off the image
+  const bx = px + r + 4, by = py - r - 2;
+  ctx.fillStyle = color;
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, 20, 19, 4); ctx.fill(); }
+  else ctx.fillRect(bx, by, 20, 19);
+  ctx.fillStyle = "#08131a";
+  ctx.font = "bold 14px system-ui";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(label, bx + 10, by + 10);
+  ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+}
+
+function statusNote(a) {
+  if (!a) return "<span class='warn'>place a point</span>";
+  if (a.status === "ok") {
+    const h = a.height_over_ground;
+    // preview probes +/-2 frames only; the full +/-50 window runs offline at export
+    return `${a.z.toFixed(2)} m &middot; h ${h >= 0 ? "+" : ""}${h.toFixed(2)} &middot; prop ${a.preview}/4`;
+  }
+  return `<span class="warn">anchor ${a.status}</span>`;
+}
+
+let panelS = null;
+function panelScale(n) {
+  // Fill whatever the window leaves after the fixed chrome. Measured rather than
+  // assumed, so collapsing the key hints immediately buys the image the space.
+  //
+  // Cached against the things that legitimately change it, and quantized. #bar wraps,
+  // so the status text or an amend chip changing width alters its height, which used to
+  // give every render a slightly different scale. Only the CSS box now, the backing
+  // store is fixed, but a scale that jitters per render still reflows the page.
+  const key = `${n}:${window.innerWidth}x${window.innerHeight}:${hintsOn}:${DISP}`;
+  if (panelS && panelS.key === key) return panelS.v;
+  const chrome = $("bar").offsetHeight + $("lock").offsetHeight +
+                 $("reveal").offsetHeight + $("hint").offsetHeight + 46;
+  const availH = Math.max(240, window.innerHeight - chrome);
+  const availW = Math.max(240, window.innerWidth - 20 - (n - 1) * 10);
+  const v = Math.floor(Math.min(availW / (n * DISP[0]), availH / DISP[1]) * 50) / 50;
+  panelS = {key, v};
+  return v;
+}
+
+async function render(pair, retried = false) {
+  zoomHold = null;
+  const single = pair.a.frame === pair.b.frame;
+  const S = panelScale(single ? 1 : 2);
+  curS = S;
+  // S is what the annotator sees, DRAW_S what the canvas is drawn at
+  const W = Math.round(DISP[0] * S), H = Math.round(DISP[1] * S);
+  const BW = DISP[0] * DRAW_S, BH = DISP[1] * DRAW_S;
+  const panels = $("panels");
+  const sides = single ? [["a", "A / B"]] : [["a", "A"], ["b", "B"]];
+  let broken = false;
+
+  for (let idx = 0; idx < sides.length; idx++) {
+    const [side, cap] = sides[idx];
+    const e = pair[side];
+    const {base, over, note} = panelAt(idx, W, H);
+    if (!await paintBase(base, "/frames/" + e.frame + ".jpg", BW, BH)) broken = true;
+    const ctx = over.getContext("2d");
+
+    let seg = null;
+    if (!NO_REGIONS)
+      try { seg = await loadImage("/segments/" + e.frame + ".png", segCache, SEG_CAP); } catch { }
+
+    const marks = single ? ["a", "b"] : [side];
+    const shown = [], notes = [];
+    for (const m of marks) {
+      const p = pair[m], label = m.toUpperCase(), a = p.anchor;
+      if (!p.placed && pair.hunt) { notes.push(`<b style="color:${SIDE[m].css}">${label}</b>: -`); continue; }
+      const perM = (a && a.px_per_m) || 0;
+      const radius = isFinite(sizeM(m)) && perM ? sizeM(m) * perM : Infinity;
+      shown.push({m, label, x: Math.round(p.uv[0] / SCALE), y: Math.round(p.uv[1] / SCALE),
+                  rgb: SIDE[m].rgb, radius, rm: sizeM(m), pw: a && a.p_world,
+                  px: promptMask[m] ? promptMask[m].px : null,
+                  ok: !!(a && a.status === "ok")});
+      notes.push(`<b style="color:${SIDE[m].css}">${label}</b>: ${statusNote(a)}` +
+                 ` &middot; ${sizeLabel(m)}`);
+    }
+    // rm === 0 keeps the crosshair but claims no region, so it neither paints nor can
+    // collide with the partner
+    let tint = shown.filter(s => s.ok && s.rm !== 0);
+    let warn = "";
+    if (tint.length === 2 && overlapping(seg, tint)) {
+      // one region cannot be both more and less traversable than itself; shrinking one
+      // endpoint until the discs separate resolves it. Only the region is dropped: both
+      // points still propagate through the frame window either way.
+      tint = [];
+      warn = "regions overlap, region labels dropped";
+    }
+    const lit = maskSides(pair);
+    const masked = lit ? tint.filter(t => lit.includes(t.m)) : [];
+    // with no region left there is nothing to isolate, and dimming everything would
+    // just black the panel out
+    if (seg && masked.length) {
+      paintMask(ctx, masked.map(t => ({...t, seg: segIndex(seg)})), DRAW_S);
+    }
+    if (seg) paintSegments(ctx, seg, tint, DRAW_S);
+    if (pathHold && pathData.has(e.frame)) drawPath(ctx, pathData.get(e.frame), DRAW_S);
+    for (const m of marks) for (const q of prompts[m]) {
+      ctx.beginPath();
+      ctx.arc(q.uv[0] / SCALE * DRAW_S, q.uv[1] / SCALE * DRAW_S, 6, 0, 7);
+      ctx.fillStyle = q.label ? "rgba(80,240,120,0.95)" : "rgba(255,70,70,0.95)";
+      ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = "rgba(0,0,0,0.8)"; ctx.stroke();
+    }
+    for (const s of shown) crosshair(ctx, s.x, s.y, DRAW_S, s.label, SIDE[s.m].css);
+    note.innerHTML = `${e.mission} &nbsp; ` + notes.join(" &nbsp; ") +
+      (warn ? ` &nbsp; <span class="warn">${warn}</span>` : "");
+  }
+  // a fresh decode did not help, so the canvas itself is painting partially; only a
+  // new element gets out of that, and it is what a reload was doing by hand
+  if (broken && !retried) {
+    panels.innerHTML = "";
+    return render(pair, true);
+  }
+  if (broken) $("status").innerHTML = '<span class="warn">panel would not repaint, reload</span>';
+  for (let i = sides.length; i < $("panels").children.length; i++)
+    $("panels").children[i].style.display = "none";
+  applyOverlay();
+  applyZoom();
+  // reused panels keep their old cursor, so set it either way
+  for (const c of panels.querySelectorAll("canvas")) c.style.cursor = pair.hunt ? "crosshair" : "default";
+  for (const c of panels.querySelectorAll(".over")) c.onclick = ev => onHuntClick(pair, ev, S);
+  for (let idx = 0; idx < sides.length; idx++) {
+    const over = panels.children[idx].querySelector(".over");
+    const mine = single ? ["a", "b"] : [sides[idx][0]];
+    over.oncontextmenu = ev => (onPrompt(pair, ev, S, mine, 0), false);
+    over.onmousedown = ev => { if (ev.button === 0 && ev.shiftKey) onPrompt(pair, ev, S, mine, 1); };
+  }
+}
+
+function unrle(code) {
+  // [w, h, run, run, ...] starting from 0, matching sam.rle
+  const w = code[0], h = code[1], px = [];
+  let i = 0, on = false;
+  for (let k = 2; k < code.length; k++) {
+    if (on) for (let j = i; j < i + code[k]; j++) px.push(j);
+    i += code[k];
+    on = !on;
+  }
+  return {w, h, px};
+}
+
+async function reprompt(side) {
+  const e = cur && cur[side];
+  if (!e || !e.anchor || e.anchor.status !== "ok") return;
+  const pts = [e.uv, ...prompts[side].map(p => p.uv)];
+  const lab = [1, ...prompts[side].map(p => p.label)];
+  try {
+    const r = await (await fetch("/api/segment", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({frame: e.frame, points: pts, labels: lab})})).json();
+    if (r.ok) {
+      promptMask[side] = Object.assign({rle: r.rle}, unrle(r.rle));
+      $("status").textContent = `${side.toUpperCase()} region ${(r.area * 100).toFixed(1)}%`;
+    } else {
+      // a chained refinement can collapse to nothing; keep the last good region
+      prompts[side].pop();
+      $("status").innerHTML = `<span class="warn">${r.error || "no coherent region there"}</span>`;
+    }
+  } catch (err) {
+    $("status").innerHTML = `<span class="warn">segment: ${err.message}</span>`;
+  }
+  if (cur) draw(cur);
+}
+
+function clearPrompts() {
+  prompts = {a: [], b: []};
+  promptMask = {a: null, b: null};
+  if (cur) draw(cur);
+}
+
+function pathFor(e) {
+  // each frame holds a few hundred points; drop the lot rather than grow all session
+  if (pathData.size > 40) { pathData.clear(); pathCache.clear(); }
+  if (!pathCache.has(e.frame)) {
+    // by frame name, never ts_ns: ~1.7e18 does not survive a JSON round trip through a
+    // JS double, and the rounded value matches no frame
+    pathCache.set(e.frame, fetch(`/api/path?frame=${encodeURIComponent(e.frame)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+      .then(j => { pathData.set(e.frame, j.path); })
+      .catch(err => {
+        pathData.set(e.frame, []);
+        $("status").innerHTML = `<span class="warn">driven path: ${err.message}</span>`;
+      }));
+  }
+  return pathCache.get(e.frame);
+}
+
+function endpointsOf(pair) {
+  return pair.a.frame === pair.b.frame ? [pair.a] : [pair.a, pair.b];
+}
+
+function drawPath(ctx, pts, S) {
+  // Broken wherever the state index jumps: the path leaves the frame and comes back,
+  // and joining across the gap would draw a route the robot never took. Occluded
+  // stretches are dashed rather than hidden, so "behind that tree" stays readable.
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.lineJoin = ctx.lineCap = "round";
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (b.i - a.i > 3) continue;
+    ctx.beginPath();
+    ctx.setLineDash(b.occ ? [4, 5] : []);
+    ctx.strokeStyle = b.occ ? "rgba(140,220,140,0.55)" : "rgba(90,230,90,0.95)";
+    ctx.moveTo(a.uv[0] / SCALE * S, a.uv[1] / SCALE * S);
+    ctx.lineTo(b.uv[0] / SCALE * S, b.uv[1] / SCALE * S);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function setPathHold(v) {
+  if (pathHold === v) return;
+  pathHold = v;
+  if (!cur) return;
+  if (!v) return void draw(cur);
+  peeked = true;
+  const want = endpointsOf(cur);
+  // draw immediately with whatever has already landed, then again once the rest do
+  draw(cur);
+  const missing = want.filter(e => !pathData.has(e.frame));
+  if (missing.length) {
+    Promise.all(missing.map(pathFor)).then(() => { if (pathHold) draw(cur); });
+  }
+}
+
+function applyOverlay() {
+  for (const c of document.querySelectorAll("#panels .over"))
+    c.style.visibility = hideOverlay ? "hidden" : "visible";
+}
+
+function applyZoom() {
+  // CSS transform on the panel's canvases rather than a redraw: the point sits at the
+  // transform origin, so it stays put while everything around it grows, and .panel
+  // already clips with overflow hidden.
+  const panels = $("panels").children;
+  for (const wrap of panels)
+    for (const c of wrap.querySelectorAll("canvas")) c.style.transform = "";
+  const p = zoomHold && cur && cur[zoomHold];
+  if (!p || (cur.hunt && !p.placed)) return;
+  const single = cur.a.frame === cur.b.frame;
+  const wrap = panels[single || zoomHold === "a" ? 0 : 1];
+  if (!wrap) return;
+  for (const c of wrap.querySelectorAll("canvas")) {
+    c.style.transformOrigin = `${p.uv[0] / SCALE * curS}px ${p.uv[1] / SCALE * curS}px`;
+    c.style.transform = `scale(${ZOOM})`;
+  }
+}
+
+function setZoomHold(side) {
+  if (zoomHold === side) return;
+  zoomHold = side;
+  applyZoom();
+}
+
+function onPrompt(pair, ev, S, mine, label) {
+  ev.preventDefault();
+  if (pair !== cur || pair.hunt) return;
+  const uv = [ev.offsetX / S * SCALE, ev.offsetY / S * SCALE];
+  // an intra pair shows both points in one panel, so the nearer crosshair owns the click
+  const side = mine.length === 1 ? mine[0] : mine.reduce((best, m) =>
+    Math.hypot(pair[m].uv[0] - uv[0], pair[m].uv[1] - uv[1]) <
+    Math.hypot(pair[best].uv[0] - uv[0], pair[best].uv[1] - uv[1]) ? m : best);
+  prompts[side].push({uv, label});
+  reprompt(side);
+}
+
+async function onHuntClick(pair, ev, S) {
+  if (!pair.hunt || pair !== cur) return;
+  const slot = !pair.a.placed ? "a" : (!pair.b.placed ? "b" : null);
+  if (!slot) return;
+  const x = Math.round(ev.offsetX / S), y = Math.round(ev.offsetY / S);
+  const e = pair[slot];
+  e.uv = [x * SCALE, y * SCALE];
+  e.placed = true;
+  e.anchor = await (await fetch("/api/anchor", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({frame: e.frame, uv: e.uv})})).json();
+  await draw(pair);
+}
+
+function huntReady(pair) {
+  return !pair.hunt || (pair.a.placed && pair.b.placed);
+}
+
+function setSize(side, delta) {
+  if (NO_REGIONS) return;
+  sizeIdx[side] = Math.max(0, Math.min(SIZES.length - 1, sizeIdx[side] + delta));
+  showSizes();
+  if (cur) draw(cur);
+}
+
+function showSizes() {
+  $("sizes").innerHTML = `<span class="sa">A ${sizeLabel("a")}</span> &nbsp; ` +
+                         `<span class="sb">B ${sizeLabel("b")}</span>`;
+}
+
+function showProgress(p) {
+  const parts = Object.entries(p.splits).map(([k, v]) => {
+    const dup = v.dup_total ? ` (+${v.dup_done}/${v.dup_total} dup)` : "";
+    return `${k} ${v.done}/${v.total}${dup}`;
+  }).join("  ");
+  $("prog").innerHTML = parts;
+  // the base set of a split ending is the natural place to stop: the duplicates after
+  // it only measure self-disagreement if they are answered in a later session
+  const done = Object.values(p.splits).find(v => v.done === v.total && v.dup_done < v.dup_total);
+  $("status").innerHTML = done
+    ? "<span class='warn'>base set complete &mdash; stop here, answer duplicates another day</span>"
+    : "";
+  $("rate").textContent = p.median_ms ? `${(p.median_ms / 1000).toFixed(1)} s/label` : "";
+  if (p.eta_s) {
+    const m = Math.round(p.eta_s / 60);
+    $("eta").textContent = m > 90 ? `~${(m / 60).toFixed(1)} h left` : `~${m} min left`;
+  }
+}
+
+function showReveal(r) {
+  const el = $("reveal");
+  if (!r) { el.innerHTML = ""; return; }
+  if (!r.covered) {
+    el.innerHTML = `<span class="nocov">RHE: no label here (off the driven path)</span>`;
+    return;
+  }
+  const name = {"-1": "A more", "0": "equal", "1": "B more"};
+  const verdict = r.t === null ? `<span class="nocov">ambiguous band</span>`
+    : r.agree ? `<span class="agree">agree</span>` : `<span class="disagree">DISAGREE</span>`;
+  el.innerHTML = `RHE: ${name[String(r.t)] || "-"} ` +
+    `(mu ${r.mu_a.toFixed(2)} vs ${r.mu_b.toFixed(2)}) &nbsp; ${verdict}`;
+}
+
+function refill() {
+  // Share the in-flight fetch instead of returning nothing: `await refill()` on an
+  // already-fetching call used to resolve instantly, and a caller that needed the queue
+  // filled then read an empty one and declared the session complete.
+  if (inflight) return inflight;
+  inflight = (async () => {
+    const r = await (await fetch("/api/next?n=8")).json();
+    SCALE = r.scale; DISP = r.size;
+    if (r.region_full_m) FULL_M = r.region_full_m;
+    if (r.no_regions && !NO_REGIONS) { NO_REGIONS = true; sizeIdx.a = sizeIdx.b = defaultSize(); }
+    showProgress(r.progress);
+    const have = new Set(queue.map(p => p.id));
+    if (cur) have.add(cur.id);
+    for (const p of r.pairs) if (!have.has(p.id) && !dispatched.has(p.id)) queue.push(p);
+    warm();
+  })().finally(() => { inflight = null; });
+  return inflight;
+}
+
+function warm() {
+  // Frames AND segments, and the id-map inversion too: decoding a segment map on the
+  // answer path costs more than fetching it.
+  //
+  // The whole queue, not the first few: warming 4 of 8 left the tail cold, and answering
+  // at 3 s a pair reaches it before the next refill lands. The caches are capped, so
+  // asking for more than fits is self-limiting.
+  for (const p of queue.slice(0, Math.min(queue.length, IMG_CAP >> 1))) {
+    for (const e of [p.a, p.b]) {
+      loadImage("/frames/" + e.frame + ".jpg", imgCache, IMG_CAP).catch(() => {});
+      if (NO_REGIONS) continue;
+      loadImage("/segments/" + e.frame + ".png", segCache, SEG_CAP)
+        .then(im => (window.requestIdleCallback || (f => setTimeout(f, 0)))(() => segIndex(im)))
+        .catch(() => {});
+    }
+  }
+}
+
+async function advance(tries = 0) {
+  // Only block when the queue is actually empty; otherwise top up in the background.
+  // Awaiting a refill every few answers was the periodic stall. Refill twice before
+  // believing an empty queue: the first may have been an in-flight fetch whose filter
+  // ran before the queue was cleared.
+  if (!queue.length) { await refill(); if (!queue.length) await refill(); }
+  else if (queue.length < 6) refill();
+  while (queue.length && (dispatched.has(queue[0].id) || (failed.get(queue[0].id) || 0) >= 3))
+    queue.shift();
+  // everything left has failed repeatedly: clear the counters and try them again rather
+  // than reporting a queue the server still considers unanswered as complete
+  if (!queue.length && failed.size) { failed.clear(); await refill(); }
+  cur = queue.shift();
+  if (!cur) {
+    clearInterval(tick);
+    $("timer").textContent = "";
+    $("panels").innerHTML = "<h2 style='padding:40px'>queue complete</h2>";
+    $("split").textContent = "";
+    return;
+  }
+  warm();   // the queue moved on; pull the newly-visible tail into cache
+  sizeIdx.a = sizeIdx.b = defaultSize();
+  prompts = {a: [], b: []};
+  // the server sends the segment already cut at the surface break; that is what gets
+  // drawn, so it is also what gets stored
+  promptMask = {a: null, b: null};
+  for (const s2 of ["a", "b"]) {
+    const code = cur[s2] && cur[s2].region_rle;
+    if (code) promptMask[s2] = Object.assign({rle: code}, unrle(code));
+  }
+  peeked = false;
+  showSizes();
+  // pair_source is deliberately not sent: it would tell the annotator the pair sits on
+  // the driven path, which is half the answer on the pairs RHE agreement is measured on
+  $("split").textContent = `${cur.split} · ${cur.kind}`;
+  $("hunt").textContent = cur.hunt ? "HUNT: click both points" : "";
+  try {
+    await draw(cur);
+  } catch (err) {
+    // a missing photo must not wedge the session: skip the pair, leave it unanswered
+    $("status").innerHTML = `<span class="warn">skipped ${cur.id}: ${err.message}</span>`;
+    failed.set(cur.id, (failed.get(cur.id) || 0) + 1);
+    if (tries < 5) return advance(tries + 1);
+    return;
+  }
+  await arm();
+}
+
+function arm() {
+  // Two frames: the first schedules the paint, the second runs after it has been
+  // composited, so the deadzone starts when the image is genuinely on screen rather
+  // than when drawImage returned.
+  armedAt = 0;
+  return new Promise(res => requestAnimationFrame(() => requestAnimationFrame(() => {
+    armedAt = performance.now();
+    shownAt = armedAt;  // think time is measured from the image appearing
+    const bar = $("lockbar");
+    bar.style.animation = "none";
+    void bar.offsetWidth;
+    bar.style.animation = deadzone ? `fill ${deadzone}ms linear forwards` : "none";
+    startTimer();
+    res();
+  })));
+}
+
+function startTimer() {
+  clearInterval(tick);
+  const el = $("timer");
+  const paint = () => {
+    const ms = performance.now() - shownAt;
+    el.textContent = `${(ms / 1000).toFixed(1)} s`;
+    el.className = ms >= LATE_MS ? "late" : ms >= NUDGE_MS ? "warn" : "";
+  };
+  paint();
+  tick = setInterval(paint, 100);
+}
+
+function locked() {
+  if (armedAt && performance.now() - armedAt >= deadzone) return false;
+  const bar = $("lockbar");
+  bar.classList.remove("reject");
+  void bar.offsetWidth;
+  bar.classList.add("reject");
+  return true;
+}
+
+function setMaskBoth(v) {
+  maskBoth = v;
+  $("maskbtn").textContent = maskBoth ? "show whole image" : "show regions only";
+  if (cur) draw(cur);
+}
+
+function setMaskHold(side) {
+  if (maskHold === side) return;
+  maskHold = side;
+  if (cur) draw(cur);
+}
+
+function setHints(v) {
+  hintsOn = v;
+  localStorage.setItem("wrizz_hints", v ? "1" : "0");
+  $("hint").style.display = v ? "" : "none";
+  panelS = null;
+  if (cur) draw(cur);
+}
+
+// What the last answer currently carries. Amendments act on the answer that just
+// scrolled past, not on the pair on screen, so without a readback there is no way to
+// tell an armed flag from one that was never pressed.
+const AMEND = [["prop_a", "no prop A"], ["prop_b", "no prop B"], ["dynamic", "dynamic"]];
+let amends = {};
+
+function resetAmends() {
+  amends = {};
+  showAmends();
+}
+
+// Both directions are sent, so a mis-press costs one keystroke instead of an undo.
+// "no prop" set means the endpoint must NOT propagate, hence prop_x = !on.
+async function toggleAmend(keys) {
+  // the answer POST is not awaited before advancing, so the amend keys are reachable
+  // while prev is still unset; wait for it rather than silently doing nothing
+  if (!prev) await settled;
+  if (!prev) return;
+  const on = !keys.every(k => amends[k]);
+  const patch = {};
+  for (const k of keys) {
+    amends[k] = on;
+    if (k === "dynamic") patch[on ? "flags" : "unflags"] = ["dynamic"];
+    else patch[k] = !on;
+  }
+  showAmends();
+  return amend(patch);
+}
+
+function showAmends() {
+  // Always drawn, so the keys are visibly present rather than appearing out of nowhere
+  // after the first answer. Dimmed until there is an answer to amend, which is honest:
+  // with no previous answer the keys genuinely do nothing.
+  const chips = AMEND.map(([k, t]) =>
+    `<span class="chip${prev && amends[k] ? " on" : ""}">${t}</span>`).join(" ");
+  $("amends").innerHTML = `<span class="lbl">last answer:</span> ${chips}`;
+  $("amends").style.opacity = prev ? "1" : "0.4";
+}
+
+function setDeadzone(ms) {
+  deadzone = Math.max(0, Math.min(5000, ms));
+  localStorage.setItem("wrizz_deadzone", deadzone);
+  $("dzval").textContent = `${(deadzone / 1000).toFixed(2)} s`;
+}
+
+async function answer(t, flags) {
+  if (busy || !cur) return;
+  if (locked()) return;
+  if (!huntReady(cur)) { $("status").textContent = "place both points first"; return; }
+  busy = true;
+  const send = s => {
+    const o = {uv: cur[s].uv, region_m: isFinite(sizeM(s)) ? sizeM(s) : FULL_M};
+    // the mask that was actually on screen. Stored rather than recomputed at export so
+    // the region trained on is the one the annotator judged, byte for byte.
+    if (promptMask[s]) {
+      o.region_rle = promptMask[s].rle;
+      if (prompts[s].length) o.prompts = prompts[s];
+    }
+    return o;
+  };
+  const body = {id: cur.id, t, dt_ms: Math.round(performance.now() - shownAt),
+                flags: [...(flags || []), ...(peeked ? ["path_shown"] : [])],
+                a: send("a"), b: send("b")};
+  const pending = cur;
+  // before advancing, so a refill that races the POST cannot hand this pair back
+  dispatched.add(pending.id);
+  // the POST is deliberately not awaited before advancing, which is what keeps the next
+  // image instant; anything that reads the log server-side must wait for it first
+  const post = fetch("/api/label", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  // own promise as well as the shared one: a second answer overwrites `settled`, and
+  // reading it here would pair this pair's id with the other answer's uuid
+  const mine = post.then(r => r.json()).catch(() => null);
+  settled = mine;
+  try {
+    await advance();
+  } finally {
+    // never leave the UI wedged with busy set if rendering the next pair failed
+    busy = false;
+  }
+  const r = await mine;
+  if (!r || !r.uuid) return;
+  // the answer's uuid, not its pair id: an amendment must name the answer it was given
+  // for, or it lands on a later answer to the same pair
+  prev = {id: pending.id, uuid: r.uuid};
+  resetAmends();
+  showReveal(r.rhe);
+  showProgress(r.progress);
+}
+
+async function amend(patch) {
+  const target = prev;
+  if (!target) return;
+  await fetch("/api/amend", {method: "POST", headers: {"Content-Type": "application/json"},
+                             body: JSON.stringify({id: target.id, target: target.uuid, ...patch})});
+  $("status").textContent = "amended " + target.id;
+  setTimeout(() => { $("status").textContent = ""; }, 1200);
+}
+
+async function undo() {
+  // /api/undo retracts the last record on disk. Pressing u straight after answering is
+  // the normal case, so without this wait the in-flight answer has not landed yet and
+  // the one before it gets retracted instead.
+  await settled;
+  const r = await (await fetch("/api/undo", {method: "POST"})).json();
+  if (!r.ok) return;
+  // advance() top-ups the queue in the background whenever it is short, so a refill is
+  // usually already in flight here. refill() shares it, and its request went out before
+  // the retraction, so its batch still counts the undone pair as answered and does not
+  // contain it. Let that one land and drop it, or undo shows the pair AFTER the one it
+  // just retracted.
+  if (inflight) { try { await inflight; } catch { } }
+  // the retracted pair is unanswered again, so it must become servable again
+  dispatched.delete(r.id);
+  queue = []; prev = null; resetAmends();
+  $("reveal").innerHTML = "";
+  $("status").textContent = "undid " + r.id;
+  await advance();
+}
+
+window.addEventListener("keydown", e => {
+  const k = e.key;
+  if (k === "h") { hideOverlay = true; applyOverlay(); e.preventDefault(); return; }
+  if (k === "w") { setMaskHold("a"); e.preventDefault(); return; }
+  if (k === "o") { setMaskHold("b"); e.preventDefault(); return; }
+  if (k === "t") { setPathHold(true); e.preventDefault(); return; }
+  if (k === "e") { setZoomHold("a"); e.preventDefault(); return; }
+  if (k === "i") { setZoomHold("b"); e.preventDefault(); return; }
+  // auto-repeat is never a considered answer, and it is the way a held key would race
+  // straight through into the next pair
+  if (e.repeat) { e.preventDefault(); return; }
+  // QWERTZ home row, split by hand: the left hand owns A, the right hand owns B. The
+  // answer is 90% of the keystrokes, so it takes the index fingers and the thumb and
+  // the hands never leave asdfghjkloa. Arrows stay as aliases.
+  if (k === "a") return toggleAmend(["prop_a"]), e.preventDefault();
+  if (k === "s") return setSize("a", +1), e.preventDefault();
+  if (k === "d") return setSize("a", -1), e.preventDefault();
+  if (k === "ö") return toggleAmend(["prop_b"]), e.preventDefault();
+  if (k === "k") return setSize("b", +1), e.preventDefault();
+  if (k === "l") return setSize("b", -1), e.preventDefault();
+  if (k === "f" || k === "ArrowLeft") answer(-1);
+  else if (k === " " || k === "ArrowDown") answer(0);
+  else if (k === "j" || k === "ArrowRight") answer(1);
+  else if (k === "ä") answer(null, ["skip"]);
+  else if (k === "x") toggleAmend(["prop_a", "prop_b"]);
+  else if (k === "g") toggleAmend(["dynamic"]);
+  else if (k === "c") clearPrompts();
+  else if (k === "u") undo();
+  else if (k === "r" && cur && cur.hunt) {
+    cur.a.placed = cur.b.placed = false;
+    draw(cur);
+  }
+  else return;
+  e.preventDefault();
+});
+
+window.addEventListener("keyup", e => {
+  if (e.key === "h") { hideOverlay = false; applyOverlay(); }
+  if ((e.key === "w" && maskHold === "a") || (e.key === "o" && maskHold === "b")) setMaskHold(null);
+  if ((e.key === "e" && zoomHold === "a") || (e.key === "i" && zoomHold === "b")) setZoomHold(null);
+  if (e.key === "t") setPathHold(false);
+});
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { panelS = null; if (cur) draw(cur); }, 120);
+});
+
+$("maskbtn").onclick = () => setMaskBoth(!maskBoth);
+$("keysbtn").onclick = () => setHints(!hintsOn);
+for (const [ev, v] of [["mousedown", true], ["mouseup", false], ["mouseleave", false]])
+  $("pathbtn").addEventListener(ev, () => setPathHold(v));
+$("dzdown").onclick = () => setDeadzone(deadzone - 250);
+$("dzup").onclick = () => setDeadzone(deadzone + 250);
+
+setDeadzone(deadzone);
+$("hint").style.display = hintsOn ? "" : "none";
+showSizes();
+showAmends();
+advance();
+</script>
+</body>
+</html>

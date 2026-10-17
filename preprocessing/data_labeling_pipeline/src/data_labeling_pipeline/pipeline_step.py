@@ -1,8 +1,4 @@
-"""Skip-if-done + start/finish logging for per-mission pipeline steps.
-
-Each step writes `<output_dir>/<name>_metadata.json` containing at least
-{"version": <int>}. Bump a step's version constant to invalidate and redo it.
-"""
+"""Skip-if-done markers and logging for per-mission steps (`<name>_metadata.json`, bump version to redo)."""
 
 import json
 import time

@@ -10,9 +10,8 @@
 
 [tool.uv.workspace]
 members = [
-    "config",
     "preprocessing/data_labeling_pipeline",
-    "preprocessing/data_download",
+    "preprocessing/wayfaster_download",
     "preprocessing/grandtour_extraction",
     "training/traversability_network",
     "shared-utils",
@@ -22,7 +21,6 @@ members = [
 
 [tool.uv.sources]
 shared-utils = { workspace = true }
-config = { workspace = true }
 
 
 [dependency-groups]

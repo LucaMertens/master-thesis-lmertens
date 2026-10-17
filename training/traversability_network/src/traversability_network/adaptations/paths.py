@@ -3,7 +3,7 @@ import os
 
 
 def resolve_media_roots(curr_dir, resized_root, depth_cache_root):
-    """(img_root, depth_root) for a mission: the cache dir if it exists there, else curr_dir."""
+    """(img_root, depth_root) for a mission, falling back to curr_dir."""
     img_root = curr_dir
     if resized_root:
         candidate = os.path.join(resized_root, os.path.basename(curr_dir))

@@ -1,23 +1,17 @@
-"""
-Inspect bag files and write structured ROS topic documentation.
-"""
+"""Inspect ROS1 bags and write ros_topics.md."""
 
 import fnmatch
 import pathlib
 import typing
 from collections import defaultdict
 
-from config.paths import ROS1_ROOT
+from shared_utils.paths import ROS1_ROOT
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
 MISSION_PATH = ROS1_ROOT / "ETH-1"
 OUTPUT_PATH = pathlib.Path(__file__).parent.parent / "ros_topics.md"
-# PATTERNS accepts glob patterns (e.g. "*alpha*", "tf_*") or simple
-# tokens (e.g. "alphasense"). Simple tokens are matched as substrings
-# for backwards compatibility; patterns containing glob metachars
-# (*, ?, [) are matched using Unix-style globs.
-# PATTERNS = ["alphasense", "cpt7_ie_tc", "tf_minimal"]
+# Bag name filters: globs if they contain *?[, else substrings (e.g. "alphasense")
 PATTERNS = ["*"]
 
 typestore = get_typestore(Stores.ROS1_NOETIC)
@@ -26,7 +20,7 @@ if "tf2_msgs/msg/TFMessage" not in typestore.types:
     tf2_msg_def = "geometry_msgs/TransformStamped[] transforms"
     typestore.register(get_types_from_msg(tf2_msg_def, "tf2_msgs/msg/TFMessage"))
 
-# Types that are considered "atomic" and won't be expanded
+# Not expanded in type definitions
 ATOMIC_TYPES = {
     "std_msgs/Header",
     "geometry_msgs/Vector3",
@@ -40,7 +34,6 @@ ATOMIC_TYPES = {
 def clean_msgtype(msgtype: str) -> str:
     if not msgtype:
         return "?"
-    # Remove /msg/ or /srv/ etc
     parts = msgtype.split("/")
     if "msg" in parts:
         parts.remove("msg")
@@ -54,12 +47,10 @@ def get_msgtype_for_class(cls):
     if not cls:
         return None
 
-    # First try direct identity match in typestore
     for name, t in typestore.types.items():
         if t == cls:
             return name
 
-    # Then try by name matching
     if hasattr(cls, "__name__"):
         name = cls.__name__
         if "__" in name:
@@ -74,18 +65,15 @@ def type_name(t) -> str:
     if t is type(None):
         return "None"
 
-    # Annotated[X, ...] -> recurse on X
     if typing.get_origin(t) is typing.Annotated:
         return type_name(typing.get_args(t)[0])
 
-    # list[X] -> list[type_name(X)]
     origin = getattr(t, "__origin__", None)
     if origin is list:
         args = getattr(t, "__args__", ())
         inner = type_name(args[0]) if args else "?"
         return f"list[{inner}]"
 
-    # Plain class
     if hasattr(t, "__name__"):
         mod = getattr(t, "__module__", "")
         if mod == "numpy":
@@ -102,7 +90,6 @@ def type_name(t) -> str:
 def is_ros_msg(t) -> bool:
     if not isinstance(t, type):
         return False
-    # rosbags types have __annotations__ and usually __msgtype__
     return hasattr(t, "__annotations__")
 
 
@@ -119,7 +106,7 @@ def unwrap_type(t):
 
 
 def is_complex_type(cls):
-    """Check if a type is complex (not atomic and is a ROS msg)."""
+    """ROS msg type that is not in ATOMIC_TYPES."""
     if not is_ros_msg(cls):
         return False
 
@@ -131,7 +118,7 @@ def is_complex_type(cls):
 
 
 def collect_fields(cls, seen_complex_classes: set):
-    """Return fields of a class and add complex subtypes to the set."""
+    """Field lines of a class; complex subtypes are added to the set."""
     if not is_ros_msg(cls):
         return []
 
@@ -158,7 +145,6 @@ def find_class(msgtype: str):
     if msgtype in typestore.types:
         return typestore.types[msgtype]
 
-    # Try fuzzy matching
     target = msgtype.replace("/msg/", "/").replace("/srv/", "/")
     for name, cls in typestore.types.items():
         if name.replace("/msg/", "/").replace("/srv/", "/") == target:
@@ -172,14 +158,11 @@ def bag_matches_patterns(bag_path: pathlib.Path) -> bool:
         if not p:
             continue
         p_low = p.lower()
-        # If the pattern contains glob metacharacters, treat it as a glob.
         if any(ch in p_low for ch in "*?["):
             if fnmatch.fnmatch(stem, p_low):
                 return True
-        else:
-            # Otherwise keep substring matching for compatibility.
-            if p_low in stem:
-                return True
+        elif p_low in stem:
+            return True
     return False
 
 
@@ -272,8 +255,8 @@ for bag_path in bags:
             bag_content_lines.append(f"  - `{parent}` → `{child}`")
         bag_content_lines.append("")
 
-# Recursively expand subtypes
-expanded_types = {}  # class -> lines
+# Expand nested subtypes until no new ones appear
+expanded_types = {}
 while True:
     new_classes = all_complex_classes - set(expanded_types.keys())
     if not new_classes:

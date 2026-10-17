@@ -1,13 +1,11 @@
-"""Run the full per-mission preprocessing: extrinsics, images, RHE labels, depth.
+"""Run the per-mission preprocessing: extrinsics, images, RHE labels, depth, label videos.
 
 uv run python preprocessing/pipeline.py                  # process everything not yet done
 uv run python preprocessing/pipeline.py --status         # show per-mission step state
 watch -n 10 uv run python preprocessing/pipeline.py --status   # live job view
 
-Without --mission, all missions found under --bags-root are processed; steps that
-are already up to date are skipped, so a bare invocation finishes whatever is
-missing. With --parallel-missions > 1 (default 2), each mission logs to
-<output>/<mission>/pipeline.log and the console only shows start/done/failed lines.
+Up-to-date steps are skipped. With --parallel-missions > 1, each mission logs to
+<output>/<mission>/pipeline.log.
 """
 
 import argparse
@@ -19,7 +17,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from config.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT, ROS1_ROOT
+from shared_utils.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT, ROS1_ROOT
 from data_labeling_pipeline import labeling_pipeline, run_labels
 from grandtour_extraction import (
     correct_tint,
@@ -76,12 +74,7 @@ ACTIVE_SECONDS = 120
 
 
 def _depth_running(mission_dir: pathlib.Path) -> str | None:
-    """Progress string if depth generation is live for this mission.
-
-    Primary signal is the depth_progress.json heartbeat written by the container.
-    Fallback for runs without it: newest file mtime in depth/ (imwrite overwrites
-    existing files on re-runs, so the directory mtime alone is not reliable).
-    """
+    """Progress string if depth generation is live (heartbeat file, else newest mtime in depth/)."""
     progress = mission_dir / "depth_progress.json"
     if progress.exists() and time.time() - progress.stat().st_mtime < ACTIVE_SECONDS:
         p = json.loads(progress.read_text())
@@ -97,7 +90,7 @@ def _depth_running(mission_dir: pathlib.Path) -> str | None:
 
 
 def _label_video_running(mission_dir: pathlib.Path) -> str | None:
-    """Progress string if label_video rendering is live, from its heartbeat."""
+    """Progress string if label_video rendering is live."""
     progress = mission_dir / "label_video_progress.json"
     if progress.exists() and time.time() - progress.stat().st_mtime < ACTIVE_SECONDS:
         p = json.loads(progress.read_text())
@@ -106,7 +99,7 @@ def _label_video_running(mission_dir: pathlib.Path) -> str | None:
 
 
 def _running_step(mission_dir: pathlib.Path) -> str | None:
-    """Currently executing extraction step, from the pipeline.log of this mission."""
+    """Currently executing step, parsed from the mission's pipeline.log."""
     log_file = mission_dir / "pipeline.log"
     if not log_file.exists() or time.time() - log_file.stat().st_mtime > ACTIVE_SECONDS:
         return None
@@ -122,7 +115,7 @@ def _running_step(mission_dir: pathlib.Path) -> str | None:
 def print_status(
     missions: list[str], output_root: pathlib.Path, labels_root: pathlib.Path
 ) -> None:
-    """Render the per-mission step state from the *_metadata.json files."""
+    """Print per-mission step state from the *_metadata.json files."""
     current = _current_versions()
 
     def cell(mission_dir: pathlib.Path, rhe_dir: pathlib.Path, step: str, running: str | None) -> str:
@@ -174,6 +167,15 @@ def print_status(
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)))
 
 
+def _run_step(mission: str, name: str, step_errors: dict[str, str], fn) -> None:
+    log(f"== {mission}: {name} ==")
+    try:
+        fn()
+    except Exception as e:
+        log(f"!! {mission}: {name} failed: {e}")
+        step_errors[name] = str(e)
+
+
 def run_pipeline(
     mission: str,
     bags_root,
@@ -192,9 +194,7 @@ def run_pipeline(
 ) -> dict[str, str]:
     """Run the requested steps for one mission.
 
-    Raises if images/extrinsics fail, since depth generation depends on their
-    output. dlio/command/labels failures (e.g. a mission with no dlio bag) are
-    non-fatal and returned as {step: error} so depth can still proceed.
+    Raises if images/extrinsics fail (depth needs them). Later step failures are returned as {step: error}.
     """
     mission_dir = pathlib.Path(bags_root) / mission
     output_dir = pathlib.Path(output_root) / mission
@@ -202,8 +202,7 @@ def run_pipeline(
         raise FileNotFoundError(mission_dir)
 
     if log_to_file:
-        # One log file per mission and run; overwritten on re-runs so it cannot grow
-        # unbounded. tqdm bars auto-disable because the file is not a tty.
+        # Overwritten per run; tqdm bars disable themselves (not a tty)
         output_dir.mkdir(parents=True, exist_ok=True)
         log_file = open(output_dir / "pipeline.log", "w", buffering=1)
         os.dup2(log_file.fileno(), sys.stdout.fileno())
@@ -226,50 +225,45 @@ def run_pipeline(
 
     step_errors: dict[str, str] = {}
     if images:
-        log(f"== {mission}: tint_correction ==")
-        try:
-            correct_tint.correct(output_dir, threshold=1.5, local_window=5.0, force=force)
-        except Exception as e:
-            log(f"!! {mission}: tint_correction failed: {e}")
-            step_errors["tint_correction"] = str(e)
+        _run_step(
+            mission,
+            "tint_correction",
+            step_errors,
+            lambda: correct_tint.correct(
+                output_dir, threshold=1.5, local_window=5.0, force=force
+            ),
+        )
     if extrinsics:
-        log(f"== {mission}: dlio ==")
-        try:
-            extract_dlio.extract(mission_dir, output_dir, force=force)
-        except Exception as e:
-            log(f"!! {mission}: dlio failed: {e}")
-            step_errors["dlio"] = str(e)
-        log(f"== {mission}: command ==")
-        try:
-            extract_commands.extract(mission_dir, output_dir, force=force)
-        except Exception as e:
-            log(f"!! {mission}: command failed: {e}")
-            step_errors["command"] = str(e)
-        log(f"== {mission}: ground_z ==")
-        try:
-            extract_feet.extract(mission_dir, output_dir, force=force)
-        except Exception as e:
-            log(f"!! {mission}: ground_z failed: {e}")
-            step_errors["ground_z"] = str(e)
+        for name, module in [
+            ("dlio", extract_dlio),
+            ("command", extract_commands),
+            ("ground_z", extract_feet),
+        ]:
+            _run_step(
+                mission,
+                name,
+                step_errors,
+                lambda module=module: module.extract(mission_dir, output_dir, force=force),
+            )
     if labels:
-        log(f"== {mission}: rhe_labels ==")
-        try:
-            labels_dir = pathlib.Path(labels_root) / mission / "rhe"
-            run_labels(mission_dir, output_dir, labels_dir, force=force)
-        except Exception as e:
-            log(f"!! {mission}: rhe_labels failed: {e}")
-            step_errors["rhe_labels"] = str(e)
+        labels_dir = pathlib.Path(labels_root) / mission / "rhe"
+        _run_step(
+            mission,
+            "rhe_labels",
+            step_errors,
+            lambda: run_labels(mission_dir, output_dir, labels_dir, force=force),
+        )
     return step_errors
 
 
 def _render_video(
     mission: str, output_root, labels_root, force: bool, log_to_file: bool
 ) -> None:
-    """Worker for the parallel video stage: render one mission's label video."""
+    """Render one mission's label video (parallel worker)."""
     if log_to_file:
         mission_dir = pathlib.Path(output_root) / mission
         mission_dir.mkdir(parents=True, exist_ok=True)
-        # Append so the video stage does not clobber the extraction log.
+        # Append, keep the extraction log
         log_file = open(mission_dir / "pipeline.log", "a", buffering=1)
         os.dup2(log_file.fileno(), sys.stdout.fileno())
         os.dup2(log_file.fileno(), sys.stderr.fileno())
@@ -283,7 +277,7 @@ def run_videos(
     workers: int,
     force: bool = False,
 ) -> dict[str, str]:
-    """Render label videos for all missions, workers missions in parallel."""
+    """Render label videos, `workers` missions in parallel."""
     failed: dict[str, str] = {}
     log_to_file = workers > 1
     with ProcessPoolExecutor(max_workers=workers) as pool:

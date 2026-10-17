@@ -4,8 +4,7 @@ import os
 import numpy as np
 import torch
 
-# Per-process handle cache: opened lazily inside each worker, never pickled
-# through the DataLoader.
+# opened lazily per worker, never pickled through the DataLoader
 _MEMMAPS = {}
 
 
@@ -26,8 +25,10 @@ def attach_dino_cache(data_dict, cache_root, bag_name):
     data_dict["dino_feat_idx"] = np.arange(len(data_dict["image_timestamp"]), dtype=np.int64)
 
 
-def read_dino_feats(rosbag_dict, data_idx, n_frames, horizontal_flip):
-    """Features for one window; the flipped state has its own cache since DINO isn't flip-equivariant."""
-    rows = np.asarray(rosbag_dict["dino_feat_idx"][data_idx : data_idx + n_frames])
+def read_dino_feats(rosbag_dict, data_idx, n_frames, horizontal_flip, frame_stride=1):
+    """Features for one window; flipped windows read a separate cache (DINO is not flip-equivariant)."""
+    rows = np.asarray(rosbag_dict["dino_feat_idx"])[
+        data_idx + frame_stride * np.arange(n_frames)
+    ]
     key = "dino_feat_file_flip" if horizontal_flip else "dino_feat_file"
     return torch.from_numpy(np.ascontiguousarray(_memmap(rosbag_dict[key])[rows]))

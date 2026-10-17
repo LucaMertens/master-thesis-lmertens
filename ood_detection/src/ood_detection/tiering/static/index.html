@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GrandTour tiering</title>
+<link rel="stylesheet" href="/app.css">
+<header>
+  <b>GrandTour tiering</b>
+  <span class="dim" id="speed"></span>
+  <input id="filter" placeholder="filter missions">
+  <label><input type="checkbox" id="cached-only"> cached only</label>
+  <label><input type="checkbox" id="play-all" checked> play</label>
+  <button id="add-tier">+ tier</button>
+  <span class="grow"></span>
+  <span id="status" class="dim">loaded</span>
+</header>
+
+<div id="board"></div>
+
+<div id="editor" hidden>
+  <div class="panel">
+    <div class="row">
+      <b id="ed-title"></b>
+      <span class="grow"></span>
+      <label><input type="checkbox" id="ed-part-only" checked> loop selected part</label>
+      <button id="ed-close">close</button>
+    </div>
+    <video id="ed-video" muted playsinline></video>
+    <div id="ed-strip"></div>
+    <input id="ed-scrub" type="range" min="0" step="0.5">
+    <div class="row">
+      <button id="ed-play" title="space">pause</button>
+      <span id="ed-time" class="mono"></span>
+      <button id="ed-split">split here</button>
+      <button id="ed-merge">merge into previous</button>
+      <select id="ed-tier"></select>
+      <span class="grow"></span>
+      <span id="ed-part" class="dim"></span>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>

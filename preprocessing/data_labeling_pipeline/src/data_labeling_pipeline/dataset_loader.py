@@ -1,8 +1,10 @@
+"""Loads extracted command/odometry arrays and ROS bag topics for a mission."""
+
 import pathlib
 from typing import Any, Iterator
 
 import numpy as np
-from config.paths import EXTRACTED_ROOT
+from shared_utils.paths import EXTRACTED_ROOT
 from rosbags.rosbag1 import Reader
 from rosbags.typesys import Stores, get_typestore
 from scipy.spatial.transform import Rotation
@@ -20,9 +22,8 @@ def get_shared_timestamps(tstamps1, tstamps2, dt):
     assert _is_strictly_monotonic_increasing(tstamps1)
     assert _is_strictly_monotonic_increasing(tstamps2)
 
-    # Timestamps are in unix seconds.
+    # Unix seconds
     start1, end1, start2, end2 = tstamps1[0], tstamps1[-1], tstamps2[0], tstamps2[-1]
-    # Check if the difference between time-ranges is too large
     start_difference = abs(start1 - start2)
     end_difference = abs(end1 - end2)
     if (
@@ -41,20 +42,19 @@ def get_shared_timestamps(tstamps1, tstamps2, dt):
 
 
 def quaternions_to_yaws(quaternions):
-    """Convert quaternions stored as [x, y, z, w] to yaw angles (radians)."""
+    """Quaternions [x, y, z, w] to yaw (rad)."""
     quaternions = np.asarray(quaternions)
     if quaternions.ndim != 2 or quaternions.shape[1] != 4:
         raise ValueError("Quaternion array must have shape (N, 4).")
 
     rotation = Rotation.from_quat(quaternions, scalar_first=False)
 
-    # Intrinsic "ZYX" (capital) = yaw-pitch-roll; lowercase "zyx" is extrinsic
-    # and its first angle deviates from the true heading on tilted terrain.
+    # Intrinsic "ZYX": extrinsic "zyx" deviates from heading on tilted terrain
     return rotation.as_euler("ZYX", degrees=False)[:, 0]
 
 
 def interpolate_unwrapped_angles(timestamps, angles, shared_timestamps):
-    """Interpolate angles after unwrapping to avoid discontinuities at +/- pi."""
+    """Interpolate after unwrapping (no jumps at +/- pi)."""
     return np.interp(shared_timestamps, timestamps, np.unwrap(angles))
 
 
@@ -93,7 +93,7 @@ def _topic_messages(bag_path, topic_name, *, exact_match=True, require_nonempty=
 
         yield first
         yield from messages
-        # If the returned generator is not fully consumed and kept in memory, the bag file will remain open.
+        # Bag stays open until the generator is fully consumed
 
 
 def fill_command_gaps_with_zero_commands(
@@ -102,7 +102,7 @@ def fill_command_gaps_with_zero_commands(
     angular: np.ndarray,
     gap_factor: float = 4.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sometimes, there are gaps in the data where no measurements were recorded for a while. Fill them with a const value."""
+    """Insert zero commands at nominal dt wherever the recording has gaps."""
     timestamps = np.asarray(timestamps)
     linear = np.asarray(linear)
     angular = np.asarray(angular)
@@ -213,16 +213,7 @@ class GrandTourLoader:
         return odom_ts, odom_pos, odom_orien
 
     def load_data_shared_timestamps(self, dt=0.1, fill_gaps=True, include_lateral_command=False):
-        """
-        Loads topics and returns them with shared timestamps, resampled at a uniform rate of dt seconds.
-
-        Returns:
-        - T: 1D array of uniformly spaced, shared timestamps
-        - U: 2D array of control inputs at each timestamp.
-             include_lateral_command=False (default): columns [vx_cmd, omega_cmd]
-             include_lateral_command=True:            columns [vx_cmd, vy_cmd, omega_cmd]
-        - Z: 3D array of states (px, py, yaw) at each timestamp
-        """
+        """Returns (T, U, Z) on a uniform dt grid: U = [vx, (vy), omega] commands, Z = [px, py, yaw]."""
         cmd_ts, cmd_linear, cmd_angular = self.load_commands(fill_gaps=fill_gaps)
         vx_k = cmd_linear[:, 0]
         vy_k = cmd_linear[:, 1]
@@ -236,7 +227,6 @@ class GrandTourLoader:
         shared_ts = get_shared_timestamps(cmd_ts, odom_ts, dt=dt)
         assert _is_strictly_monotonic_increasing(shared_ts)
 
-        # Interpolate commands and states to shared timestamps
         vx_k_shared = np.interp(shared_ts, cmd_ts, vx_k)
         vy_k_shared = np.interp(shared_ts, cmd_ts, vy_k)
         omega_k_shared = np.interp(shared_ts, cmd_ts, omega_k)
@@ -259,7 +249,6 @@ class GrandTourLoader:
             raise FileNotFoundError(f"Image bag not found: {bag_path}")
 
         timestamps = []
-        # We want any topic that ends with topic_name, e.g. /zed2i/right/image_rect_color/compressed
         messages = _topic_messages(bag_path, topic_name, exact_match=False)
         for connection, timestamp, rawdata in messages:
             ts = timestamp * 1e-9

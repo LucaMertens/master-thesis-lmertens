@@ -8,7 +8,7 @@ from typing import Dict, List
 
 import numpy as np
 
-from data_labeling_pipeline.hyperparameters import N, STEP_SIZE, P_m, P_w, P_x, dt
+from data_labeling_pipeline.hyperparameters import N, STEP_SIZE, P_m, P_w, P_x
 from data_labeling_pipeline.rhe import RecedingHorizonEstimator
 
 from .synthetic_data import SyntheticScenario, get_all_scenarios
@@ -16,8 +16,6 @@ from .synthetic_data import SyntheticScenario, get_all_scenarios
 
 @dataclass
 class ScenarioResult:
-    """Results from running one scenario through the RHE."""
-
     scenario: SyntheticScenario
     mu_estimated: np.ndarray
     nu_estimated: np.ndarray
@@ -26,15 +24,12 @@ class ScenarioResult:
     w_mu: np.ndarray  # confidence scores
     w_nu: np.ndarray
     window_centers: np.ndarray  # time indices of window centers
-
-    # Metrics
     metrics: Dict = field(default_factory=dict)
 
 
 def _compute_metrics(
     estimated: np.ndarray, true_vals: np.ndarray, convergence_threshold: float = 0.05
 ) -> Dict:
-    """Compute error metrics for a single parameter."""
     errors = estimated - true_vals
     abs_errors = np.abs(errors)
 
@@ -46,11 +41,9 @@ def _compute_metrics(
         "std_error": float(np.std(errors)),
     }
 
-    # Convergence: number of windows until error stays below threshold
+    # Convergence: first window starting a run of 3 consecutive windows below threshold
     converged_mask = abs_errors < convergence_threshold
     if np.any(converged_mask):
-        # Find the first window after which error stays below threshold
-        # for at least 3 consecutive windows
         conv_window = None
         consecutive = 0
         for i, c in enumerate(converged_mask):
@@ -71,7 +64,6 @@ def _compute_metrics(
 def run_scenario(
     scenario: SyntheticScenario, horizon_n: int = None, step_size: int = None
 ) -> ScenarioResult:
-    """Run one scenario through RHE."""
     if horizon_n is None:
         horizon_n = N
     if step_size is None:
@@ -115,7 +107,7 @@ def run_scenario(
         w_mu_arr[idx] = w_mu
         w_nu_arr[idx] = w_nu
 
-        # Ground truth: average parameters over the window
+        # True parameters averaged over the window
         mu_true_w[idx] = np.mean(m_true[start:end, 0])
         nu_true_w[idx] = np.mean(m_true[start:end, 1])
 
@@ -142,7 +134,6 @@ def run_scenario(
 
 
 def run_all_scenarios() -> List[ScenarioResult]:
-    """Run all benchmark scenarios and return results."""
     scenarios = get_all_scenarios()
     results = []
 
@@ -171,7 +162,6 @@ def run_all_scenarios() -> List[ScenarioResult]:
 
 
 def print_summary_table(results: List[ScenarioResult]):
-    """Print a formatted summary table of all benchmark results."""
     print("\n" + "=" * 100)
     print("BENCHMARK SUMMARY")
     print("=" * 100)
@@ -207,7 +197,6 @@ def print_summary_table(results: List[ScenarioResult]):
 
 
 def save_metrics(results: List[ScenarioResult], output_dir: Path):
-    """Save metrics to a JSON file."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_dict = {}

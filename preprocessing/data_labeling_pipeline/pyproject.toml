@@ -10,7 +10,6 @@ dependencies = [
     "scipy",
     "tqdm",
     "shared-utils",
-    "config",
     "imageio>=2.37.3",
     "imageio-ffmpeg>=0.6.0",
     "rosbags>=0.11.2",
@@ -26,7 +25,6 @@ packages = ["src/data_labeling_pipeline", "src/simple_baseline_labels"]
 
 [tool.uv.sources]
 shared-utils = { workspace = true }
-config = { workspace = true }
 
 [dependency-groups]
 dev = [

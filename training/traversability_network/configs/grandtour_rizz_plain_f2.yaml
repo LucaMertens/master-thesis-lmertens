@@ -1,0 +1,82 @@
+TAG: 'gt_rizz_plain_f2'
+DESCRIPTION: 'CV fold f2, baseline s5_t6 recipe with the mu term swapped for W-RIZZ ordinal pairs auto-generated from the RHE labels. Isolates the objective (ordinal vs regression) at fixed labels; no human annotation involved.'
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 1.0
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 6
+    DEVICES: [3]
+    EPOCHS: 10
+    VAL_CHECK_INTERVAL: 0.25
+    CHECKPOINT_EVERY_N_EPOCHS: 10
+    VERBOSE: False
+    GAMMA: 1.0
+    LOSS_NORM: 'mean'
+    DEPTH_WEIGHT: 0.05
+    HORIZON: 300
+    DT: 0.1
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: True
+    DEBUG_VIS_DEPTH: True
+
+    LOSS_TYPE: 'rizz'
+    # calib_slope reads a mu scale the rizz head does not have. Balanced HDR is the
+    # ordinal equivalent: 0.5 for anything constant, 0 for a correct ordering, and
+    # independent of how many pairs happen to be ties. Logged for every run, so the
+    # baseline can be scored on it too.
+    CKPT_MONITOR: 'valid/hdr_balanced'
+    CKPT_MODE: 'min'
+    RIZZ_MARGIN: 0.5
+    # 0.25 keeps the ordinal supervision on real low-vs-high differences: at 0.1 only
+    # 31% of the inequality pairs have an end below mu 0.6, at 0.25 it is 85%.
+    RIZZ_DEADBAND: 0.25
+    RIZZ_MIN_SEP: 2.0
+    RIZZ_PAIRS: 512
+    RIZZ_CROSS_FRACTION: 0.5
+    RIZZ_INEQ_FRACTION: 0.5
+    RIZZ_WEIGHT: 1.0
+
+MODEL:
+    TIME_LENGTH: 6
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    FRAME_STRIDE: 5
+    WINDOW_STRIDE: 5
+    LDS_ALPHA: 1.0
+    VISIBILITY_GATE: False
+    OVERSAMPLE_FRACTION: 0.0
+
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'CYN-2', 'HOEB-1', 'HOEB-2', 'LMB-1', 'LMB-2', 'TRIM-1', 'KAEB-3']
+    VALID_MISSIONS: ['RIV-1', 'ALB-3', 'HIL-1', 'KAEB-2']
+    TEST_MISSIONS:  ['RIV-1', 'ALB-3', 'HIL-1', 'KAEB-2']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.0
+    MAX_ROTATION: 0.0
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]

@@ -16,7 +16,7 @@ from scipy.spatial.transform import Rotation as R
 
 ODOM_TOPIC = "/boxi/inertial_explorer/tc/odometry"
 
-# Bump to invalidate cpt7_odom.npy from older versions of this step.
+# Bump to invalidate older cpt7_odom.npy.
 CPT7_VERSION = 1
 
 
@@ -47,6 +47,36 @@ def extract_cpt7_odom(mission_dir: pathlib.Path) -> np.ndarray:
     odom[:, 4] = out_quat[:, 3]
     odom[:, 5:8] = out_quat[:, :3]
     return odom[np.argsort(odom[:, 0])]
+
+
+NAVSATFIX_TOPIC = "/boxi/inertial_explorer/tc/navsatfix"
+
+
+def extract_cpt7_navsatfix(mission_dir: pathlib.Path) -> np.ndarray:
+    """N x 5: t, lat, lon, alt (deg, deg, m), position_covariance[0] (m^2).
+
+    Geodetic because ODOM_TOPIC's x,y,z is local to each mission's start and not
+    comparable across missions.
+    """
+    bags = list(mission_dir.glob("*cpt7_ie_tc*.bag"))
+    if not bags:
+        raise FileNotFoundError(f"No *cpt7_ie_tc*.bag in {mission_dir}")
+
+    typestore = get_typestore(Stores.ROS1_NOETIC)
+    rows = []
+    for bag in bags:
+        with Reader(bag) as reader:
+            conns = [c for c in reader.connections if c.topic == NAVSATFIX_TOPIC]
+            for conn, _, raw in reader.messages(conns):
+                msg: Any = typestore.deserialize_ros1(raw, conn.msgtype)
+                t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                rows.append([t, msg.latitude, msg.longitude, msg.altitude,
+                             msg.position_covariance[0]])
+
+    if not rows:
+        raise ValueError(f"No messages on {NAVSATFIX_TOPIC} in {mission_dir}")
+    arr = np.asarray(rows, np.float64)
+    return arr[np.argsort(arr[:, 0])]
 
 
 def extract(mission_dir: pathlib.Path, output_dir: pathlib.Path, force: bool = False) -> None:

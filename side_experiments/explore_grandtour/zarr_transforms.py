@@ -5,19 +5,9 @@ from scipy.interpolate import interp1d
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 
-# This tutorial explains how to convert points and messages between coordinate frames using transformation matrices.
-
-# Notation: We refer to a transform as having a parent frame and a child frame.
-# The transform from parent to child is denoted as T_parent_to_child.
-
-# For example, suppose we have an odometry topic with parent "odom" and child "base".
-# The transform T_odom_to_base is a 4x4 SE3 transformation and allows us to convert a point in homogenous coordinates given in the base frame (p_base) to the odom frame:
-
-# ```p_odom = T_odom_to_base @ p_base```
-
-# Using this notation, you can intuitively chain transforms:
-# To convert from the camera frame to the odom frame:
-# ```T_odom_to_base @ T_base_to_camera = T_odom_to_camera```
+# Notation: T_parent_to_child is a 4x4 SE3 that maps points given in the child frame to the
+# parent frame (p_parent = T_parent_to_child @ p_child). Transforms chain:
+# T_odom_to_base @ T_base_to_camera = T_odom_to_camera
 
 
 def inv(T_parent_to_child):
@@ -50,8 +40,6 @@ def attrs_to_se3(attrs):
     T_parent_to_child = pq_to_se3(
         attrs["transform"]["translation"], attrs["transform"]["rotation"]
     )
-    child = attrs["transform"]["base_frame_id"]
-    parent = attrs["transform"]["child_frame_id"]
     return T_parent_to_child
 
 

@@ -17,8 +17,7 @@ def time_blocks(mission, timestamp, block_s=30.0):
 
 
 def event_ids(mission, timestamp, flag, gap_s=10.0):
-    """Cluster flagged windows into physical events (same mission, gap <= gap_s).
-    Returns per-window event ids (-1 where unflagged) and the event count."""
+    """Cluster flagged windows into events (same mission, gap <= gap_s). Returns ids (-1 unflagged) and count."""
     ids = np.full(len(flag), -1, dtype=np.int64)
     n = 0
     for m in np.unique(mission):
@@ -33,8 +32,7 @@ def event_ids(mission, timestamp, flag, gap_s=10.0):
 
 
 def block_bootstrap(metric_fn, blocks, n_boot=1000, seed=0):
-    """95% percentile CI from resampling whole blocks with replacement.
-    metric_fn maps an index array (into the original windows) to a float."""
+    """95% percentile CI from resampling whole blocks; metric_fn maps window indices to a float."""
     rng = np.random.default_rng(seed)
     uniq = np.unique(blocks)
     members = [np.flatnonzero(blocks == b) for b in uniq]

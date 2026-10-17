@@ -1,4 +1,4 @@
-"""Sanity checks tiers 1-3 (geometry, gradients/labels, robustness) for the GrandTour traversability training pipeline."""
+"""Sanity checks (tiers 1-3: geometry, gradients/labels, robustness) for the training pipeline."""
 
 import bisect
 import os
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import pytorch_lightning as pl
 import torch
-from config.paths import EXTRACTED_ROOT, LABELS_ROOT
+from shared_utils.paths import EXTRACTED_ROOT, LABELS_ROOT
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from torch.utils.data import DataLoader, Subset
@@ -52,7 +52,7 @@ def _mean_trav_error(model, loader, device):
     total, n = 0.0, 0
     for batch in loader:
         batch = [x.to(device) for x in batch]
-        color, depth_voxel, K_full, K, ext, path, target, weights, depth_t, _ = batch
+        color, depth_voxel, K_full, K, ext, path, target, weights, depth_t, _, *_extra = batch
         trav_map, _, _, _ = model.model(color, depth_voxel, K_full, K, ext, depth_t)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)
@@ -116,7 +116,7 @@ def test_path_in_map_coverage():
         f"  in-map steps : {mean_map * 100:.1f}% mean "
         f"({np.min(fracs) * 100:.0f}–{np.max(fracs) * 100:.0f}%)"
     )
-    # diagnostic only, no threshold assert; result informs HORIZON / xbound tuning
+    # diagnostic only, no assert
 
 
 @pytest.mark.tier1
@@ -134,9 +134,9 @@ def test_heading_consistency():
     timestamp = np.load(os.path.join(rhe_dir, "rhe_timestamp.npy")).astype(np.float64)
     odom = np.load(odom_path)
 
-    # Replicate GrandTourDataset orientation slerp
+    # mirrors GrandTourDataset orientation slerp
     t_odom = odom[:, 0]
-    quat_xyzw = odom[:, 4:8]  # dlio_odom.npy stores qx,qy,qz,qw (see extract_dlio.py)
+    quat_xyzw = odom[:, 4:8]
     order = np.argsort(t_odom)
     t_odom, quat_xyzw = t_odom[order], quat_xyzw[order]
     t_odom, uniq = np.unique(t_odom, return_index=True)
@@ -189,7 +189,7 @@ def test_position_consistency():
     order = np.argsort(timestamp)
     timestamp, rhe_states = timestamp[order], rhe_states[order]
 
-    # Replicate GrandTourDataset._interp_odom position interpolation
+    # mirrors GrandTourDataset._interp_odom
     t_odom = odom[:, 0]
     o = np.argsort(t_odom)
     t_odom, pos = t_odom[o], odom[o, 1:3]
@@ -240,7 +240,7 @@ def test_forward_backward_finite():
     opt = torch.optim.AdamW(model.model.parameters(), lr=1e-4)
     opt.zero_grad()
 
-    color, depth_voxel, K_full, K, ext, path, target, weights, depth_t, depth_m = [
+    color, depth_voxel, K_full, K, ext, path, target, weights, depth_t, depth_m, *_extra = [
         x.to(device) for x in batch
     ]
     trav_map, _, pred_depth, _ = model.model(color, depth_voxel, K_full, K, ext, depth_t)
@@ -290,8 +290,7 @@ def test_label_weight_integrity():
     )
     if n_inf > 0:
         print(
-            "  NOTE: empty histogram bins -> inf weights exist. "
-            "No current sample maps to them (narrow label range)."
+            "  NOTE: empty histogram bins give inf weights; no sample maps to them."
         )
 
     assert not np.any(np.isnan(weights)), "NaN in weights"
@@ -350,7 +349,7 @@ def test_velocity_sanity():
 
 @pytest.mark.tier2
 def test_single_sample_overfit():
-    """Model must drive trav_error < 0.05 on 4 samples (structural sanity)."""
+    """Model must drive trav_error < 0.05 on 4 samples."""
     _skip_no_data()
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
@@ -375,7 +374,7 @@ def test_single_sample_overfit():
 
     trainer = pl.Trainer(
         accelerator="gpu",
-        devices=1,  # single GPU: 4-sample dataset can't survive DDP splitting
+        devices=1,  # 4 samples can't be split across DDP ranks
         max_epochs=EPOCHS,
         logger=False,
         enable_checkpointing=False,
@@ -413,8 +412,7 @@ def test_flip_augmentation():
     np.testing.assert_allclose(states_fl[:, 3], states_nf[:, 3], atol=1e-6)  # v
     np.testing.assert_allclose(states_fl[:, 4], -states_nf[:, 4], atol=1e-6)  # ω
 
-    # With pose aug A the labels must be aug(flip(p)), matching the extrinsics
-    # composition A @ flip(E) in __getitem__ (flip FIRST, then aug).
+    # with pose aug A, labels must be aug(flip(p)) (flip first, as in __getitem__)
     theta = 0.3
     A = np.eye(4)
     A[:2, :2] = [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
@@ -425,8 +423,7 @@ def test_flip_augmentation():
     np.testing.assert_allclose(states_fa[:, :2], expected_xy, atol=1e-6)
     np.testing.assert_allclose(states_fa[:, 2], -states_nf[:, 2] + theta, atol=1e-6)
 
-    # Intrinsics: fliplr sends pixel u to (W-1)-u, so cx_flipped = (W-1) - cx.
-    # W is the native depth width (K is native-res).
+    # fliplr sends u to (W-1)-u, so cx_flipped = (W-1) - cx (native depth width)
     depth = cv2.imread(rosbag["depth_image"][data_idx], -1)
     assert depth is not None, f"Cannot read depth: {rosbag['depth_image'][data_idx]}"
     W = depth.shape[1]
@@ -434,8 +431,7 @@ def test_flip_augmentation():
     K_fl = K.copy()
     K_fl[0, 2] = W - 1 - K_fl[0, 2]
 
-    # Extrinsics mirror conjugation: projecting the mirrored path through the
-    # flipped extrinsics must give the exact pixel mirror of the base projection.
+    # mirrored path through flipped extrinsics must give the exact pixel mirror
     c2b = [rosbag["cam2base"][data_idx + t].copy() for t in range(ds.n_frames)]
     ext_nf = ds.get_extrinsics(rosbag, ts, [c.copy() for c in c2b], False)[-1]
     ext_fl = ds.get_extrinsics(rosbag, ts, [c.copy() for c in c2b], True)[-1]

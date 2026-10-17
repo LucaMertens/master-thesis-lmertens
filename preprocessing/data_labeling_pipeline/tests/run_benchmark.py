@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""
-Run benchmark scenarios and generate reports.
-
-Usage:
-uv run python -m tests.run_benchmark
-"""
+"""Run the RHE benchmark scenarios and write reports (uv run python -m tests.run_benchmark)."""
 
 import sys
 from pathlib import Path
 
-# Add parent dir to path so we can import the tests package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.rhe_benchmark import print_summary_table, run_all_scenarios, save_metrics

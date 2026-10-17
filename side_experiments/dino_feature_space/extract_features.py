@@ -1,6 +1,4 @@
-"""Frozen DINOv3 (HF Hub) feature extraction over the whole GrandTour dataset,
-subsampled per mission, tagged with mission/tier for feature-space visualization
-(see plots.ipynb): are ID/near-OOD/far-OOD missions separable in DINO space?"""
+"""Frozen DINOv3 features per GrandTour mission, tagged with OOD tier (see plots.ipynb)."""
 
 import argparse
 import os
@@ -39,8 +37,7 @@ def mission_tiers(cfg):
 
 
 def sample_paths(ds, mission, n_frames, rng):
-    """Evenly-spaced (deterministic given n_frames) subsample of a mission's
-    front_center frames, resolved against RESIZED_ROOT."""
+    """Evenly spaced subsample of a mission's front_center frames."""
     manifest = np.load(os.path.join(ds["DATA_ROOT"], mission, "image_manifest.npz"))
     fc = manifest["front_center"]
     order = np.argsort(fc["ts_ns"])
@@ -61,8 +58,7 @@ def load_dino(name, device):
 
 @torch.no_grad()
 def dino_pooled_features(model, images, patch, num_prefix_tokens, device):
-    """images: (B, 3, H, W) in [0, 1] RGB. Mean-pools patch tokens (drops CLS +
-    register tokens) of the last hidden state -> (B, D)."""
+    """images (B, 3, H, W) RGB in [0, 1] -> (B, D), mean over patch tokens (no CLS/register)."""
     mean = images.new_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
     std = images.new_tensor(IMAGENET_STD).view(1, 3, 1, 1)
     H, W = images.shape[-2:]

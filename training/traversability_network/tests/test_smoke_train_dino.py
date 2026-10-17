@@ -1,4 +1,6 @@
-"""Overfit smoke test for the frozen-DINO backbone; mirrors test_smoke_train_eth1.py with grandtour_dino.yaml (cached features + trainable neck)."""
+"""Overfit smoke test for the frozen-DINO backbone (grandtour_dino.yaml)."""
+
+# ruff: noqa: E402
 
 import os
 import subprocess
@@ -21,6 +23,7 @@ import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader, Subset
 from traversability_network.config import get_cfg
+from traversability_network.adaptations import mission_ids
 from traversability_network.adaptations.grandtour_dataset import GrandTourDataset
 from traversability_network.network.trainer import TrainingModule
 
@@ -31,7 +34,7 @@ CFG = os.path.join(os.path.dirname(__file__), "..", "configs", "grandtour_dino.y
 
 
 class _SilentModule(TrainingModule):
-    """TrainingModule without wandb logging and with a flat LR (see the ETH-1 test)."""
+    """TrainingModule without wandb logging and with a flat LR."""
 
     def visualize(self, *args, **kwargs):
         pass
@@ -79,7 +82,7 @@ def _mean_trav_error(model, loader, device):
     for batch in loader:
         batch = [x.to(device) for x in batch]
         color, pcloud, K_full, K, ext, path, target, weights, depth_t, depth_m, *extra = batch
-        image_feats = extra[0] if extra else None
+        image_feats, _, _ = mission_ids.split(extra, *model.extra_flags)
         trav_map, _, _, _ = model.model(color, pcloud, K_full, K, ext, depth_t, image_feats=image_feats)
         _, error = model.trav_criterion(path, trav_map, target, weights)
         total += float(error)

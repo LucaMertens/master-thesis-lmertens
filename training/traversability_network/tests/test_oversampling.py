@@ -1,4 +1,4 @@
-"""Unit tests for the low-mu oversampler (GrandTourDataset._flagged_windows / _oversampled_indices) on bare object.__new__ instances, no dataset on disk needed."""
+"""Low-mu oversampler tests on bare GrandTourDataset instances (no data on disk)."""
 
 import numpy as np
 import pytest
@@ -17,6 +17,8 @@ def make_ds(rosbags, *, n_frames=1, horizon=5, dt=0.1,
     ds.os_mu_max = mu_max
     ds.os_obs_min = obs_min
     ds.OVERSAMPLE_FRACTION = fraction
+    ds.frame_stride = 1
+    ds.window_stride = 1
     ds.grid_bounds = {"xbound": [-2.0, 8.0, 0.1], "ybound": [-5.0, 5.0, 0.1]}
     ds.bag_sizes = [0]
     for bag in rosbags:
@@ -25,9 +27,7 @@ def make_ds(rosbags, *, n_frames=1, horizon=5, dt=0.1,
 
 
 def make_bag(mu, obs, *, dt=0.1, n_frames=1, position=None):
-    """A bag whose images coincide with its states (one window per state).
-    All states sit at the origin unless position (N, 3) is given, so the
-    spatial in-grid filter passes and the tests exercise the time logic."""
+    """Bag with one window per state, all at the origin unless position (N, 3) is given."""
     mu = np.asarray(mu, float)
     st = np.arange(len(mu)) * dt
     n = len(mu)
@@ -59,23 +59,21 @@ def brute_flags(ds):
 
 def test_flagged_matches_bruteforce():
     mu = np.ones(20)
-    mu[10:15] = 0.3  # low-mu states at t in [1.0, 1.5)
+    mu[10:15] = 0.3
     ds = make_ds([make_bag(mu, np.ones(20))], horizon=5)
     flags = ds._flagged_windows()
     assert np.array_equal(flags, brute_flags(ds))
-    # window at t=1.0 sees the low-mu states; window at t=0.0 (covers [0,0.5)) does not
     assert flags[10] and not flags[0]
 
 
 def test_observability_gate_excludes_unobserved_low_mu():
-    mu = np.full(10, 0.2)  # all low mu
-    observability = np.full(10, 0.1)  # but unobservable -> must not flag
+    mu = np.full(10, 0.2)
+    observability = np.full(10, 0.1)
     ds = make_ds([make_bag(mu, observability)], horizon=5)
     assert not ds._flagged_windows().any()
 
 
 def test_mu_threshold_boundary():
-    # mu exactly at the max qualifies (<=); just above does not
     ds_eq = make_ds([make_bag(np.full(3, 0.6), np.ones(3))], horizon=3)
     ds_gt = make_ds([make_bag(np.full(3, 0.61), np.ones(3))], horizon=3)
     assert ds_eq._flagged_windows().all()
@@ -83,8 +81,7 @@ def test_mu_threshold_boundary():
 
 
 def test_out_of_grid_low_mu_not_flagged():
-    # low-mu state 50m away: temporally inside the horizon of earlier windows
-    # but outside their BEV grid, so only the window anchored on it flags
+    # inside the time horizon of earlier windows but outside their BEV grid
     mu = np.ones(20)
     mu[10] = 0.3
     position = np.zeros((20, 3))
@@ -112,14 +109,13 @@ def _frac_flagged(ds, indices):
 
 def test_oversampled_reaches_target_fraction():
     flags = np.zeros(100, bool)
-    flags[:10] = True  # 10% natural
+    flags[:10] = True
     ds = make_ds([], fraction=0.4)
     ds._flagged_windows = lambda: flags
     idx = ds._oversampled_indices()
-    # kept (90) + n_target where n_target/(90+n_target)=0.4 -> n_target=60
+    # n_target / (90 + n_target) = 0.4 -> n_target = 60
     assert len(idx) == 150
     assert _frac_flagged(ds, idx) == pytest.approx(0.4, abs=0.01)
-    # every non-flagged window appears exactly once
     kept = np.flatnonzero(~flags)
     counts = np.bincount(idx, minlength=100)
     assert np.all(counts[kept] == 1)
@@ -127,11 +123,11 @@ def test_oversampled_reaches_target_fraction():
 
 def test_no_oversampling_when_natural_rate_exceeds_target():
     flags = np.zeros(100, bool)
-    flags[:50] = True  # 50% natural already above the 40% target
+    flags[:50] = True
     ds = make_ds([], fraction=0.4)
     ds._flagged_windows = lambda: flags
     idx = ds._oversampled_indices()
-    assert idx == list(range(100))  # identity, never downsamples
+    assert idx == list(range(100))
 
 
 def test_no_flagged_windows_is_identity():
@@ -162,7 +158,6 @@ def test_higher_fraction_replicates_more():
 
 
 def test_replication_cycles_all_flagged_windows():
-    # resize should cycle through every flagged index, not just the first
     flags = np.zeros(50, bool)
     flags[[3, 7, 41]] = True
     ds = make_ds([], fraction=0.7)

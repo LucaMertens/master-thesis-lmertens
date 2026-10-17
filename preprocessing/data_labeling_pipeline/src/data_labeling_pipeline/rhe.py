@@ -1,3 +1,5 @@
+"""Receding Horizon Estimator for the traversability parameters (mu, nu, delta_theta)."""
+
 import numpy as np
 from scipy.optimize import minimize
 
@@ -20,31 +22,21 @@ def observability(mean, lo=obs_lo, hi=obs_hi):
 
 
 def integrate_route_from_twist(U, dt=0.1, x0=(0.0, 0.0, 0.0)):
-    """Uses an instance of the RHE dynamics model to integrate a route from a sequence of twist commands.
-    U: Sequence of commanded inputs: lin_vel_cmd, yaw_rate_cmd. Shape (N, 2)
-    x0: Initial state: px, py, theta. Shape (3,)
-    """
+    """Integrate a route from twist commands U (N, 2) with perfect parameters, from x0 (px, py, theta)."""
     rhe = RecedingHorizonEstimator(dt=dt, N=U.shape[0])
-    m = (1.0, 1.0, 0.0)  # Assume perfect parameters for integration
+    m = (1.0, 1.0, 0.0)
     return rhe.simulate(x0, U, m)
 
 
 def _normalize_angle(angle):
-    """Normalize angle to be within [-pi, pi]."""
+    """Wrap to [-pi, pi]."""
     return np.arctan2(np.sin(angle), np.cos(angle))
 
 
 class RecedingHorizonEstimator:
-    """Receding Horizon Estimator for traversability parameter estimation.
+    """Unicycle model with slip parameters: x += mu*cos(theta)*v*dt, y += mu*sin(theta)*v*dt, theta += nu*omega*dt.
 
-    Uses a unicycle kinematic model in ENU convention:
-        px_next = px + mu * cos(theta) * v * dt
-        py_next = py + mu * sin(theta) * v * dt
-        theta_next = theta + nu * omega * dt
-
-    All inputs (U, Z) must use a gravity-aligned, right-handed frame (z up,
-    CCW-positive yaw). The GrandTourLoader provides this from dlio odometry, whose
-    map frame is gravity-aligned; the yaw origin is arbitrary and does not matter.
+    U and Z must be in a gravity-aligned, right-handed frame (z up, CCW yaw), as the loader provides.
     """
 
     def __init__(
@@ -72,17 +64,14 @@ class RecedingHorizonEstimator:
         self.prev_m = None
 
     def dynamics(self, state, u, m):
-        """Discrete Kino-Dynamic System Model (Equation 1)."""
+        """Discrete kino-dynamic model (Eq. 1)."""
         px, py, theta = state
         v_cmd, omega_cmd = u
-        # delta_theta is an offset to the measured orientation, so we don't need it here.
+        # delta_theta only offsets the measured orientation
         mu, nu, delta_theta = m
 
         px_next = px + mu * np.cos(theta) * v_cmd * self.dt
         py_next = py + mu * np.sin(theta) * v_cmd * self.dt
-        # if np.isclose(omega, 0):
-        #     theta_next = theta * nu
-        # else:
         theta_next = theta + nu * omega_cmd * self.dt
 
         return np.array([px_next, py_next, theta_next])
@@ -103,19 +92,7 @@ class RecedingHorizonEstimator:
         x_prev: np.ndarray,
         m_prev: np.ndarray,
     ) -> float:
-        """RHE Optimization Formulation (Equation 2).
-
-        Args:
-            optimization_vars (6,): Optimization variables: x_0, m.
-            U (N, 2): Sequence of commanded inputs: v, omega. Passed via the args tuple.
-            Z (N, 3): Sequence of raw sensor measurements: px, py, theta_true. Passed via the args tuple.
-            x_prev (3,): Prior estimate of the initial state: px, py, theta. Passed via the args tuple.
-            m_prev (3,): Prior estimate of the parameters: mu, nu, delta_theta. Passed via the args tuple.
-
-        Returns:
-            float: The total optimization cost.
-        """
-        # The predicted initial pose (px, py, theta) of the robot at the start of the current receding horizon window.
+        """RHE cost (Eq. 2). optimization_vars = [x_0 (3), m (3)], U (N, 2), Z (N, 3), priors x_prev, m_prev."""
         x0 = optimization_vars[0:3]
         m = optimization_vars[3:6]
         mu, nu, d_theta = m
@@ -131,7 +108,7 @@ class RecedingHorizonEstimator:
         X = self.simulate(x0, U, m)  # (N, 3)
 
         Z = Z.copy()
-        # Measurements contain a sensor bias: true_theta = measured_theta - delta_theta
+        # true_theta = measured_theta - delta_theta
         Z[:, 2] = _normalize_angle(Z[:, 2] - d_theta)
 
         diff_Z = X - Z  # (N, 3)
@@ -142,12 +119,10 @@ class RecedingHorizonEstimator:
         v_mean = np.mean(np.abs(U[:, 0]))
         omega_mean = np.mean(np.abs(U[:, 1]))
 
-        # Observability is a smoothstep ramp in the mean excitation.
         mu_observability = observability(v_mean)
         nu_observability = observability(omega_mean)
 
-        # Coupling strength peaks when one parameter is observable and the other isn't.
-        # Tie unobservable param towards observable one (symmetric penalty on mu-nu gap).
+        # Tie strength peaks when only one of mu, nu is observable: pulls the other towards it
         coupling_strength = self.max_tie_strengh * (
             (1.0 - mu_observability) * nu_observability**2
             + (1.0 - nu_observability) * mu_observability**2
@@ -157,17 +132,13 @@ class RecedingHorizonEstimator:
         return cost_x0 + cost_m + cost_measurements + cost_tie
 
     def estimate(self, U, Z, step_size=1):
-        """
-        Run the finite horizon optimization for a single step.
-        U: Commanded inputs of shape (N, 2) [v_k, omega_k]
-        Z: Raw sensor measurements of shape (N, 3) [px, py, theta]
-        """
+        """Optimize one window. U (N, 2) = [v, omega] commands, Z (N, 3) = [px, py, theta] measurements."""
         assert U.shape == (self.N, 2), f"U must have shape ({self.N}, 2)"
         assert Z.shape == (self.N, 3), f"Z must have shape ({self.N}, 3)"
 
         if self.prev_x is None:
             self.prev_x = Z[0].copy()
-            # The initial direction of the robot is taken from the average of the first time window.
+            # Initial heading: mean over the first window
             self.prev_x[2] = np.mean(Z[: self.N, 2])
         if self.prev_m is None:
             self.prev_m = np.array([1.0, 1.0, 0.0])
@@ -185,7 +156,6 @@ class RecedingHorizonEstimator:
             (0.0, 1.0),
             (0.0, 1.0),
             (-np.pi, np.pi),
-            # (0, 0),  # Ignore delta theta for now
         ]
 
         res = minimize(
@@ -211,6 +181,5 @@ class RecedingHorizonEstimator:
         return X_optimized, m_optimized, mu_observability, nu_observability, v_mean, omega_mean
 
     def reset(self):
-        """Reset the estimator state to be able to start a new mission."""
         self.prev_x = None
         self.prev_m = None

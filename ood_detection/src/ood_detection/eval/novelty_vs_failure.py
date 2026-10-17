@@ -10,14 +10,14 @@ import numpy as np
 import pandas as pd
 from scipy.stats import kendalltau, spearmanr
 
-from ood_detection.eval.extended import LOW_MU, N_VISIBLE_MIN
+from ood_detection.eval.extended import LOW_MU, usable
 from ood_detection.eval.grouping import block_bootstrap, event_ids, time_blocks
 from ood_detection.eval.metrics import auroc
 from ood_detection.eval.run import OOD_TIERS, build_detectors, load_tier, score
 from ood_detection.evidential.score import has_evidential
 from ood_detection.temporal.ema import ema_by_mission
 
-FAIL_ERR = 0.15  # "network is wrong": ~3x the median ID error, past the ID 95th pct
+FAIL_ERR = 0.15  # ~3x the median ID error, past the ID 95th percentile
 
 
 def pooled_windows(features_dir):
@@ -46,11 +46,7 @@ def boot_ci(scores, labels, blocks, n_boot, seed=0):
 
 
 def analysis_row(scores, pooled, n_boot):
-    gate = (
-        (pooled["n_visible"] >= N_VISIBLE_MIN)
-        & np.isfinite(pooled["mu_err_mean"])
-        & np.isfinite(scores)
-    )
+    gate = usable(scores, pooled)
     s, err = scores[gate], pooled["mu_err_mean"][gate]
     novel = pooled["novel"][gate]
     wrong = err >= FAIL_ERR

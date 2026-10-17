@@ -1,4 +1,4 @@
-"""Qualitative check of a checkpoint: predicted mu/nu and the labelled path overlaid on the camera image, saved as PNGs per train/valid mission."""
+"""Qualitative checkpoint check: predicted mu/nu and labelled path overlaid on the camera image."""
 import argparse
 import os
 
@@ -8,12 +8,13 @@ import torch
 
 from ..config import get_cfg
 from ..network.trainer import TrainingModule
+from . import mission_ids
 from .grandtour_dataset import GrandTourDataset
 from .overlay import overlay_bev_on_image, overlay_path_on_image
 
 
 def tensor_to_bgr(color_img):
-    """(3, H, W) float [0,1] RGB -> (H, W, 3) uint8 BGR, for cv2 drawing/imwrite."""
+    """(3, H, W) float [0,1] RGB -> (H, W, 3) uint8 BGR."""
     rgb = (color_img.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
@@ -40,7 +41,9 @@ def load_model(cfg_file, checkpoint, device):
 def render_sample(model, batch, device, grid_bounds):
     color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, states, target_trav, trav_weights, depth_target, depth_mask, *extra = batch
     b = tuple(x.unsqueeze(0).to(device) for x in (color_img, depth_voxel, intrinsics_full, intrinsics, extrinsics, depth_target))
-    image_feats = extra[0].unsqueeze(0).to(device) if extra else None
+    image_feats, _, _ = mission_ids.split(extra, *model.extra_flags)
+    if image_feats is not None:
+        image_feats = image_feats.unsqueeze(0).to(device)
     trav_map, _, _, _ = model.model(*b, image_feats=image_feats)
     trav_map = trav_map[0].cpu().numpy()  # (2, Hd, Wd)
 

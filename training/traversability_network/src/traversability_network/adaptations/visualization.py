@@ -1,4 +1,4 @@
-"""Observation-only wandb visualization panels, mixed into TrainingModule (uses its self.model/self.grid_bounds/self.logger)."""
+"""Observation-only wandb visualization panels, mixed into TrainingModule."""
 import cv2
 import numpy as np
 import torch
@@ -6,13 +6,22 @@ import torch.nn.functional as F
 
 from .overlay import colorize_mu, overlay_bev_on_image, overlay_path_on_image
 
-# Path overlay colors (RGB): red line, green start (robot, t=0), white end (horizon).
+# Path colors (RGB): line, start (t=0), end (horizon)
 PATH_LINE = (255, 0, 0)
 PATH_START = (0, 255, 0)
 PATH_END = (255, 255, 255)
 
 
 class VisualizationMixin:
+    def _log_image(self, key, images):
+        """ADAPTATION: skip panels named in TRAINING.VIS_PANELS_SKIP."""
+        if self._vis_skip(key.split("/")[-1]):
+            return
+        self.logger.log_image(key=key, images=images)
+
+    def _vis_skip(self, name):
+        return name in getattr(self, "vis_skip", ())
+
     @torch.no_grad()
     def _voxelize_for_vis(self, color_img, depth_voxel, intrinsics_full, extrinsics):
         """Rebuild the occupancy grid (B, T, Z, X, Y) for visualization only."""
@@ -25,8 +34,7 @@ class VisualizationMixin:
 
     @torch.no_grad()
     def _draw_bev_path(self, rgb, path):
-        """Draw the base-frame path (H, >=2) onto a BEV RGB image (in place).
-        Harvested extras past the horizon slots are scattered points, not path."""
+        """Draw the base-frame path (H, >=2) onto a BEV RGB image in place (harvested extras past the horizon are skipped)."""
         path = path[: self.path_horizon]
         p = path[torch.isfinite(path[:, 0])].cpu().numpy()
         if len(p) == 0:
@@ -40,8 +48,7 @@ class VisualizationMixin:
 
     @torch.no_grad()
     def _bev_overlays(self, bev, path, normalize=False):
-        """Grayscale BEV maps (N,1,X,Y) -> N RGB uint8 tensors with the path drawn on top.
-        The per-sample path (B,H,>=2) is repeated to cover temporal stacks (N = B*T)."""
+        """Grayscale BEV maps (N,1,X,Y) -> RGB uint8 tensors with the path on top (path repeated over T)."""
         bev = bev[:, 0].detach().float().cpu().numpy()
         reps = max(1, bev.shape[0] // path.shape[0])
         overlays = []
@@ -58,8 +65,7 @@ class VisualizationMixin:
 
     @torch.no_grad()
     def _bev_label_overlays(self, trav_map, path, target_trav, trav_weights):
-        """Predicted mu BEV colorized red-green, with each labelled path cell drawn
-        on top in its label color; gated (zero-weight) cells as gray outlines."""
+        """Predicted mu BEV with labelled path cells in label color, gated cells as gray outlines."""
         mu = trav_map[:, 0].detach().float().cpu().numpy()
         out = []
         for b in range(mu.shape[0]):
@@ -106,13 +112,9 @@ class VisualizationMixin:
 
     @staticmethod
     def _ground_plane(path):
-        """Plane z = a*x + b*y + c fitted to the path's ground points near the grid,
-        the surface the BEV grid cells are drawn on. Only points within 10 m enter
-        the fit (the 30 s path can climb far outside the grid and would tilt it),
-        the slope is ridge-regularized against ill-conditioned point layouts, and
-        the plane is clamped to the observed z range so extrapolation to the grid
-        corners cannot leave the terrain. 0.0 (the base origin) when the path has
-        no ground column or no valid points."""
+        """Ridge-fitted plane z = a*x + b*y + c through path ground points within 10 m, clamped to the observed z range.
+
+        Returns (a, b, c, zlo, zhi), or 0.0 without a ground column or valid points."""
         finite = torch.isfinite(path[:, 0])
         if path.shape[1] <= 5 or not finite.any():
             return 0.0
@@ -130,9 +132,7 @@ class VisualizationMixin:
 
     @torch.no_grad()
     def _project_path_to_cam(self, path, K, extrinsics):
-        """Base-frame path (H,>=2) -> anchor-camera pixels (inverse of read_pcloud).
-        State column 5 is the ground height under each state; without it the
-        points would sit at base height, half a meter above the ground."""
+        """Base-frame path (H,>=2) -> anchor-camera pixels; state column 5 is the ground height."""
         p = path[torch.isfinite(path[:, 0])]
         z = p[:, 5] if p.shape[1] > 5 else torch.zeros_like(p[:, 0])
         pts = torch.stack([p[:, 0], p[:, 1], z], 1)
@@ -144,13 +144,13 @@ class VisualizationMixin:
 
     @staticmethod
     def _gray_to_rgb(img):
-        """(1,H,W) float in [0,1] -> (H,W,3) uint8, for combining with BEV/cam overlays."""
+        """(1,H,W) float in [0,1] -> (H,W,3) uint8."""
         arr = (img.squeeze(0).clamp(0, 1) * 255).to(torch.uint8)
         return arr.unsqueeze(-1).expand(-1, -1, 3).contiguous()
 
     @staticmethod
     def _hstack(*overlay_lists, sep=4):
-        """Concatenate matching (H,W,3) uint8 tensors from each list side by side."""
+        """Concatenate (H,W,3) uint8 tensors from each list side by side."""
         combined = []
         for imgs in zip(*overlay_lists):
             h = max(im.shape[0] for im in imgs)
@@ -196,14 +196,12 @@ class VisualizationMixin:
 
     @staticmethod
     def _stride_batch(n, cap):
-        """Evenly-spaced indices into [0, n) capped at `cap`."""
+        """Evenly spaced indices into [0, n), at most `cap`."""
         return np.linspace(0, n - 1, min(cap, n)).round().astype(int)
 
     def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, path, intrinsics, extrinsics, target_trav=None, trav_weights=None, mu_logits=None, depth_voxel=None, intrinsics_full=None, prefix='train'):
-        """Log a batch of training/validation panels to wandb under key prefix."""
-        # Batch elements are 1-frame-apart sliding windows (near-duplicate scenes),
-        # so stride through the batch dim to spread the logged panel across it
-        # instead of showing self.vis_batch_size consecutive near-identical frames.
+        """Log a batch of panels to wandb under key prefix."""
+        # batch elements are near-duplicate sliding windows, so stride through the batch
         B_full, T = image.shape[:2]
         b_idx = self._stride_batch(B_full, self.vis_batch_size)
         flat_idx = (b_idx[:, None] * T + np.arange(T)[None, :]).ravel()
@@ -223,13 +221,14 @@ class VisualizationMixin:
         pred_depth, depth_target, depth_mask, debug = (
             t[flat_idx] for t in (pred_depth, depth_target, depth_mask, debug))
 
-        # Camera input (anchor frame) with the future path projected on top
-        self.logger.log_image(
-            key=prefix + "/images",
-            images=[im.numpy() for im in self._cam_overlays(image, path, intrinsics, extrinsics)],
-        )
+        # anchor frame with projected path
+        if not self._vis_skip("images"):
+            self._log_image(
+                key=prefix + "/images",
+                images=[im.numpy() for im in self._cam_overlays(image, path, intrinsics, extrinsics)],
+            )
 
-        # Predicted mu splatted onto the anchor frame (red = slippery, green = grippy)
+        # predicted mu on the anchor frame
         mu = trav_map[:, 0].detach().float().cpu().numpy()
         mu_cam = []
         for b in range(image.shape[0]):
@@ -243,13 +242,13 @@ class VisualizationMixin:
                 bgr, mu[b], K, ext, self.grid_bounds,
                 ground_z=self._ground_plane(path[b]),
                 depth=depth_m, depth_K=K_full)[..., ::-1]))
-        self.logger.log_image(key=prefix + "/mu_cam", images=mu_cam)
+        self._log_image(key=prefix + "/mu_cam", images=mu_cam)
 
         B, T = image.shape[:2]
 
-        if self.debug_vis_labels and target_trav is not None:
-            # Supervision as the loss sees it: label mu (red-green) at weighted path
-            # cells, gray outlines where the visibility/observability gates zeroed it
+        if self.debug_vis_labels and target_trav is not None and not (
+                self._vis_skip("label_cam") and self._vis_skip("bev_label")):
+            # supervision as the loss sees it (gray = gated)
             label_cam = []
             for b in range(B):
                 bgr = np.ascontiguousarray(self._frame_rgb(image, b, -1)[..., ::-1])
@@ -258,17 +257,14 @@ class VisualizationMixin:
                     trav_weights[b].detach().float().cpu(), intrinsics[b, -1].float().cpu().numpy(),
                     extrinsics[b, -1].float().cpu().numpy(), show_gated=True)
                 label_cam.append(np.ascontiguousarray(out[..., ::-1]))
-            self.logger.log_image(key=prefix + "/label_cam", images=label_cam)
-            # Predicted mu BEV in color with the label cells drawn on top:
+            self._log_image(key=prefix + "/label_cam", images=label_cam)
             # prediction vs supervision in one map
-            self.logger.log_image(
+            self._log_image(
                 key=prefix + "/bev_label",
                 images=self._bev_label_overlays(trav_map, path, target_trav, trav_weights))
 
-        if self.debug_vis_geom:
-            # Path reprojected into every input frame with that frame's own
-            # extrinsics: ego-motion or extrinsics errors show as the path
-            # detaching from the ground in the older frames
+        if self.debug_vis_geom and not self._vis_skip("geom_frames"):
+            # path in every input frame, ego-motion errors show as drift in older frames
             frame_cols = []
             for t in range(T):
                 col = []
@@ -277,33 +273,33 @@ class VisualizationMixin:
                     self._draw_path_on_frame(img, path[b], intrinsics[b, t], extrinsics[b, t])
                     col.append(torch.from_numpy(img))
                 frame_cols.append(col)
-            self.logger.log_image(
+            self._log_image(
                 key=prefix + "/geom_frames",
                 images=[im.numpy() for im in self._hstack(*frame_cols)])
 
-        if self.debug_vis_depth:
-            # Input depth (JET colormap) blended over the anchor frame: checks
-            # depth-RGB alignment, the border crop, and the K scaling
-            self.logger.log_image(
+        if self.debug_vis_depth and not self._vis_skip("depth_cam"):
+            # depth blended over the anchor frame (alignment, border crop, K scaling)
+            self._log_image(
                 key=prefix + "/depth_cam",
                 images=self._depth_cam_overlays(image, depth_target, depth_mask))
 
-        # BEV inputs: point-cloud occupancy density | lift-splat feature density (both sanity checks)
+        # BEV inputs: point-cloud occupancy | lift-splat feature density
         pcloud = torch.mean(pcloud, dim=2).view(-1, 1, *pcloud.shape[3:])
         pcloud_overlays = self._bev_overlays(pcloud, path, normalize=True)
         debug_overlays = self._bev_overlays(torch.sum(debug, dim=1, keepdim=True), path, normalize=True)
-        self.logger.log_image(key=prefix + "/bev_inputs", images=[im.numpy() for im in self._hstack(pcloud_overlays, debug_overlays)])
+        self._log_image(key=prefix + "/bev_inputs", images=[im.numpy() for im in self._hstack(pcloud_overlays, debug_overlays)])
 
-        # BEV outputs: predicted mu | nu (| epistemic uncertainty when evidential)
-        columns = [self._bev_overlays(trav_map[:, :1], path), self._bev_overlays(trav_map[:, 1:], path)]
-        if self.evidential and mu_logits is not None:
-            # NIG variance of the mean, beta / (v * (alpha - 1)); per-image normalized
-            v, alpha, beta = mu_logits[:, 0:1], mu_logits[:, 1:2], mu_logits[:, 2:3]
-            unc = beta / (v * (alpha - 1).clamp_min(self.eps))
-            columns.append(self._bev_overlays(unc, path, normalize=True))
-        self.logger.log_image(key=prefix + "/bev_outputs", images=[im.numpy() for im in self._hstack(*columns)])
+        # BEV outputs: mu | nu (| uncertainty when evidential)
+        if not self._vis_skip("bev_outputs"):
+            columns = [self._bev_overlays(trav_map[:, :1], path), self._bev_overlays(trav_map[:, 1:], path)]
+            if self.evidential and mu_logits is not None:
+                # NIG variance of the mean, beta / (v * (alpha - 1))
+                v, alpha, beta = mu_logits[:, 0:1], mu_logits[:, 1:2], mu_logits[:, 2:3]
+                unc = beta / (v * (alpha - 1).clamp_min(self.eps))
+                columns.append(self._bev_overlays(unc, path, normalize=True))
+            self._log_image(key=prefix + "/bev_outputs", images=[im.numpy() for im in self._hstack(*columns)])
 
-        # Depth (camera frame, no BEV path): predicted | target | validity mask
+        # depth: predicted | target | validity mask
         n_d = (self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0])/self.grid_bounds['dbound'][2]
         depth_pred = torch.argmax(pred_depth, dim=1, keepdim=True)/(n_d-1)
 
@@ -315,4 +311,4 @@ class VisualizationMixin:
         pred_overlays = [self._gray_to_rgb(t) for t in depth_pred.float().cpu()]
         target_overlays = [self._gray_to_rgb(t) for t in depth_target.float().cpu()]
         mask_overlays = [self._gray_to_rgb(t) for t in depth_mask.unsqueeze(1).float().cpu()]
-        self.logger.log_image(key=prefix + "/depth", images=[im.numpy() for im in self._hstack(pred_overlays, target_overlays, mask_overlays)])
+        self._log_image(key=prefix + "/depth", images=[im.numpy() for im in self._hstack(pred_overlays, target_overlays, mask_overlays)])

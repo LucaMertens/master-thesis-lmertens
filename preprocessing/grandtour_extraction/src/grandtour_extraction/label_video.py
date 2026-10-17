@@ -1,11 +1,6 @@
-"""Render a per-mission video: front_center RGB (with depth overlay) next to RHE
-traversability and command graphs.
+"""Render front_center RGB (with depth overlay) next to RHE mu/nu and command graphs.
 
-mu and nu live on separate axes and are only drawn where their observability is
-nonzero. Commands share one axis and break across large timestamp gaps. Graphs
-show the full timeline with a moving cursor; the value at the cursor is printed
-on each axis. Output: OUTPUT_ROOT/label_videos/<mission>_v<version>.mp4
-The version is in the filename so bumping LABEL_VIDEO_VERSION re-renders all missions.
+Output: OUTPUT_ROOT/label_videos/<mission>_v<version>.mp4 (bump LABEL_VIDEO_VERSION to re-render).
 """
 
 import argparse
@@ -20,7 +15,7 @@ from tqdm import tqdm
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from config.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT
+from shared_utils.paths import EXTRACTED_ROOT, LABELS_ROOT, OUTPUT_ROOT
 from data_labeling_pipeline.pipeline_step import log_step
 
 LABEL_VIDEO_VERSION = 2
@@ -116,8 +111,7 @@ def _render_panel(axes_spec, height: int):
     buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
     panel = cv2.cvtColor(buf, cv2.COLOR_RGB2BGR).copy()
 
-    # Precompute linear data->pixel maps so the per-frame path needs no matplotlib
-    # calls (faster, and thread-safe for parallel frame rendering).
+    # Linear data->pixel maps, so per-frame drawing needs no matplotlib calls.
     xlim = mpl_axes[0].get_xlim()
     bb0 = mpl_axes[0].get_window_extent()
     x_slope = (bb0.x1 - bb0.x0) / (xlim[1] - xlim[0])
@@ -260,7 +254,7 @@ def make_video(
     total = len(pngs)
     progress = extracted_dir / "label_video_progress.json"
     progress.write_text(json.dumps({"done": 0, "total": total}))
-    # disable=None turns the bar off when stdout is not a tty (e.g. log files)
+    # disable=None: no bar when stdout is not a tty
     for i, (png, tr) in enumerate(
         tqdm(zip(pngs, t_rel), total=total, desc="label_video", disable=None)
     ):

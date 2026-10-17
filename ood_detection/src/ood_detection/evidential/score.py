@@ -1,8 +1,6 @@
-"""Deep Evidential Regression OOD score: epistemic uncertainty Var[gamma] =
-beta / (v * (alpha - 1)) from the NIG head (training_network...trainer.py
-TrainingModule._evidential_loss), pooled over each window's visible+observable
-path cells during feature extraction. Requires a checkpoint trained with
-MODEL.EVIDENTIAL: True (configs/grandtour_evidential.yaml)."""
+"""Evidential OOD score: epistemic uncertainty beta / (v * (alpha - 1)) of the NIG head.
+
+Needs a checkpoint trained with MODEL.EVIDENTIAL."""
 
 
 def evidential_score(data, rgbonly=False):

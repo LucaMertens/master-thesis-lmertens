@@ -1,5 +1,3 @@
-# FoundationStereo is cloned inside the image at build time -- never send a local
-# copy into the build context.
 FoundationStereo/
 .git/
 __pycache__/

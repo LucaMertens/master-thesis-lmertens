@@ -1,13 +1,6 @@
-"""Cache full-res depth PNGs onto local SSD for the training dataloader.
+"""Re-encode full-res depth PNGs at max zlib compression (lossless) into a local training cache.
 
-Depth stays full resolution (needed for GPU voxelization, see
-traversability_network's TravNet.voxelize), so unlike resize_images.py this
-can't shrink the data by downsampling -- it re-encodes each 16-bit PNG at max
-zlib compression (~19% smaller, bit-exact) into a local root that
-traversability_network.config.DATASET.DEPTH_CACHE_ROOT points at.
-
-Not part of pipeline.py: this is a machine-local training cache derived from
-the canonical extracted/ output, not a step that mutates that output.
+Machine-local cache (DATASET.DEPTH_CACHE_ROOT), not a pipeline.py step.
 """
 
 import argparse
@@ -17,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
-from config.paths import DATALOCAL_ROOT, ensure_datalocal_root
+from shared_utils.paths import DATALOCAL_ROOT, ensure_datalocal_root
 from data_labeling_pipeline.pipeline_step import is_step_done, log_step, write_step_done
 from tqdm import tqdm
 
@@ -27,10 +20,7 @@ _PNG_PARAMS = [cv2.IMWRITE_PNG_COMPRESSION, 9, cv2.IMWRITE_PNG_STRATEGY, cv2.IMW
 
 
 def _recompress_one(src: pathlib.Path, dst: pathlib.Path) -> None:
-    # Runs in a worker thread (cv2 encode/decode release the GIL) and possibly
-    # a concurrent process (train.py's preflight runs per-DDP-rank,
-    # unsynchronized). Write to a PID-unique temp file and atomically rename,
-    # so two writers racing on the same dst can never produce a torn file.
+    # PID-unique temp file + atomic rename: concurrent DDP ranks may write the same dst.
     depth = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
     _, buf = cv2.imencode(".png", depth, _PNG_PARAMS)
     tmp = dst.with_name(f"{dst.name}.tmp{os.getpid()}")

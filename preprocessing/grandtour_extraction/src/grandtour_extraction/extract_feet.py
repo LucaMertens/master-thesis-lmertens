@@ -1,7 +1,6 @@
-"""Writes ground_z.npy (N x 2: t, z): the gravity-aligned offset from the base
-origin down to the ground (~-0.5 m while walking). Feet positions come from
-forward kinematics over the TF chain in the tf_minimal bag; the mean of the
-two lowest feet approximates the stance height.
+"""Write ground_z.npy (N x 2: t, z), the gravity-aligned base-to-ground offset.
+
+Foot positions come from forward kinematics over the tf_minimal TF chain; ground is the mean of the two lowest feet.
 """
 
 import argparse
@@ -20,7 +19,7 @@ LEGS = ("LF", "RF", "LH", "RH")
 JOINT_PARENT = {"HIP": "HAA_drive", "THIGH": "HFE_output", "SHANK": "KFE_drive"}
 SMOOTH_WINDOW = 1.0  # seconds, median filter against swing-leg contamination
 
-# Bump to invalidate ground_z.npy from older versions of this step.
+# Bump to invalidate older ground_z.npy.
 GROUND_Z_VERSION = 1
 
 

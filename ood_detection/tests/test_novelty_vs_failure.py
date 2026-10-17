@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import FAR_TIER
 
 from ood_detection.eval.novelty_vs_failure import (
     FAIL_ERR,
@@ -116,7 +117,7 @@ def test_quadrant_table_hand_case():
 def test_pooled_windows_assembles_novel_label(features_dir):
     sets, pooled = pooled_windows(features_dir)
     names = [t for t, _ in sets]
-    assert names[0] == "id_heldout" and "far_snow" in names
+    assert names[0] == "id_heldout" and FAR_TIER in names
     n_id = len(np.load(os.path.join(features_dir, "id_heldout.npz"))["timestamp"])
     assert (~pooled["novel"]).sum() == n_id
     assert pooled["novel"].sum() == len(pooled["mission"]) - n_id
@@ -136,7 +137,7 @@ def test_main_end_to_end(features_dir):
     finite = aurocs[np.isfinite(aurocs)]
     assert ((finite >= 0) & (finite <= 1)).all()
 
-    # far_snow features are shifted by 3 sigma: mahalanobis must see novelty
+    # the far tier's features are shifted by 3 sigma: mahalanobis must see novelty
     novelty = df.set_index("detector")["auroc_novelty"]
     assert novelty["mahalanobis_wayfaster"] > 0.7
 

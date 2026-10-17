@@ -5,21 +5,20 @@ import torch.nn.functional as F
 
 
 class DinoNeck(nn.Module):
-    """Maps (B*T, feat_dim, h, w) cached DINO patch features to the stride-8
-    encoder output (B*T, C, out_hw) holding depth logits + context channels.
+    """Cached DINO patch features (B*T, feat_dim, h, w) -> encoder output (B*T, C, out_hw).
 
-    Input is L2-normalized per patch vector (over the channel dim). DINOv3 patch features carry the low/high-mu signal in a component
-    that mean-centering (LayerNorm/GroupNorm) or per-dim standardization destroys
-    (probe AUROC drops from 0.85 to ~0.55), while L2-normalization preserves it.
-    A learnable per-channel gain follows, so the projection sees a stable scale.
+    L2 normalization per patch vector, not mean-centering or standardization: those
+    destroy the low/high-mu signal (probe AUROC 0.85 -> ~0.55). ``noise`` perturbs on
+    the unit sphere at train time only.
 
-    Submodule names must not contain "backbone" or "layer" (the trainer's
-    optimizer groups match those to find pretrained params)."""
+    Submodule names must not contain "backbone" or "layer" (trainer optimizer groups
+    match those to find pretrained params)."""
 
-    def __init__(self, C, feat_dim=768, mid_dim=256, out_hw=(45, 60)):
+    def __init__(self, C, feat_dim=768, mid_dim=256, out_hw=(45, 60), noise=0.0):
         super().__init__()
         self.C = C
         self.out_hw = tuple(out_hw)
+        self.noise = noise
         self.gain = nn.Parameter(torch.ones(1, feat_dim, 1, 1))
         self.proj = nn.Sequential(
             nn.Conv2d(feat_dim, mid_dim, kernel_size=1),
@@ -31,7 +30,12 @@ class DinoNeck(nn.Module):
         self.head = nn.Conv2d(mid_dim, C, kernel_size=1)
 
     def forward(self, x):
-        x = F.normalize(x, p=2, dim=1) * self.gain
+        x = F.normalize(x, p=2, dim=1)
+        # stand-in for the colour jitter that cannot reach precomputed features
+        if self.training and self.noise > 0:
+            n = torch.randn_like(x) * (self.noise / x.shape[1] ** 0.5)
+            x = F.normalize(x + n, p=2, dim=1)
+        x = x * self.gain
         x = self.proj(x)
         x = F.interpolate(x, size=self.out_hw, mode="bilinear", align_corners=False)
         return self.head(self.conv(x))

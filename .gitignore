@@ -209,3 +209,5 @@ preprocessing/depth_generation/pretrained_models/
 **/wandb
 
 *.out
+# macOS
+.DS_Store

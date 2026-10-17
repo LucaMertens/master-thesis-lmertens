@@ -10,27 +10,23 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from ood_detection.eval.metrics import auroc
+from ood_detection.eval.fingerprint import pairwise_null_aurocs
 from ood_detection.eval.run import OOD_TIERS, build_detectors, load_tier, score
 from ood_detection.temporal.ema import ema_by_mission
 
 N_VISIBLE_MIN = 10  # mu_* columns are noisy below this (agents/rq3_failure_modes.md)
-# Window-level hazard flag. ood_split.md's per-timestep threshold (0.75) is too
-# loose on the 30s-horizon minimum: 45% of ID windows touch it somewhere. 0.6
-# flags 11% of ID windows, matching the ~9% frame-level low-mu rate.
+# Window-level hazard flag: 0.75 flags 45% of ID windows on the 30 s minimum, 0.6 flags 11%
 LOW_MU = 0.6
 COVERAGE = 0.8      # report risk/recall after dropping the 20% most suspicious
 
 
 def tpr_at_id_quantile(id_scores, ood_scores, q=0.95):
-    """Fraction of OOD caught with the threshold set from ID scores alone (the
-    deployable mirror image of FPR95, which needs OOD scores to set it)."""
+    """Fraction of OOD caught with the threshold set from ID scores alone."""
     return float((ood_scores >= np.quantile(id_scores, q)).mean())
 
 
 def false_alarms_per_minute(scores, mission, timestamp, thresh):
-    """Rising threshold crossings per minute of ID driving, counted per mission.
-    NaN scores never alarm."""
+    """Rising threshold crossings per minute, counted per mission. NaN never alarms."""
     events, minutes = 0, 0.0
     for m in np.unique(mission):
         idx = np.flatnonzero(mission == m)
@@ -41,18 +37,12 @@ def false_alarms_per_minute(scores, mission, timestamp, thresh):
 
 
 def fingerprint_auroc(scores, mission):
-    """Checks whether a detector separates recordings rather than conditions."""
-    ms = np.unique(mission)
-    pairs = [
-        auroc(scores[mission == a], scores[mission == b])
-        for i, a in enumerate(ms) for b in ms[i + 1:]
-    ]
-    return float(np.mean([max(a, 1 - a) for a in pairs]))
+    """Mean folded AUROC between missions: does the detector separate recordings, not conditions."""
+    return float(np.mean(pairwise_null_aurocs(scores, mission)))
 
 
 def risk_coverage(scores, err):
-    """Keep windows from most to least trusted; risk = running mean error of the
-    kept set. Returns (coverage, risk, AURC)."""
+    """Keep windows from most to least trusted; risk = running mean error. Returns (coverage, risk, AURC)."""
     e = err[np.argsort(scores)]
     coverage = np.arange(1, len(e) + 1) / len(e)
     risk = np.cumsum(e) / np.arange(1, len(e) + 1)
@@ -60,17 +50,19 @@ def risk_coverage(scores, err):
 
 
 def hazard_recall_at_coverage(scores, hazard, c=COVERAGE):
-    """Of the true low-mu windows, the fraction landing in the dropped (most
-    suspicious) 1-c. Random dropping scores 1-c; 1.0 catches every hazard."""
+    """Fraction of low-mu windows among the dropped (most suspicious) 1-c. Random gives 1-c."""
     if not hazard.any():
         return float("nan")
     return float((scores[hazard] > np.quantile(scores, c)).mean())
 
 
+def usable(scores, data):
+    return (data["n_visible"] >= N_VISIBLE_MIN) & np.isfinite(data["mu_err_mean"]) & np.isfinite(scores)
+
+
 def risk_block(scores, data):
-    """All label-dependent metrics on one window set, gated to n_visible >=
-    N_VISIBLE_MIN where the mu_* columns are trustworthy."""
-    gate = (data["n_visible"] >= N_VISIBLE_MIN) & np.isfinite(data["mu_err_mean"]) & np.isfinite(scores)
+    """All label-dependent metrics on one window set."""
+    gate = usable(scores, data)
     s, err = scores[gate], data["mu_err_mean"][gate]
     hazard = data["mu_true_min"][gate] <= LOW_MU
     coverage, risk, aurc = risk_coverage(s, err)
@@ -151,7 +143,7 @@ def main():
 
         curves = {}
         for label, s, d in [("id_heldout", s_id, id_heldout), ("id+ood pooled", pooled_scores, pooled)]:
-            gate = (d["n_visible"] >= N_VISIBLE_MIN) & np.isfinite(d["mu_err_mean"]) & np.isfinite(s)
+            gate = usable(s, d)
             coverage, risk, _ = risk_coverage(s[gate], d["mu_err_mean"][gate])
             curves[label] = (coverage, risk)
         plot_risk_coverage(curves, name, os.path.join(out_dir, f"risk_coverage_{name}.png"))

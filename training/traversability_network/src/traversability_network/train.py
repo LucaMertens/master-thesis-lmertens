@@ -15,11 +15,14 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 
+from . import adaptations
 from .adaptations.grandtour_dataset import GrandTourDataset
 from .config import get_cfg
 from .network.trainer import TrainingModule
 
 CKPT_BASE = "/datahome/lmertens/checkpoints"
+# wandb appends its own "wandb/" subdir, so runs land in WANDB_DIR/wandb/run-...
+WANDB_DIR = "/datahome/lmertens"
 
 
 def parse_config():
@@ -27,31 +30,36 @@ def parse_config():
     parser.add_argument(
         "--cfg_file", type=str, default=None, help="path to config yaml"
     )
+    # ADAPTATION: safe in every launch command, starts fresh if the TAG has no run yet
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="WANDB_ID",
+        help="continue this TAG's last run, or the given wandb run id",
+    )
     args = parser.parse_args()
-    return get_cfg(args.cfg_file)
+    return get_cfg(args.cfg_file), args.resume
 
 
 def main():
-    # Checkpoint atomic-save stages to a tempfile then renames into CKPT_BASE.
-    # Default /tmp is a different device, so the rename crosses devices and fails
-    # (Errno 18). Keep the temp on the same fs as the checkpoints.
+    # Atomic checkpoint save renames a tempfile into CKPT_BASE; /tmp is another device (Errno 18)
     ckpt_tmp = os.path.join(CKPT_BASE, ".tmp")
     os.makedirs(ckpt_tmp, exist_ok=True)
     os.environ["TMPDIR"] = ckpt_tmp
     tempfile.tempdir = ckpt_tmp
 
     torch.set_float32_matmul_precision("high")
-    # Fixed input shapes (drop_last) -> let cudnn autotune the conv algorithms.
     torch.backends.cudnn.benchmark = True
     torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
-    configs = parse_config()
+    configs, resume = parse_config()
     print("configs:\n", configs)
 
     pl.seed_everything(configs.SEED, workers=True)
 
     brightness, contrast, saturation, hue = configs.AUGMENTATIONS.COLOR_JITTER
-    # Tensor-mode transforms applied to the stacked (T, C, H, W) window in the
-    # dataloader: parameters are drawn once per window, not per frame.
+    # Applied to the stacked (T, C, H, W) window: one draw per window, not per frame
     steps = [
         transforms.ColorJitter(
             brightness=brightness, contrast=contrast, saturation=saturation, hue=hue
@@ -66,8 +74,7 @@ def main():
         )
     transform = transforms.Compose(steps)
     if getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino":
-        # Photometric augs cannot reach the precomputed frozen features; jittering
-        # only the viz images would misrepresent what the network sees.
+        # Features are precomputed, photometric augs would not reach them
         transform = None
 
     if getattr(configs.DATASET, "NAME", "grandtour") == "wayfaster":
@@ -87,11 +94,11 @@ def main():
             configs, configs.DATASET.VALID_MISSIONS, weights=train_dataset.weights
         )
 
-    # forkserver workers are forked from a single-threaded server started before
-    # any CUDA use, so they sidestep the fork-after-CUDA deadlock that plain fork
-    # hits once sanity validation has initialised CUDA. persistent_workers keeps
-    # them alive across epochs so the cold start (re-import + dataset unpickle) is
-    # paid once, not every epoch.
+    # ADAPTATION: human W-RIZZ pairs (adaptations/human_pairs.py). The sampler keeps both
+    # windows of a pair in one batch; None without HUMAN_WEIGHT.
+    human_sampler = adaptations.attach_human_pairs(configs, train_dataset, valid_dataset)
+
+    # forkserver avoids the fork-after-CUDA deadlock; persistent workers skip the cold start
     workers = configs.TRAINING.WORKERS
     loader_kwargs = dict(
         batch_size=configs.TRAINING.BATCHSIZE,
@@ -101,56 +108,57 @@ def main():
         persistent_workers=workers > 0,
         multiprocessing_context="forkserver" if workers > 0 else None,
     )
-    train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
+    if human_sampler is None:
+        train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
+    else:
+        for key in ("batch_size", "drop_last"):
+            loader_kwargs.pop(key)
+        train_loader = DataLoader(train_dataset, batch_sampler=human_sampler, **loader_kwargs)
+        loader_kwargs.update(batch_size=configs.TRAINING.BATCHSIZE, drop_last=True)
     valid_loader = DataLoader(valid_dataset, shuffle=False, **loader_kwargs)
 
     model = TrainingModule(configs)
 
     if configs.MODEL.LOAD_NETWORK is not None:
         print("Loading saved network from {}".format(configs.MODEL.LOAD_NETWORK))
-        # weights_only=False: our own checkpoints carry EasyDict hparams.
-        # strict=False: older checkpoints lack newer metric buffers (e.g. val_*_vis).
-        pretrained_dict = torch.load(
-            configs.MODEL.LOAD_NETWORK, map_location="cpu", weights_only=False
-        )["state_dict"]
-        # Normalize torch.compile's "._orig_mod" prefix to match this run's keys
-        # (COMPILE can differ between the saved run and this one): strip it, then
-        # re-add it if this run's own model is the one that's compiled.
-        pretrained_dict = {
-            k.replace("._orig_mod", ""): v for k, v in pretrained_dict.items()
-        }
-        own = model.state_dict()
-        if any("._orig_mod" in k for k in own):
-            pretrained_dict = {
-                k.replace("model.", "model._orig_mod.", 1)
-                if k.startswith("model.")
-                else k: v
-                for k, v in pretrained_dict.items()
-            }
-        # Warm start across head changes (e.g. plain -> evidential/binned mu head):
-        # drop shape-mismatched keys so the new head keeps its fresh init, since
-        # load_state_dict raises on those regardless of strict=False.
-        mismatched = [
-            k
-            for k, v in pretrained_dict.items()
-            if k in own and own[k].shape != v.shape
-        ]
-        for k in mismatched:
-            del pretrained_dict[k]
-        if mismatched:
-            print(f"  dropped {len(mismatched)} shape-mismatched keys: {mismatched}")
-        missing, unexpected = model.load_state_dict(pretrained_dict, strict=False)
-        if missing or unexpected:
-            print(f"  non-strict load: missing={missing} unexpected={unexpected}")
+        # ADAPTATION: see adaptations/checkpoint.py
+        adaptations.load_pretrained(model, configs.MODEL.LOAD_NETWORK)
+
+    # ADAPTATION: WANDB_RESUME_ID appends a continued run to its original history
+    resume_id = getattr(configs.TRAINING, "WANDB_RESUME_ID", None)
+    resume_ckpt = configs.MODEL.RESUME_CHECKPOINT
+    # ADAPTATION: --resume looks up wandb id and last.ckpt from the TAG; config keys win.
+    # Must not use wandb_logger.experiment.id (rank-0 only), all ranks need the same ckpt_path.
+    if resume is not None:
+        found_id, found_ckpt = adaptations.lookup_run(
+            CKPT_BASE, configs.TAG, None if resume is True else resume
+        )
+        resume_id = resume_id or found_id
+        resume_ckpt = resume_ckpt or found_ckpt
+        print(f"resume: wandb id {resume_id}, checkpoint {resume_ckpt}")
 
     wandb_logger = WandbLogger(
-        project="master-thesis-lmertens", log_model=False, save_code=True
+        project="master-thesis-lmertens", name=configs.TAG,
+        save_dir=WANDB_DIR,
+        log_model=False, save_code=True,
+        **({"id": resume_id, "resume": "must"} if resume_id else {}),
+        notes=configs.DESCRIPTION or None,
     )
 
-    # Persist the exact uncommitted diff so a run is reproducible even without a
-    # commit; wandb records the commit hash but its auto diff.patch comes back empty.
     from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
+    # ADAPTATION: TAG -> wandb id, for --resume
+    if rank_zero_only.rank == 0:
+        adaptations.record_run(CKPT_BASE, configs.TAG, wandb_logger.experiment.id)
+
+    # ADAPTATION: log per-split mu statistics to wandb
+    if rank_zero_only.rank == 0:
+        for name, ds in (("train", train_dataset), ("valid", valid_dataset)):
+            stats = adaptations.dataset_stats(ds)
+            print(adaptations.format_stats(name, stats))
+            adaptations.log_stats(wandb_logger, name, stats)
+
+    # Save the uncommitted diff; wandb's own diff.patch comes back empty
     if rank_zero_only.rank == 0:
         import subprocess
 
@@ -168,52 +176,70 @@ def main():
         except Exception as e:
             print(f"git diff capture failed: {e}")
 
+    run_dir = f"{CKPT_BASE}/{wandb_logger.experiment.id}"
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",
+        dirpath=run_dir,
         filename="checkpoint_{epoch}-{step}",
-        monitor="valid/loss",
-        save_last=True,
-        save_top_k=-1,  # Save every nth checkpoint, do not check for best.
-        every_n_epochs=5,  # Save every 5 epochs
+        save_top_k=-1,
+        every_n_epochs=configs.TRAINING.CHECKPOINT_EVERY_N_EPOCHS,
+        # ADAPTATION: epoch end only, else sub-epoch validation writes duplicate checkpoints
+        save_on_train_epoch_end=True,
     )
+    # ADAPTATION: rolling last.ckpt for --resume (adaptations/resume.py)
+    resume_callback = adaptations.ResumeCheckpoint(run_dir)
+    # ADAPTATION: select on CKPT_MONITOR, not valid/loss (dominated by high-mu cells)
     best_callback = ModelCheckpoint(
-        dirpath=f"{CKPT_BASE}/{wandb_logger.experiment.id}",
+        dirpath=run_dir,
         filename="best_{epoch}-{step}",
-        monitor="valid/loss",
-        mode="min",
+        monitor=configs.TRAINING.CKPT_MONITOR,
+        mode=configs.TRAINING.CKPT_MODE,
         save_top_k=1,
+        save_weights_only=True,
     )
-    # balanced_mae rewards hedging toward the mean, not a useful early-stop signal.
     lr_monitor = LearningRateMonitor(logging_interval="step")
+    # ADAPTATION: archive checkpoints on a validation schedule (adaptations/archive.py)
+    every_n_val = configs.TRAINING.CHECKPOINT_EVERY_N_VALIDATIONS
+    val_callbacks = []
+    if every_n_val:
+        val_callbacks.append(adaptations.ArchiveCheckpoints(
+            run_dir, configs.TRAINING.CHECKPOINT_DENSE_EPOCHS, every_n_val
+        ))
 
     trainer = pl.Trainer(
         devices=configs.TRAINING.DEVICES,
         num_nodes=1,
         gradient_clip_val=10,
+        # ADAPTATION: larger effective batch without more VRAM
+        accumulate_grad_batches=configs.TRAINING.ACCUMULATE_GRAD_BATCHES,
         sync_batchnorm=True,
         enable_model_summary=True,
         accelerator="gpu",
         logger=wandb_logger,
         default_root_dir=CKPT_BASE,
         max_epochs=configs.TRAINING.EPOCHS,
-        min_epochs=20,
+        min_epochs=1,
         check_val_every_n_epoch=1,
+        # ADAPTATION: sub-epoch validation, best low-mu transfer is reached within epoch 1
+        val_check_interval=configs.TRAINING.VAL_CHECK_INTERVAL,
         precision=configs.TRAINING.PRECISION,
         strategy=DDPStrategy(find_unused_parameters=False),
+        # ADAPTATION: the human batch sampler cannot be wrapped in a DistributedSampler
+        use_distributed_sampler=human_sampler is None,
         callbacks=[
             checkpoint_callback,
+            resume_callback,
             best_callback,
             lr_monitor,
             RichProgressBar(leave=True),
-        ],
+        ] + val_callbacks,
     )
 
-    # weights_only=False: our own checkpoints carry EasyDict hparams (see LOAD_NETWORK above).
+    # weights_only=False: our checkpoints carry EasyDict hparams
     trainer.fit(
         model,
         train_loader,
         valid_loader,
-        ckpt_path=configs.MODEL.RESUME_CHECKPOINT,
+        ckpt_path=resume_ckpt,
         weights_only=False,
     )
 

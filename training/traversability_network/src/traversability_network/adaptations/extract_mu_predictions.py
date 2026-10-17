@@ -8,13 +8,14 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
+from . import checkpoint, mission_ids
 from .grandtour_dataset import GrandTourDataset
 from ..network.trainer import TrainingModule
 
 
 def load_from_checkpoint(path, device):
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    configs = ckpt["hyper_parameters"]["configs"]
+    configs = checkpoint.fill_defaults(ckpt["hyper_parameters"]["configs"])
     configs.TRAINING.COMPILE = False
     model = TrainingModule(configs)
     state_dict = {k.replace("._orig_mod", ""): v for k, v in ckpt["state_dict"].items()}
@@ -25,8 +26,9 @@ def load_from_checkpoint(path, device):
 
 
 @torch.no_grad()
-def run_mission(configs, model, mission, device, batch_size, workers, stride, dump_features):
-    ds = GrandTourDataset(configs, [mission], train=False)
+def run_mission(configs, model, mission, device, batch_size, workers, stride, dump_features,
+                time_ranges=None):
+    ds = GrandTourDataset(configs, [mission], train=False, time_ranges=time_ranges)
     if len(ds) == 0:
         return None
     if stride > 1:
@@ -42,7 +44,7 @@ def run_mission(configs, model, mission, device, batch_size, workers, stride, du
         color, depth_voxel, K_full, K, ext, states, target_trav, trav_weights, depth_target, _, *extra = (
             x.to(device) for x in batch
         )
-        image_feats = extra[0] if extra else None
+        image_feats, _, _ = mission_ids.split(extra, *mission_ids.flags(configs))
         trav_map, mu_logits, _, _ = model.model(color, depth_voxel, K_full, K, ext, depth_target, image_feats=image_feats)
         pred, mask = model._sample_path(states, trav_map)
         mask = mask.bool() & (trav_weights[..., 0] > 0)
@@ -75,11 +77,15 @@ def main():
     configs, model = load_from_checkpoint(args.checkpoint, device)
 
     out = {}
-    splits = [("train", configs.DATASET.TRAIN_MISSIONS, args.train_stride),
-              ("valid", configs.DATASET.VALID_MISSIONS, 1)]
-    for split, missions, stride in splits:
+    # train=False everywhere, so time ranges are passed explicitly
+    splits = [("train", configs.DATASET.TRAIN_MISSIONS, args.train_stride,
+               getattr(configs.DATASET, "TRAIN_TIME_RANGES", None) or {}),
+              ("valid", configs.DATASET.VALID_MISSIONS, 1,
+               getattr(configs.DATASET, "VALID_TIME_RANGES", None) or {})]
+    for split, missions, stride, ranges in splits:
         for mission in tqdm(missions, desc=split):
-            res = run_mission(configs, model, mission, device, args.batch_size, args.workers, stride, args.dump_features)
+            res = run_mission(configs, model, mission, device, args.batch_size, args.workers, stride,
+                              args.dump_features, ranges)
             if res is None:
                 continue
             n = len(res["pred_mu"])

@@ -6,17 +6,14 @@ import pathlib
 import shutil
 import subprocess
 
-from config.paths import EXTRACTED_ROOT
+from shared_utils.paths import EXTRACTED_ROOT
 
 DEPTH_REPO = pathlib.Path(__file__).parent
 
 
 def run_depth(missions: list[str], output_root, gpus: str = "all",
               depth_repo=DEPTH_REPO, force: bool = False) -> dict[str, str]:
-    """Process all `missions` in a single container, one GPU per mission at a time.
-
-    Returns a dict of {mission: error} for missions that failed inside the container.
-    """
+    """Run all missions in one container; returns {mission: error} for failures."""
     depth_repo = pathlib.Path(depth_repo)
     run_sh = depth_repo / "run.sh"
     if shutil.which("docker") is None:

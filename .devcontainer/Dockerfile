@@ -19,6 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ssh \
     vim \
     tmux \
+    cron \
+    jq \
     htop \
     nvtop \
     fish \
@@ -53,6 +55,16 @@ COPY --chown=${USERNAME}:${USERNAME} config/.tmux.conf /home/${USERNAME}/.tmux.c
 # Copy fish tmux shortcuts
 COPY --chown=${USERNAME}:${USERNAME} config/tmux.fish /home/${USERNAME}/.config/fish/conf.d/tmux.fish
 
+# tmux/claude session snapshot + restore scripts
+COPY --chown=${USERNAME}:${USERNAME} config/tmux-claude-save.sh /home/${USERNAME}/.local/bin/tmux-claude-save.sh
+COPY --chown=${USERNAME}:${USERNAME} config/tmux-claude-restore.sh /home/${USERNAME}/.local/bin/tmux-claude-restore.sh
+RUN chmod +x /home/${USERNAME}/.local/bin/tmux-claude-save.sh /home/${USERNAME}/.local/bin/tmux-claude-restore.sh
+
+# Cron entry to snapshot tmux/claude sessions every 5 minutes. The save script
+# itself also guards on /.dockerenv, so this is a no-op if ever run outside a container.
+RUN echo "*/5 * * * * ${USERNAME} /home/${USERNAME}/.local/bin/tmux-claude-save.sh > /home/${USERNAME}/.claude/tmux-save.log 2>&1" > /etc/cron.d/tmux-claude-save \
+    && chmod 0644 /etc/cron.d/tmux-claude-save
+
 # Install the Antigravity Jupyter Notebook MCP server system-wide via pip
 RUN pip3 install --no-cache-dir \
     git+https://github.com/Ian747-tw/Antigravity-Jupiter-Notebook-MCP.git \
@@ -61,6 +73,9 @@ RUN pip3 install --no-cache-dir \
 
 # Set DEBIAN_FRONTEND back to dialog
 ARG DEBIAN_FRONTEND=dialog
+
+# Keep npm globals in the user home.
+ENV NPM_CONFIG_PREFIX="/home/${USERNAME}/.local"
 
 USER ${USERNAME}
 

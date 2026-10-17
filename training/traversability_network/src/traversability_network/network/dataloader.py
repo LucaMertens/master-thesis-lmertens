@@ -54,10 +54,14 @@ class Dataset(DataLoader.Dataset):
         self.occlusion_gate = getattr(configs.DATASET, "OCCLUSION_GATE", False)
         self.harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
         self.harvest_time_window = getattr(configs.DATASET, "HARVEST_TIME_WINDOW", 0.0)
+        # ADAPTATION: temporal sampling of the input window (see adaptations/sampling.py)
+        self.frame_stride = getattr(configs.DATASET, "FRAME_STRIDE", 1)
+        self.window_stride = getattr(configs.DATASET, "WINDOW_STRIDE", 1)
 
         self.bin_width = 0.1
         self.dtype = torch.float32
         self.use_dino_cache = False  # GrandTourDataset enables this in DINO mode
+        self.emit_mission_id = False  # GrandTourDataset enables this, missions are its concept
 
         self.map_size = (
             int(
@@ -93,14 +97,12 @@ class Dataset(DataLoader.Dataset):
                     adaptations.attach_dino_cache(formatted_data, configs.DATASET.DINO_CACHE_ROOT, bag[0])
                     self.use_dino_cache = True
                 # Append to the list of rosbag data
-                if len(formatted_data["image_timestamp"]) >= self.n_frames:
+                n_windows = adaptations.window_count(
+                    len(formatted_data["image_timestamp"]), self.n_frames, self.frame_stride
+                )
+                if n_windows > 0:
                     self.rosbags.append(formatted_data)
-                    self.bag_sizes.append(
-                        self.bag_sizes[-1]
-                        + len(formatted_data["image_timestamp"])
-                        - self.n_frames
-                        + 1
-                    )
+                    self.bag_sizes.append(self.bag_sizes[-1] + n_windows)
 
         if weights is None:
             # Get dataset statistics
@@ -109,9 +111,19 @@ class Dataset(DataLoader.Dataset):
             self.weights = weights
             self.bins = np.linspace(0, 1, int(1 / self.bin_width) + 1)
 
-        # Flat list of physical window indices (identity here; subclasses may
-        # replicate entries to oversample, see GrandTourDataset).
-        self.indices = list(range(self.bag_sizes[-1]))
+        # Flat list of physical window indices (subclasses may replicate entries
+        # to oversample, see GrandTourDataset).
+        # ADAPTATION: WINDOW_STRIDE thins near-duplicate overlapping windows.
+        self.indices = adaptations.strided_indices(self.bag_sizes, self.window_stride)
+
+        # ADAPTATION: data-amount ablation, deterministic train-only subsample.
+        seed = getattr(configs.DATASET, "TRAIN_SUBSET_SEED", 0)
+        frac = getattr(configs.DATASET, "TRAIN_FRACTION", 1.0)
+        if self.train and frac < 1.0:
+            self.indices = adaptations.subsample_indices(self.indices, frac, seed)
+        rec_frac = getattr(configs.DATASET, "TRAIN_RECORDING_FRACTION", 1.0)
+        if self.train and rec_frac < 1.0:
+            self.indices = adaptations.keep_recording_indices(self.bag_sizes, rec_frac, seed)
 
         if self.verbose:
             print("weights:", self.weights)
@@ -148,6 +160,8 @@ class Dataset(DataLoader.Dataset):
         rosbag_dict = self.rosbags[bag_idx]
         # Get sequence index inside the rosbag
         data_idx = idx - self.bag_sizes[bag_idx]
+        # ADAPTATION: per-mission FRAME_STRIDE (adaptations/grandtour_dataset.py)
+        frame_stride = rosbag_dict.get("frame_stride", self.frame_stride)
 
         # Augment with horizontal flip
         if self.train:
@@ -163,26 +177,28 @@ class Dataset(DataLoader.Dataset):
         intrinsics_list = []
         cam2base_list = []
         for t in range(self.n_frames):
-            # Get current data
-            image_timestamp = rosbag_dict["image_timestamp"][data_idx + t].copy()
-            color_fname = rosbag_dict["color_image"][data_idx + t]
-            depth_fname = rosbag_dict["depth_image"][data_idx + t]
+            # Get current data. ADAPTATION: FRAME_STRIDE spaces the stacked frames out
+            f = data_idx + t * frame_stride
+            image_timestamp = rosbag_dict["image_timestamp"][f].copy()
+            color_fname = rosbag_dict["color_image"][f]
+            depth_fname = rosbag_dict["depth_image"][f]
             # pcloud_fname = rosbag_dict['point_cloud'][data_idx].copy()
-            intrinsics = rosbag_dict["intrinsics"][data_idx + t].copy()
-            cam2base = rosbag_dict["cam2base"][data_idx + t].copy()
+            intrinsics = rosbag_dict["intrinsics"][f].copy()
+            cam2base = rosbag_dict["cam2base"][f].copy()
 
-            # Read RGB data
-            color_img = cv2.imread(color_fname, -1)
+            # Read RGB data. ADAPTATION: raw .npy sidecar instead of PNG decode when
+            # DATASET.NPY_SIDECARS (see adaptations/npy_cache.py)
+            sidecars = getattr(self, "use_npy_sidecars", True)
+            color_img = adaptations.imread(color_fname, sidecars)
             color_img = cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB)
             # Read depth data
-            depth_img = cv2.imread(depth_fname, -1)
+            depth_img = adaptations.imread(depth_fname, sidecars)
             # lidar_img = cv2.imread(lidar_fname, -1)
 
             if horizontal_flip:
                 color_img = np.fliplr(color_img).copy()
                 depth_img = np.fliplr(depth_img).copy()
-                # K is native-res; depth stays native even when color is pre-resized.
-                # fliplr sends pixel u to (W - 1) - u.
+                # K is native-res (depth stays native), fliplr maps u to (W - 1) - u
                 intrinsics[0, 2] = depth_img.shape[1] - 1 - intrinsics[0, 2]
 
             image_timestamp_list.append(image_timestamp)
@@ -198,12 +214,8 @@ class Dataset(DataLoader.Dataset):
         extrinsics_list = self.get_extrinsics(
             rosbag_dict, image_timestamp_list, cam2base_list, horizontal_flip
         )
-        # Apply augmentation as the outermost transform on the BEV-frame extrinsics,
-        # matching how get_states augments label positions (aug_R @ p_anchor + aug_t).
-        # Baking aug into cam2base instead (pre-get_extrinsics) would sandwich it
-        # between the body pitch/roll and yaw/position transforms, which only agrees
-        # with the label-side augmentation when those are identity/commuting -- false
-        # in general for a legged robot on uneven terrain.
+        # Augment the BEV-frame extrinsics outermost, matching the label-side augmentation.
+        # Baking it into cam2base would not commute with body pitch/roll on a legged robot.
         extrinsics_list = [aug_transformation @ e for e in extrinsics_list]
         # Clean full-res depth + intrinsics for GPU voxelization (grid built in the model)
         depth_voxel, intrinsics_full = self.read_pcloud(
@@ -215,8 +227,7 @@ class Dataset(DataLoader.Dataset):
         for t in range(self.n_frames):
             color_img = color_img_list[t]
             depth_img = depth_img_list[t]
-            # Scale K from native to input resolution. Depth is always native-res
-            # (needed for the GPU voxelization), color may already be pre-resized.
+            # Scale K to input resolution (depth is always native-res)
             intrinsics_list[t][:1] *= self.image_size[0] / depth_img.shape[1]
             intrinsics_list[t][1:2] *= self.image_size[1] / depth_img.shape[0]
             if (color_img.shape[1], color_img.shape[0]) != tuple(self.image_size):
@@ -278,8 +289,7 @@ class Dataset(DataLoader.Dataset):
                     (depth_target.flatten(), xs.flatten(), ys.flatten()), -1
                 )
 
-                # Create empty frustum voxel (do not reuse the depth_voxel name:
-                # it would clobber the cleaned depth stack returned above)
+                # Not named depth_voxel: that would clobber the depth stack returned above
                 frustum = np.zeros((n_d, fH, fW))
                 # Filter undesirable values
                 idxs = (points[:, 0] >= 0) & (points[:, 0] <= n_d - 1)
@@ -309,9 +319,7 @@ class Dataset(DataLoader.Dataset):
 
         # Because we have a single camera
         color_img = torch.stack(color_img_list)
-        # One transform call on the whole (T, C, H, W) stack: jitter parameters are
-        # sampled once, so all frames of a window get the same photometric change
-        # instead of flickering frame to frame.
+        # One call on the (T, C, H, W) stack: same jitter for all frames of a window
         if self.transform is not None:
             color_img = self.transform(color_img)
         intrinsics = np.stack(intrinsics_list)
@@ -358,8 +366,19 @@ class Dataset(DataLoader.Dataset):
         )
         if self.use_dino_cache:
             # ADAPTATION: frozen-DINO feature cache (see adaptations/dino_cache.py)
-            feats = adaptations.read_dino_feats(rosbag_dict, data_idx, self.n_frames, horizontal_flip)
+            feats = adaptations.read_dino_feats(
+                rosbag_dict, data_idx, self.n_frames, horizontal_flip, frame_stride
+            )
             out = out + (feats,)
+        # ADAPTATION: mission index for per-mission validation metrics
+        # (see adaptations/mission_ids.py, which owns this order)
+        if self.emit_mission_id:
+            out = out + (adaptations.emit_mission_id(rosbag_dict),)
+        # ADAPTATION: human W-RIZZ pair supervision, always last
+        # (see adaptations/human_pairs.py)
+        if getattr(self, "human", None) is not None:
+            out = out + (self.human.emit(
+                bag_idx, data_idx, aug_transformation, horizontal_flip),)
         return out
 
     def read_data(self, states_data, images_data, curr_dir):
@@ -387,7 +406,7 @@ class Dataset(DataLoader.Dataset):
         action_list = []
         trav_list = []
 
-        map_float = lambda x: np.array(list(map(float, x)))
+        map_float = lambda x: np.array(list(map(float, x)))  # noqa: E731
 
         # ADAPTATION: resized-image / depth-cache root fallback (see adaptations/paths.py)
         img_root, depth_root = adaptations.resolve_media_roots(
@@ -426,9 +445,11 @@ class Dataset(DataLoader.Dataset):
             # Read linear control action
             position = position[1:-1].split()
             position = map_float(position)
-            # Read orientation quaternion (x, y, z, w; used as-is by get_states/get_extrinsics)
+            # Read orientation quaternion. ADAPTATION: the CSV stores it w,x,y,z;
+            # reorder to x,y,z,w (scipy convention) so get_states/get_extrinsics use
+            # it as-is. GrandTour's own loader already stores x,y,z,w.
             quaternion = quaternion[1:-1].split()
-            quaternion = map_float(quaternion)
+            quaternion = adaptations.wayfaster_quat_to_xyzw(map_float(quaternion))
             # Read control action
             action = action[1:-1].split()
             action = map_float(action)
@@ -465,10 +486,11 @@ class Dataset(DataLoader.Dataset):
             "intrinsics": intrinsics_list,
             "cam2base": cam2base_list,
             "states_timestamp": states_timestamp_list,
-            "position": position_list,
-            "quaternion": quaternion_list,
-            "action": action_list,
-            "traversability": trav_list,
+            # ndarrays, not lists: np.asarray per sample was ~70% of dataloader time
+            "position": np.asarray(position_list),
+            "quaternion": np.asarray(quaternion_list),
+            "action": np.asarray(action_list),
+            "traversability": np.asarray(trav_list),
             # The CSV labels have no RHE observability gates: fully observable.
             "mu_observability": np.ones(len(states_timestamp_list)),
             "nu_observability": np.ones(len(states_timestamp_list)),
@@ -673,9 +695,7 @@ class Dataset(DataLoader.Dataset):
             label[:, 1], bins=int(1 / self.bin_width), range=(0, 1), density=True
         )
 
-        # Smooth out the distribution using a Gaussian kernel. ~0.075 mu span: finer
-        # than the old 0.2 (keeps low-mu resolution) but wide enough that a lone rare
-        # bin does not blow up its 1/density weight.
+        # Smooth the distribution so a lone rare bin does not blow up its 1/density weight
         values = gaussian_filter1d(
             values, sigma=0.2 / self.bin_width, axis=0, mode="constant"
         )

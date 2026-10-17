@@ -13,7 +13,7 @@ dependencies = [
     "rosbags>=0.11.2",
     "tqdm",
     "data_labeling_pipeline",
-    "config",
+    "shared-utils",
 ]
 
 [build-system]
@@ -25,4 +25,4 @@ packages = ["src/grandtour_extraction"]
 
 [tool.uv.sources]
 data_labeling_pipeline = { workspace = true }
-config = { workspace = true }
+shared-utils = { workspace = true }

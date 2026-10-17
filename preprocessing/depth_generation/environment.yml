@@ -4,11 +4,11 @@
 # torch==2.4.1 from PyPI (CUDA 12.1 runtime), which differs from the cu124 wheels
 # the Dockerfile installs. The Docker build does NOT consume this file.
 #
-# Use it only for optional local (non-Docker) conda dev, e.g.:
+# Only for optional local (non-Docker) conda dev use, e.g.:
 #   conda env create -f environment.yml
 #   conda activate foundation_stereo
 #   pip install flash-attn --no-build-isolation
-# For a setup that matches the image exactly, follow the cu124 pip steps in the
+# For a setup that matches the image exactly, use the cu124 pip steps in the
 # Dockerfile / README instead.
 name: foundation_stereo
 channels:

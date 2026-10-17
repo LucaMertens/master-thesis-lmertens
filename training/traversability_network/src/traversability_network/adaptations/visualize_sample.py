@@ -1,4 +1,4 @@
-"""Sanity overlay: renders per-anchor-frame depth, future path and BEV occupancy, reusing the dataset's get_states/get_extrinsics/read_pcloud."""
+"""Sanity overlay of per-anchor-frame depth, future path and BEV occupancy."""
 
 import argparse
 import bisect
@@ -53,8 +53,7 @@ def _occupancy(ds, depths, K_list, extr, scale):
             K2[:2] *= scale
             ds_K.append(K2)
         depths, K_list = ds_depths, ds_K
-    # GrandTourDataset.read_pcloud now builds the grid GPU-side (see TravNet.voxelize)
-    # and returns (depth, K) instead; use the base class's CPU grid for this sanity view.
+    # GrandTourDataset.read_pcloud is GPU-side now, use the base class CPU grid
     grid = Dataset.read_pcloud(ds, depths, K_list, extr)  # (n_frames, Z, X, Y)
     return grid.max(axis=0)  # (Z, X, Y)
 

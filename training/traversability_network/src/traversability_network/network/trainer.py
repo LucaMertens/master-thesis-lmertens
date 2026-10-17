@@ -31,34 +31,29 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         # Get training params
         self.eps = 1e-6
         gamma = torch.tensor([configs.TRAINING.GAMMA**i for i in range(configs.TRAINING.HORIZON)])
-        # Harvested low-mu extras sit past the horizon slots; they are visible
-        # in-grid cells, so no temporal discount.
+        # Harvested low-mu extras sit past the horizon: no temporal discount
         self.path_horizon = configs.TRAINING.HORIZON
         harvest_extra = getattr(configs.DATASET, "HARVEST_LOWMU_EXTRA", 0)
         if harvest_extra:
             gamma = torch.cat([gamma, torch.ones(harvest_extra)])
         self.gamma = nn.Parameter(gamma, requires_grad=False)
-        # Mu loss selector. LOSS_TYPE, when set, is authoritative; otherwise the loss
-        # is inferred from the legacy MU_BINS/BMC_SIGMA_INIT/EVIDENTIAL flags.
+        # Mu loss selector. Unset (None) means plain regression.
         mu_bins = getattr(configs.MODEL, "MU_BINS", 0)
         bmc_init = getattr(configs.TRAINING, "BMC_SIGMA_INIT", 0.0)
-        evidential = getattr(configs.MODEL, "EVIDENTIAL", False)
-        loss_type = getattr(configs.TRAINING, "LOSS_TYPE", None)
-        if loss_type is not None:
-            valid = {"regression", "bmc", "binned_ce", "class3", "evidential"}
-            assert loss_type in valid, f"LOSS_TYPE must be one of {valid}, got {loss_type!r}"
-            if loss_type == "bmc":
-                assert bmc_init > 0, "LOSS_TYPE=bmc needs TRAINING.BMC_SIGMA_INIT > 0"
-            else:
-                bmc_init = 0.0
-            if loss_type in ("binned_ce", "class3"):
-                assert mu_bins > 0, f"LOSS_TYPE={loss_type} needs MODEL.MU_BINS > 0"
-            else:
-                mu_bins = 0
-            evidential = loss_type == "evidential"
-        # class3 head: hard classes from thresholded mu, logit-adjusted CE (Menon et
-        # al. 2021). Log-priors are added to the logits in the loss only, so raw
-        # argmax at inference is already imbalance-corrected.
+        loss_type = configs.TRAINING.LOSS_TYPE or "regression"
+        valid = {"regression", "bmc", "binned_ce", "class3", "evidential", "rizz", "focal_r"}
+        assert loss_type in valid, f"LOSS_TYPE must be one of {valid}, got {loss_type!r}"
+        if loss_type == "bmc":
+            assert bmc_init > 0, "LOSS_TYPE=bmc needs TRAINING.BMC_SIGMA_INIT > 0"
+        else:
+            bmc_init = 0.0
+        if loss_type in ("binned_ce", "class3"):
+            assert mu_bins > 0, f"LOSS_TYPE={loss_type} needs MODEL.MU_BINS > 0"
+        elif not getattr(configs.MODEL, "MU_PIXEL_LINEAR", False):
+            # ADAPTATION: pixel-linear head emits bins regardless of loss; mu is their expectation
+            mu_bins = 0
+        evidential = loss_type == "evidential"
+        # class3: thresholded mu classes, logit-adjusted CE (Menon et al. 2021), priors added in the loss only
         self.mu_class_loss = loss_type == "class3"
         if self.mu_class_loss:
             thresholds = list(configs.TRAINING.MU_CLASS_THRESHOLDS)
@@ -78,9 +73,20 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         self.smooth_l1_beta = getattr(configs.TRAINING, "SMOOTH_L1_BETA", 0.1)
         # ADAPTATION: trav_loss normalization knob ("weighted" adapted, "mean" original)
         self.loss_norm = getattr(configs.TRAINING, "LOSS_NORM", "weighted")
+        # ADAPTATION: train-only mu distribution matching (grandtour histogram)
+        _mmk = getattr(configs.DATASET, "MU_MATCH_KEEP", None)
+        self.mu_match_keep = torch.tensor(_mmk, dtype=torch.float32) if _mmk else None
         self.mu_head_bins = mu_bins
-        # Evidential (NIG) mu head: replaces the mu smooth-L1/binned-CE/BMC term with
-        # the Deep Evidential Regression loss (Amini et al. 2020); nu is unaffected.
+        # Bins the loss is taken over, as opposed to the ones the head emits: only
+        # binned_ce replaces the mu term with a cross-entropy.
+        self.mu_ce_bins = mu_bins if loss_type == "binned_ce" else 0
+        # ADAPTATION: Gaussian instead of two-hot target for the binned head (0 = two-hot)
+        self.mu_bin_sigma = getattr(configs.TRAINING, "MU_BIN_SIGMA", 0.0)
+        # ADAPTATION: Focal-R weighting of the mu regression term
+        self.focal_r = loss_type == "focal_r"
+        self.focal_beta = getattr(configs.TRAINING, "FOCAL_BETA", 10.0)
+        self.focal_gamma = getattr(configs.TRAINING, "FOCAL_GAMMA", 2.0)
+        # Evidential (NIG) mu head, Deep Evidential Regression loss (Amini et al. 2020)
         self.evidential = evidential
         self.evidential_lambda = getattr(configs.TRAINING, "EVIDENTIAL_LAMBDA", 0.01)
         assert not (self.evidential and self.mu_head_bins), "EVIDENTIAL and MU_BINS are mutually exclusive"
@@ -109,7 +115,11 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
             backbone=getattr(configs.MODEL, "BACKBONE", "resnet34"),
             dino_feat_dim=getattr(configs.MODEL, "DINO_FEAT_DIM", 768),
             dino_neck_dim=getattr(configs.MODEL, "DINO_NECK_DIM", 256),
+            dino_noise=getattr(configs.MODEL, "DINO_FEAT_NOISE", 0.0),
             mu_pixel_linear=getattr(configs.MODEL, "MU_PIXEL_LINEAR", False),
+            head_drop=getattr(configs.MODEL, "HEAD_DROPOUT", 0.0),
+            slim_decoder=getattr(configs.MODEL, "SLIM_DECODER", False),
+            wrizz_decoder=getattr(configs.MODEL, "WRIZZ_DECODER", False),
         )
 
         # Convert to channels_last to avoid DDP bucket stride mismatch warnings
@@ -121,12 +131,21 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
             elif isinstance(m, (nn.Conv3d, nn.BatchNorm3d)):
                 m.to(memory_format=torch.channels_last_3d)
 
-        # Compile the network (fixed shapes -> big fused-kernel win). voxelize() is
-        # @torch.compiler.disable'd so its data-dependent scatter stays in eager.
+        # ADAPTATION: mean teacher (adaptations/mean_teacher.py), copied before compile to stay eager
+        self.mt_weight = getattr(configs.TRAINING, "MEAN_TEACHER_WEIGHT", 0.0)
+        self.mean_teacher = None
+        if self.mt_weight > 0:
+            self.mean_teacher = adaptations.MeanTeacher(
+                self.model,
+                decay=configs.TRAINING.MEAN_TEACHER_DECAY,
+                ramp_steps=configs.TRAINING.MEAN_TEACHER_RAMP,
+                jitter=tuple(configs.TRAINING.MEAN_TEACHER_JITTER),
+            )
+        self._student_core = self.model
+
         if configs.TRAINING.COMPILE:
             import torch._dynamo as _dynamo
-            # Increase recompile limit because BasicBlock is reused many times (encoder + decoder)
-            # with different input shapes/strides, and across train/val (grad enabled/disabled).
+            # BasicBlock is reused with many shapes and train/val modes
             _dynamo.config.recompile_limit = 64
             self.model = torch.compile(self.model)
 
@@ -151,12 +170,54 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         self.vis_interval = configs.TRAINING.VIS_INTERVAL
         self.vis_batch_size = getattr(configs.TRAINING, "VIS_BATCH_SIZE", 8)
         # Optional debug panels (see visualize)
+        # ADAPTATION: panels named here are never logged (wandb image build-up)
+        self.vis_skip = set(getattr(configs.TRAINING, "VIS_PANELS_SKIP", []))
         self.debug_vis_labels = getattr(configs.TRAINING, "DEBUG_VIS_LABELS", False)
         self.debug_vis_geom = getattr(configs.TRAINING, "DEBUG_VIS_GEOM", False)
         self.debug_vis_depth = getattr(configs.TRAINING, "DEBUG_VIS_DEPTH", False)
 
-        # ADAPTATION: observation-only mu calibration metrics (see adaptations/metrics.py)
-        self.mu_metrics = adaptations.MuBinMetrics()
+        # ADAPTATION: observation-only mu calibration metrics, per validation mission
+        # (adaptations/metrics.py, adaptations/mission_ids.py)
+        self.mission_names = list(getattr(configs.DATASET, "VALID_MISSIONS", []))
+        self.mu_metrics = adaptations.MuBinMetrics(mission_names=self.mission_names)
+
+        # ADAPTATION: W-RIZZ ordinal mu supervision (adaptations/rizz.py). HDR is logged for every run.
+        self.rizz = loss_type == "rizz"
+        self.rizz_margin = configs.TRAINING.RIZZ_MARGIN
+        self.rizz_weight = configs.TRAINING.RIZZ_WEIGHT
+        self.rizz_pairs = configs.TRAINING.RIZZ_PAIRS
+        self.rizz_kw = dict(
+            deadband=configs.TRAINING.RIZZ_DEADBAND,
+            tie_band=configs.TRAINING.RIZZ_TIE_BAND,
+            cross_frac=configs.TRAINING.RIZZ_CROSS_FRACTION,
+            min_sep=configs.TRAINING.RIZZ_MIN_SEP,
+            ineq_frac=configs.TRAINING.RIZZ_INEQ_FRACTION,
+            ineq_intra_only=configs.TRAINING.RIZZ_INEQ_INTRA_ONLY,
+        )
+        # eval pairs come from rizz.EVAL_SPECS, not rizz_kw, to stay comparable across runs
+        self.hdr_metrics = adaptations.RizzMetrics(configs.TRAINING.RIZZ_HDR_PAIRS)
+
+        # ADAPTATION: human W-RIZZ pair term on top of LOSS_TYPE (adaptations/human_pairs.py)
+        self.trav_weight = getattr(configs.TRAINING, "TRAV_WEIGHT", 1.0)
+        self.human_weight = configs.TRAINING.HUMAN_WEIGHT
+        self.human_margin = configs.TRAINING.HUMAN_MARGIN
+        self.human_point_pairs = configs.TRAINING.HUMAN_POINT_PAIRS
+        self.human_point_mass = configs.TRAINING.HUMAN_POINT_MASS
+        self.human_point_samples = configs.TRAINING.HUMAN_POINT_SAMPLES
+        self.human_metrics = None
+        if self.human_weight > 0:
+            assert configs.TRAINING.HUMAN_TARGET == "bev", (
+                "only HUMAN_TARGET='bev' is implemented: image-space supervision needs "
+                "TravNet to return its per-pixel mu tensor (traversability_net.py:316)")
+            table = adaptations.PairTable(configs.DATASET.HUMAN_INDEX_ROOT)
+            self.human_pairs = len(table)
+            self.human_metrics = adaptations.HumanHdrMetrics(table)
+            # ADAPTATION: HDR over the trained pairs; the train/valid gap shows overfitting
+            self.human_train_metrics = adaptations.HumanHdrMetrics(table)
+
+        # ADAPTATION: which optional trailing batch elements this run's samples carry
+        self.extra_flags = adaptations.mission_ids.flags(configs)
+        self.uses_dino = getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino"
 
     def prepare_data(self):
         """Called exactly once per node by PyTorch Lightning to prepare data."""
@@ -189,8 +250,7 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
                     n_workers=os.cpu_count(), force=False,
                 )
 
-        # DINO features are precomputed by a separate GPU job, not built here; just
-        # fail early with the exact command if a mission's cache is missing or stale.
+        # DINO features are precomputed separately; fail early if the cache is missing or stale
         if getattr(configs.MODEL, "BACKBONE", "resnet34") == "dino":
             cache_root = pathlib.Path(configs.DATASET.DINO_CACHE_ROOT)
             for mission in missions:
@@ -218,9 +278,9 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         Returns:
             torch.Tensor: Training loss.
         """
-        # Get data (11th element = cached backbone features, DINO mode only)
+        # Get data (trailing elements = cached DINO features, mission index, human pairs)
         color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask, *extra = batch
-        image_feats = extra[0] if extra else None
+        image_feats, _, human = adaptations.mission_ids.split(extra, *self.extra_flags)
 
         # Pointcloud dropout: zero whole depth windows so the GPU builds an empty grid
         depth_raw = depth_voxel  # undropped, for the viz panels
@@ -234,20 +294,49 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target, image_feats=image_feats)
 
         # Calculate traversability loss
-        trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
+        with torch.set_grad_enabled(bool(self.trav_weight)):
+            trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
 
-        # ADAPTATION: update graded low-mu metrics on train batches (logged at epoch end)
-        self.mu_metrics.update_train(self, path, trav_map, target_trav)
+        # ADAPTATION: update graded low-mu metrics on train batches (logged at validation)
+        self.mu_metrics.update_train(self, path, trav_map, target_trav, trav_weights)
+        self.hdr_metrics.update(self, path, trav_map, target_trav, trav_weights, batch_idx, train=True)
 
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
         depth_mask = depth_mask.view(-1, *depth_mask.shape[2:])
         depth_loss = self.depth_criterion(pred_depth, depth_target, depth_mask)
 
+        # ADAPTATION: TRAV_WEIGHT 0 keeps the RHE loss as a logged diagnostic only
+        weighted_trav = self.trav_weight * trav_loss if self.trav_weight else 0.0
         if self.train_depth:
-            loss = trav_loss + self.depth_weight*depth_loss
+            loss = weighted_trav + self.depth_weight*depth_loss
         else:
-            loss = trav_loss
+            loss = weighted_trav
+
+        # ADAPTATION: human W-RIZZ ordinal term, summed on top of the mu loss
+        if self.human_weight > 0:
+            human_loss, n_human, n_half = adaptations.human_loss(
+                trav_map, human, self.grid_bounds, self.human_margin,
+                self.human_pairs, self.human_point_pairs, self.human_point_mass,
+                self.human_point_samples)
+            loss = loss + self.human_weight * human_loss
+            self.human_train_metrics.update(trav_map, human, self.grid_bounds)
+            self.log("human/train_loss", human_loss, on_step=True, on_epoch=False)
+            self.log("human/train_batch_pairs", float(n_human), on_step=True, on_epoch=False)
+            # half pairs mean the sampler no longer keeps both windows together
+            self.log("human/train_half_pairs", float(n_half), on_step=True, on_epoch=False)
+
+        # ADAPTATION: mean teacher consistency over every BEV cell, not just the
+        # annotated ones (see adaptations/mean_teacher.py)
+        if self.mean_teacher is not None:
+            teacher_map = self.mean_teacher.predict(
+                color_img, depth_raw, intrinsics_full, inv_intrinsics, extrinsics,
+                depth_target, image_feats=image_feats)
+            mt = adaptations.mt_consistency(trav_map, teacher_map)
+            w = self.mt_weight * self.mean_teacher.weight(self.global_step)
+            loss = loss + w * mt
+            self.log("train/mt_consistency", mt, on_step=True, on_epoch=False)
+            self.log("train/mt_weight", w, on_step=True, on_epoch=False)
 
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
@@ -270,6 +359,8 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         self._batch_start_time = time.time()
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
+        if self.mean_teacher is not None:
+            self.mean_teacher.update(self._student_core)
         if hasattr(self, '_batch_start_time'):
             step_time = time.time() - self._batch_start_time
             self.log("perf/time_per_step", step_time, on_step=True, on_epoch=False)
@@ -281,7 +372,11 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         if hasattr(self, '_epoch_start_time'):
             epoch_time = time.time() - self._epoch_start_time
             self.log("perf/time_per_epoch", epoch_time, on_step=False, on_epoch=True, sync_dist=True)
-        self.mu_metrics.on_train_epoch_end(self)
+        # train confusion/calibration normally logs from the validation hook, which
+        # without a valid loader never fires
+        if not self.trainer.val_dataloaders:
+            self.mu_metrics.log_train(self)
+            self.hdr_metrics.log(self, "train", train=True)
 
     def validation_step(self, batch, batch_idx):
         """
@@ -294,9 +389,9 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         Returns:
             torch.Tensor: Validation loss.
         """
-        # Get data (11th element = cached backbone features, DINO mode only)
+        # Get data (trailing elements = cached DINO features, mission index, human pairs)
         color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask, *extra = batch
-        image_feats = extra[0] if extra else None
+        image_feats, mission_id, human = adaptations.mission_ids.split(extra, *self.extra_flags)
 
         # Forward pass
         trav_map, mu_logits, pred_depth, debug = self.model(color_img, depth_voxel, intrinsics_full, inv_intrinsics, extrinsics, depth_target, image_feats=image_feats)
@@ -305,17 +400,21 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights, mu_logits)
 
         # ADAPTATION: update graded low-mu metrics (per-0.1-bin MAE + calibration)
-        self.mu_metrics.update_valid(self, path, trav_map, target_trav, trav_weights)
+        self.mu_metrics.update_valid(self, path, trav_map, target_trav, trav_weights, mission_id)
+        self.hdr_metrics.update(self, path, trav_map, target_trav, trav_weights, batch_idx, train=False)
+        if self.human_metrics is not None:
+            self.human_metrics.update(trav_map, human, self.grid_bounds)
 
         # Calculate depth classification loss
         depth_target = depth_target.view(-1, *depth_target.shape[2:])
         depth_mask = depth_mask.view(-1, *depth_mask.shape[2:])
         depth_loss = self.depth_criterion(pred_depth, depth_target, depth_mask)
 
+        weighted_trav = self.trav_weight * trav_loss if self.trav_weight else 0.0
         if self.train_depth:
-            loss = trav_loss + self.depth_weight*depth_loss
+            loss = weighted_trav + self.depth_weight*depth_loss
         else:
-            loss = trav_loss
+            loss = weighted_trav
 
         # Visualize a fixed set of batches spread across the whole shard
         if batch_idx in self._val_vis_batches:
@@ -332,9 +431,7 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         return loss
 
     def on_validation_epoch_start(self):
-        # VIS_INTERVAL can exceed the shard's batch count; the old modulo check then
-        # only ever showed batch 0 (the first windows of the first mission). Spread a
-        # fixed handful of panels across the shard instead.
+        # VIS_INTERVAL can exceed the batch count, so spread a few panels across the shard
         n = self.trainer.num_val_batches[0]
         if isinstance(n, (int, float)) and np.isfinite(n) and n > 0:
             self._val_vis_batches = {int(i) for i in np.linspace(0, int(n) - 1, min(4, int(n)))}
@@ -345,6 +442,13 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
     def on_validation_epoch_end(self):
         # ADAPTATION: per-bin calibration + confusion image (see adaptations/metrics.py)
         self.mu_metrics.on_validation_epoch_end(self)
+        # ADAPTATION: ordinal HDR on the same pairs for train and valid
+        self.hdr_metrics.log(self, "train", train=True)
+        self.hdr_metrics.log(self, "valid")
+        # ADAPTATION: HDR over the human pairs, both splits (adaptations/human_pairs.py)
+        if self.human_metrics is not None:
+            self.human_metrics.log(self, "valid")
+            self.human_train_metrics.log(self, "train")
 
     def configure_optimizers(self):
         """
@@ -375,18 +479,14 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
             groups.append({"params": [self.bmc_sigma], "lr": 1e-2, "weight_decay": 0.0})
         optimizer = torch.optim.AdamW(groups, weight_decay=self.weight_decay)
 
-        # Learning rate scheduler: one full cosine decay over the whole run (T_max must
-        # match EPOCHS, else the LR rises back toward its max in the second half).
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-5 * lr_scale)
+        # ADAPTATION: CosineSchedule keeps the configured T_max across a resume
+        scheduler = adaptations.CosineSchedule(optimizer, T_max=self.epochs, eta_min=1e-5 * lr_scale)
         
         return [optimizer], [scheduler]
 
     def on_before_optimizer_step(self, optimizer):
-        # bf16-mixed has no GradScaler, so a single batch with non-finite gradients
-        # would permanently corrupt the weights and silently stall training (global_step
-        # stops advancing). Skip such updates, like fp16's GradScaler does for free.
-        # Fused norms + one .item(): a per-parameter isfinite loop costs a GPU sync
-        # per parameter (~15 ms/step for 209 params vs ~1 ms for this).
+        # bf16-mixed has no GradScaler: skip updates with non-finite gradients.
+        # Fused norms + one .item() avoids a GPU sync per parameter.
         grads = [p.grad for p in self.parameters() if p.grad is not None]
         finite = (
             len(grads) == 0
@@ -421,6 +521,10 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         # Sample predicted traversability along the path
         traversability, mask = self._sample_path(states, trav_map)
 
+        # ADAPTATION: reshape train mu supervision to a target histogram (grandtour)
+        if self.training and self.mu_match_keep is not None:
+            mask = mask & adaptations.mu_match_mask(target_trav[..., 0], self.mu_match_keep.to(mask.device))
+
         # Calculate loss
         gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
         error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=self.smooth_l1_beta)
@@ -431,10 +535,14 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
             logits, _ = self._sample_path(states, mu_logits)
             ce = adaptations.class3_ce(logits, target_trav[..., 0], self.mu_class_thresholds, self.mu_class_log_priors)
             train_error = torch.stack([ce, error[..., 1]], dim=-1)
-        elif self.mu_head_bins:
+        elif self.mu_ce_bins:
             logits, _ = self._sample_path(states, mu_logits)
-            ce = adaptations.binned_ce(logits, target_trav[..., 0], self.mu_head_bins)
+            ce = adaptations.binned_ce(logits, target_trav[..., 0], self.mu_ce_bins, self.mu_bin_sigma)
             train_error = torch.stack([ce, error[..., 1]], dim=-1)
+        elif self.focal_r:
+            residual = traversability[..., 0] - target_trav[..., 0]
+            mu_error = adaptations.focal_r(error[..., 0], residual, self.focal_beta, self.focal_gamma)
+            train_error = torch.stack([mu_error, error[..., 1]], dim=-1)
         elif self.evidential:
             aux, _ = self._sample_path(states, mu_logits)
             nig = adaptations.evidential_loss(traversability[..., 0], target_trav[..., 0], aux, self.evidential_lambda)
@@ -442,7 +550,15 @@ class TrainingModule(adaptations.VisualizationMixin, pl.LightningModule):
         # ADAPTATION: asymmetric penalty on optimistic (over-)predictions
         train_error = adaptations.overpred_weight(train_error, traversability, target_trav, self.overpred_weight)
         weight = target_weights * gamma
-        if self.bmc_sigma is not None:
+        if self.rizz:
+            # ADAPTATION: W-RIZZ pairs replace the mu term (pair sampling balances, no LDS weight)
+            mu_loss = self.rizz_weight * adaptations.pair_loss(
+                traversability[..., 0], target_trav[..., 0], states[..., :2],
+                mask & (weight[..., 0] > 0), self.rizz_margin,
+                n_pairs=self.rizz_pairs, **self.rizz_kw)
+            nu_loss = adaptations.reduce_trav_loss(train_error[..., 1], weight[..., 1], mask, self.loss_norm, self.eps)
+            loss = mu_loss + nu_loss
+        elif self.bmc_sigma is not None:
             # ADAPTATION: balanced MSE replaces the mu term; nu keeps its weighted smooth-L1
             mu_loss = adaptations.bmc_loss(
                 traversability[..., 0], target_trav[..., 0], weight[..., 0] * mask,

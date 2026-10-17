@@ -1,11 +1,8 @@
-# Runtime image only: torch's cu124 wheels ship their own CUDA libs, and nothing
-# is compiled from source (FoundationStereo never imports flash-attn), so the
-# 7GB devel toolkit and the conda install are unnecessary.
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Minimal runtime deps: python, git for the clone, GL/gomp/usb for opencv & open3d.
+# Runtime deps: python, git for the clone, GL/gomp/usb for opencv & open3d.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3-pip git ca-certificates \
     libgl1 libglib2.0-0 libgomp1 libegl1 libusb-1.0-0 && \
@@ -13,8 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV OPENCV_IO_ENABLE_OPENEXR=1
 
-# Torch from the cu124 index, then only the packages FoundationStereo's
-# core/ and Utils.py actually import.
+# Torch from the cu124 index
 RUN pip install --no-cache-dir torch==2.4.0 torchvision==0.19.0 \
     --index-url https://download.pytorch.org/whl/cu124 && \
     pip install --no-cache-dir xformers==0.0.28.post1 \
@@ -33,15 +29,12 @@ RUN git init /app/FoundationStereo && \
 
 # Pre-fetch the DINOv2 backbone (code + weights) into the torch hub cache so
 # the GPU workers don't all race to download/extract it at once at runtime,
-# which corrupts the cache (ENOTEMPTY errors). The cache lives outside /root
-# and HOME points to /tmp because run.sh runs the container as the host user,
-# so depth outputs are not root-owned on the host.
+# which corrupts the cache (ENOTEMPTY errors).
 ENV TORCH_HOME=/opt/torch HOME=/tmp
 RUN python3 -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=True)" && \
     chmod -R a+rwX /opt/torch
 
-# Weights are baked in (not mounted): the docker daemon is the host's, and the
-# devcontainer's repo path does not exist on the host, so a bind mount would be empty.
+# Weights are baked in (not mounted).
 WORKDIR /app
 COPY generate_depth.py /app/generate_depth.py
 COPY pretrained_models/23-51-11 /app/pretrained_models/23-51-11

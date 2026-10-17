@@ -1,0 +1,5 @@
+# Regenerable: keyframe JPEGs, SAM segments, and the propagation index.
+frames/
+segments/
+index/
+# Kept: frames.json and pairs.jsonl define the label set, labels.jsonl is the work.

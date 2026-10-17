@@ -37,7 +37,6 @@ def plot_scenario_timeseries(result: ScenarioResult, output_dir: Path):
     ax = axes[1]
     ax.plot(t_windows, result.mu_true_per_window, label="μ_true", color="forestgreen", linewidth=2, linestyle="--")
     ax.plot(t_windows, result.mu_estimated, label="μ_est", color="steelblue", linewidth=1.5)
-    # Shade confidence
     ax.fill_between(
         t_windows,
         0, result.w_mu,
@@ -153,10 +152,10 @@ def plot_summary_bar_chart(results: List[ScenarioResult], output_dir: Path):
 
     fig, ax = plt.subplots(figsize=(16, 7))
 
-    bars1 = ax.bar(x - 1.5 * width, mae_mu, width, label="MAE(μ)", color="steelblue", alpha=0.8)
-    bars2 = ax.bar(x - 0.5 * width, rmse_mu, width, label="RMSE(μ)", color="steelblue", alpha=0.5)
-    bars3 = ax.bar(x + 0.5 * width, mae_nu, width, label="MAE(ν)", color="coral", alpha=0.8)
-    bars4 = ax.bar(x + 1.5 * width, rmse_nu, width, label="RMSE(ν)", color="coral", alpha=0.5)
+    ax.bar(x - 1.5 * width, mae_mu, width, label="MAE(μ)", color="steelblue", alpha=0.8)
+    ax.bar(x - 0.5 * width, rmse_mu, width, label="RMSE(μ)", color="steelblue", alpha=0.5)
+    ax.bar(x + 0.5 * width, mae_nu, width, label="MAE(ν)", color="coral", alpha=0.8)
+    ax.bar(x + 1.5 * width, rmse_nu, width, label="RMSE(ν)", color="coral", alpha=0.5)
 
     ax.set_ylabel("Error")
     ax.set_title("Benchmark Summary: MAE and RMSE by Scenario")
@@ -173,7 +172,7 @@ def plot_summary_bar_chart(results: List[ScenarioResult], output_dir: Path):
 
 
 def plot_noise_robustness(results: List[ScenarioResult], output_dir: Path):
-    """Plot MAE vs noise level for noise robustness scenarios."""
+    """Plot MAE vs noise level for the noise scenarios."""
     noise_results = [r for r in results if r is not None and r.scenario.name.startswith("noise_sigma_")]
     if not noise_results:
         return

@@ -1,0 +1,111 @@
+TAG: 'gt_human_dino_neck64_f2'
+DESCRIPTION: 'OFAT on gt_human_dino_f2 (best f2 human_hdr 0.2445, peaked at epoch 0). MODEL.DINO_NECK_DIM 256 to 64. With a frozen backbone the neck is the entire trainable image path, so this is the cleanest capacity knob available; the per-pixel linear probe on these features already reads AUROC 0.847, which says 64 channels should be ample and the extra 192 are free memorization capacity. Epochs cut 20 to 10 and workers 6 to 4 for four-way parallelism.'
+
+OPTIMIZER:
+    LR: 0.0001
+    LR_REF_BATCHSIZE: 12
+    WEIGHT_DECAY: 0.0001
+    BACKBONE_LR_FACTOR: 1.0
+
+TRAINING:
+    BATCHSIZE: 8
+    WORKERS: 4
+    DEVICES: [0]        # the human batch sampler emits one epoch, not one shard per rank
+    EPOCHS: 10
+    VAL_CHECK_INTERVAL: 0.25
+    CHECKPOINT_EVERY_N_EPOCHS: 20
+    CHECKPOINT_EVERY_N_VALIDATIONS: 8
+    CHECKPOINT_DENSE_EPOCHS: 1
+    VERBOSE: False
+    GAMMA: 1.0
+    LOSS_NORM: 'mean'
+    DEPTH_WEIGHT: 0.05
+    HORIZON: 300
+    DT: 0.1
+    VIS_INTERVAL: 500
+    DEBUG_VIS_LABELS: True
+    DEBUG_VIS_GEOM: False
+    DEBUG_VIS_DEPTH: True
+
+    # RHE off as a training signal: no gradient, and the checkpoint monitor is the
+    # human metric. valid/calib_slope, valid/hdr and the confusion panels still log,
+    # which is what makes this run readable next to the RHE-trained baseline.
+    # The nu channel is unsupervised as a consequence; W-RIZZ predicts one score.
+    TRAV_WEIGHT: 0.0
+
+    # Human pairwise supervision, the whole traversability objective here. The
+    # HUMAN_WEIGHT / LOSS_TYPE orthogonality still holds, it is simply not exercised:
+    # setting TRAV_WEIGHT back to 1.0 gives the summed variant with no other change.
+    HUMAN_WEIGHT: 1.0
+    HUMAN_TARGET: 'bev'
+    HUMAN_MARGIN: 0.5    # W-RIZZ's L, grid-searched to 0.5 in the paper
+    HUMAN_ANCHOR_MASS: 0.4
+    HUMAN_INEQ_FRACTION: 0.75
+
+    # (1) Mean teacher: a weight-EMA copy of the network, with the student pulled toward
+    # its prediction on every BEV cell. The human pairs constrain ~1600 cells and the
+    # network fits them exactly (train HDR 0.003 vs valid 0.288), so the missing
+    # ingredient is supervision that is not attached to an annotated position.
+    MEAN_TEACHER_WEIGHT: 1.0
+    MEAN_TEACHER_DECAY: 0.999
+    MEAN_TEACHER_RAMP: 2000
+    MEAN_TEACHER_JITTER: [0.0, 0.0, 0.0, 0.0]   # cannot reach frozen features
+
+    # (1) More views per annotation. The unit of loss mass is unchanged; the same
+    # ordinal constraint simply has to hold from every window that can score it (median
+    # 9 available for intra, was using 5) and from 3 matched window pairs for cross
+    # (median 6 available, was using 1).
+    HUMAN_K: 0          # 0 = every available window
+    HUMAN_K_CROSS: 3
+
+    # The run's own question: does the network order the pairs a human ordered.
+    # Balanced, so the 55% tie share cannot carry the number on its own.
+    CKPT_MONITOR: 'human/valid_hdr_ema'
+    CKPT_MODE: 'min'
+
+MODEL:
+    BACKBONE: 'dino'
+    DINO_MODEL: 'facebook/dinov3-vitb16-pretrain-lvd1689m'
+    DINO_FEAT_DIM: 768
+    DINO_INPUT_SIZE: [480, 352]
+    DINO_NECK_DIM: 64
+    TIME_LENGTH: 6
+    DOWNSAMPLE: 8
+    LATENT_DIM: 64
+    INPUT_SIZE: [480, 360]
+    PREDICT_DEPTH: True
+    TRAIN_DEPTH: True
+    FUSE_PCLOUD: True
+    VOXEL_DEPTH_DOWNSAMPLE: 1
+    LABEL_COLUMNS: [0, 1]
+    GRID_BOUNDS: {
+        'xbound': [-2.0, 8.0, 0.1],
+        'ybound': [-5.0, 5.0, 0.1],
+        'zbound': [-1.5, 1.5, 0.2],
+        'dbound': [ 0.3, 8.0, 0.2]}
+
+DATASET:
+    DATA_ROOT: '/datahome/lmertens/grand_tour_dataset/extracted'
+    LABELS_ROOT: '/datahome/lmertens/grand_tour_dataset/labels'
+    RESIZED_ROOT: '/datalocal/lmertens/grand_tour_dataset_resized'
+    DINO_CACHE_ROOT: '/datalocal/lmertens/grand_tour_dataset_dino'
+    TIME_TOLERANCE: 0.05
+    MAX_TIME_GAP: 0.5
+    FRAME_STRIDE: 5
+    WINDOW_STRIDE: 5
+    LDS_ALPHA: 1.0
+    VISIBILITY_GATE: False
+    OVERSAMPLE_FRACTION: 0.0
+
+    # Cross-validation fold f2. The export gate keys on exactly this list: the 506
+    # pairs with an endpoint in a valid mission are eval-only and never enter the loss.
+    TRAIN_MISSIONS: ['ALB-1', 'ALB-2', 'CYN-1', 'CYN-2', 'HOEB-1', 'HOEB-2', 'LMB-1', 'LMB-2', 'TRIM-1', 'KAEB-3']
+    VALID_MISSIONS: ['RIV-1', 'ALB-3', 'HIL-1', 'KAEB-2']
+    TEST_MISSIONS:  ['RIV-1', 'ALB-3', 'HIL-1', 'KAEB-2']
+
+AUGMENTATIONS:
+    HORIZ_FLIP: 0.5
+    PCLOUD_DROPOUT: 0.3
+    MAX_TRANSLATION: 0.0
+    MAX_ROTATION: 0.0
+    COLOR_JITTER: [0.0, 0.0, 0.0, 0.0]   # cannot reach frozen features

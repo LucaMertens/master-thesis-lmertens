@@ -6,7 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision.models.resnet import ResNet34_Weights, resnet18, resnet34
+from torchvision.models.resnet import ResNet18_Weights, ResNet34_Weights, resnet18, resnet34
+
+from ...adaptations import capacity
 
 class UpsamplingConcat(nn.Module):
     """
@@ -89,7 +91,7 @@ class Decoder(nn.Module):
     Args:
         in_channels (int): Number of input channels.
     """
-    def __init__(self, in_channels):
+    def __init__(self, in_channels, slim=False):
         super().__init__()
         backbone = resnet18(weights=None, zero_init_residual=True)
         self.first_conv = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -98,9 +100,10 @@ class Decoder(nn.Module):
 
         self.layer1 = backbone.layer1
         self.layer2 = backbone.layer2
-        self.layer3 = backbone.layer3
 
-        self.up3_skip = UpsamplingAdd(256, 128, scale_factor=2)
+        # ADAPTATION: the deepest stage is dropped in the slim variant (see adaptations/capacity.py)
+        self.layer3, self.up3_skip = capacity.bottleneck(
+            backbone.layer3, UpsamplingAdd(256, 128, scale_factor=2), slim)
         self.up2_skip = UpsamplingAdd(128, 64, scale_factor=2)
         self.up1_skip = UpsamplingAdd(64, in_channels, scale_factor=2)
 
@@ -122,11 +125,8 @@ class Decoder(nn.Module):
         # (H/4, W/4)
         skip_2 = self.layer1(x)
         x = self.layer2(skip_2)
-        # (H/8, W/8)
-        skip_3 = x
-        x = self.layer3(skip_3)
-        # First upsample to (H/4, W/4)
-        x = self.up3_skip(x, skip_3)            
+        # (H/8, W/8), down to (H/16, W/16) and back up unless the stage is dropped
+        x = capacity.run_bottleneck(self.layer3, self.up3_skip, x)
 
         # Second upsample to (H/2, W/2)
         x = self.up2_skip(x, skip_2)
@@ -144,14 +144,16 @@ class Encoder(nn.Module):
         downsample (int, optional): Downsampling factor. Defaults to 8.
         freeze (bool, optional): Freeze the pretrained ResNet stages. Defaults to False.
     """
-    def __init__(self, C, downsample=8, freeze=False):
+    def __init__(self, C, downsample=8, freeze=False, arch=34):
         super().__init__()
         self.C = C
         self.downsample = downsample
         self.freeze = freeze
 
-        print('Using Resnet34' + (' (frozen)' if freeze else ''))
-        resnet = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
+        # ADAPTATION: arch selects ResNet-18 or ResNet-34 (same stage widths)
+        print(f'Using Resnet{arch}' + (' (frozen)' if freeze else ''))
+        resnet = (resnet34(weights=ResNet34_Weights.IMAGENET1K_V1) if arch == 34
+                  else resnet18(weights=ResNet18_Weights.IMAGENET1K_V1))
         c0 = 64
         c1 = 128
         c2 = 256
