@@ -57,14 +57,17 @@ For more details, see the [thesis](documentation/lmertens_master_thesis.pdf) or 
 | `side_experiments/` | Exploratory work: W-RIZZ human labeling, WVN-style loss[^10], ForEnt dataset[^11], analysis scripts |
 | `documentation/` | Notes on dataset, camera choice and WayFASTER issues |
 
-- [^1]: M. V. Gasparino, A. N. Sivakumar, G. Chowdhary. *WayFASTER: A Self-Supervised Traversability Prediction for Increased Navigation Awareness.* arXiv:2402.00683, 2024. https://doi.org/10.48550/arXiv.2402.00683
-- [^2]: J. Frey, T. Tuna, F. Fu, K. Patterson, T. Xu, M. Fallon, C. Cadena, M. Hutter. *GrandTour: A Legged Robotics Dataset in the Wild for Multi-Modal Perception and State Estimation.* arXiv:2602.18164, 2026. https://doi.org/10.48550/arXiv.2602.18164
-- [^3]: M. V. Gasparino et al. *WayFAST: Navigation with Predictive Traversability in the Field.* IEEE Robotics and Automation Letters 7(4), 10651–10658, 2022. https://doi.org/10.1109/LRA.2022.3193464
-- [^4]: M. Hutter et al. *ANYmal - A Highly Mobile and Dynamic Quadrupedal Robot.* IEEE/RSJ IROS, 38–44, 2016. https://doi.org/10.1109/IROS.2016.7758092
-- [^5]: J. Frey et al. *Boxi: Design Decisions in the Context of Algorithmic Performance for Robotics.* arXiv:2504.18500, 2025. https://doi.org/10.48550/arXiv.2504.18500
-- [^6]: B. Wen, M. Trepte, J. Aribido, J. Kautz, O. Gallo, S. Birchfield. *FoundationStereo: Zero-Shot Stereo Matching.* arXiv:2501.09898, 2025. https://doi.org/10.48550/arXiv.2501.09898
-- [^7]: A. Schreiber, A. N. Sivakumar, P. Du, M. V. Gasparino, G. Chowdhary, K. Driggs-Campbell. *W-RIZZ: A Weakly-Supervised Framework for Relative Traversability Estimation in Mobile Robotics.* arXiv:2406.02822, 2024. https://doi.org/10.48550/arXiv.2406.02822
-- [^8]: M. Mueller, M. Hein. *Mahalanobis++: Improving OOD Detection via Feature Normalization.* arXiv:2505.18032, 2025. https://doi.org/10.48550/arXiv.2505.18032
-- [^9]: O. Siméoni et al. *DINOv3.* arXiv:2508.10104, 2025. https://doi.org/10.48550/arXiv.2508.10104
-- [^10]: J. Frey, M. Mattamala, N. Chebrolu, C. Cadena, M. Fallon, M. Hutter. *Fast Traversability Estimation for Wild Visual Navigation.* arXiv:2305.08510, 2023. https://doi.org/10.48550/arXiv.2305.08510
-- [^11]: N. Kirdwichai, D. Tarapore. *ForEnt: A Multi-Modal Dataset for Characterizing Quadruped Robot Entrapments in Forest Environments.* arXiv:2606.19675, 2026. https://doi.org/10.48550/arXiv.2606.19675
+
+# References
+
+[^1]: M. V. Gasparino, A. N. Sivakumar, G. Chowdhary. *WayFASTER: A Self-Supervised Traversability Prediction for Increased Navigation Awareness.* arXiv:2402.00683, 2024. https://doi.org/10.48550/arXiv.2402.00683
+[^2]: J. Frey, T. Tuna, F. Fu, K. Patterson, T. Xu, M. Fallon, C. Cadena, M. Hutter. *GrandTour: A Legged Robotics Dataset in the Wild for Multi-Modal Perception and State Estimation.* arXiv:2602.18164, 2026. https://doi.org/10.48550/arXiv.2602.18164
+[^3]: M. V. Gasparino et al. *WayFAST: Navigation with Predictive Traversability in the Field.* IEEE Robotics and Automation Letters 7(4), 10651–10658, 2022. https://doi.org/10.1109/LRA.2022.3193464
+[^4]: M. Hutter et al. *ANYmal - A Highly Mobile and Dynamic Quadrupedal Robot.* IEEE/RSJ IROS, 38–44, 2016. https://doi.org/10.1109/IROS.2016.7758092
+[^5]: J. Frey et al. *Boxi: Design Decisions in the Context of Algorithmic Performance for Robotics.* arXiv:2504.18500, 2025. https://doi.org/10.48550/arXiv.2504.18500
+[^6]: B. Wen, M. Trepte, J. Aribido, J. Kautz, O. Gallo, S. Birchfield. *FoundationStereo: Zero-Shot Stereo Matching.* arXiv:2501.09898, 2025. https://doi.org/10.48550/arXiv.2501.09898
+[^7]: A. Schreiber, A. N. Sivakumar, P. Du, M. V. Gasparino, G. Chowdhary, K. Driggs-Campbell. *W-RIZZ: A Weakly-Supervised Framework for Relative Traversability Estimation in Mobile Robotics.* arXiv:2406.02822, 2024. https://doi.org/10.48550/arXiv.2406.02822
+[^8]: M. Mueller, M. Hein. *Mahalanobis++: Improving OOD Detection via Feature Normalization.* arXiv:2505.18032, 2025. https://doi.org/10.48550/arXiv.2505.18032
+[^9]: O. Siméoni et al. *DINOv3.* arXiv:2508.10104, 2025. https://doi.org/10.48550/arXiv.2508.10104
+[^10]: J. Frey, M. Mattamala, N. Chebrolu, C. Cadena, M. Fallon, M. Hutter. *Fast Traversability Estimation for Wild Visual Navigation.* arXiv:2305.08510, 2023. https://doi.org/10.48550/arXiv.2305.08510
+[^11]: N. Kirdwichai, D. Tarapore. *ForEnt: A Multi-Modal Dataset for Characterizing Quadruped Robot Entrapments in Forest Environments.* arXiv:2606.19675, 2026. https://doi.org/10.48550/arXiv.2606.19675
